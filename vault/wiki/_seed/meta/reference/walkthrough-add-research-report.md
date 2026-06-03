@@ -137,4 +137,5 @@ The research lifecycle accepts three input channels:
 - [[archetype-research-report]] — full archetype reference
 - [[walkthrough-add-project]] — set up the parent project first
 - [[walkthrough-write-change]] — execute the scaffolded changes
-- [[decision-research-report-vs-project-plan]] — why research reports replaced the old project-plan flow
+
+The decision-rationale for research-reports replacing the old project-plan flow lives in `decision-research-report-vs-project-plan` (per-install — not shipped in `_seed/`).

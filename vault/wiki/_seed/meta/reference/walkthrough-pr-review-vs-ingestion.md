@@ -97,7 +97,7 @@ For the PR-review path, the cache entry has its own state machine managed by `de
 - `ready` → cache is current; `head_sha` tracks remote HEAD
 - `error` → fetch or analyze failed; `last_error` carries the message
 
-The cache auto-refreshes on every dashboard sync (cheap) so `head_sha` stays current. The `dev-analyze-repo-for-review` skill (Stage 2 — Claude call) runs less often: only when the audit's `repo-knowledge-stale` finding fires, or you click the Repos tab's analyze button manually. As of `[[dev-analyze-repo-fetch-step]]`, the analyze skill itself does a fresh `git fetch && reset --hard origin/<default>` before reading the cache to ensure `based_on_commit` reflects upstream HEAD.
+The cache auto-refreshes on every dashboard sync (cheap) so `head_sha` stays current. The `dev-analyze-repo-for-review` skill (Stage 2 — Claude call) runs less often: only when the audit's `repo-knowledge-stale` finding fires, or you click the Repos tab's analyze button manually. The analyze skill itself does a fresh `git fetch && reset --hard origin/<default>` before reading the cache to ensure `based_on_commit` reflects upstream HEAD.
 
 ## Where to find each in the dashboard
 

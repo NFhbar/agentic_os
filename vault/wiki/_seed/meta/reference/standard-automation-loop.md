@@ -137,8 +137,11 @@ Stale ticks (mismatched `last_run_id`) silently no-op — they happen when the u
 ## Related
 
 - [[archetype-change]] § Automation — frontmatter schema
-- [[change-automation-phase-1-data-model]] — data model history
-- [[change-automation-phase-2-orchestrator]] — orchestrator implementation
-- [[change-automation-phase-3-detail-panel]] — UI surface
 - [[standard-change-workflow]] — broader change lifecycle this loop runs inside
 - [[standard-git-hygiene]] — branch + commit conventions the orchestrated steps respect
+
+The orchestrator landed across four implementation phases (data model →
+orchestrator core → UI surface → cap-reached handling). The per-phase change
+entries live in the maintainer's vault (not shipped in `_seed/`) — see the
+`change-automation-phase-*` entries on the canonical OS repo if you want to
+read the implementation history.

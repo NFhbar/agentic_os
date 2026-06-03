@@ -575,7 +575,7 @@ Required fields:
 
 **Apply to:** Any non-form skill-dispatch (form-driven scaffolds use `ScaffoldForm`).
 
-**Note on cost caps.** An earlier revision of this pattern required a cost-cap slider in every dispatch modal. The slider was UI-only — never wired to `runs.ts` — so it was removed system-wide. See [[decision-remove-dispatch-cost-cap]] for the rationale. Cumulative cost is visible via stream-json's `result` events on every run; that's the cost-visibility surface now.
+**Note on cost caps.** An earlier revision of this pattern required a cost-cap slider in every dispatch modal. The slider was UI-only — never wired to `runs.ts` — so it was removed system-wide. (Maintainer-side decision rationale lived in `decision-remove-dispatch-cost-cap`; that entry is per-install and not shipped in `_seed/`.) Cumulative cost is visible via stream-json's `result` events on every run; that's the cost-visibility surface now.
 
 ## 12. Updated `shared/` structure
 

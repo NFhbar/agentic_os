@@ -19,7 +19,7 @@ last_verified: 2026-05-29
 
 A **notification-config** entry defines one notification rule: which lifecycle event, on which channel, with which filters, rate-limit override, and delivery shape. One entry = one rule = one row in the per-(event, channel) routing matrix the dispatch engine consults on every event insert.
 
-Locked from [[automation-and-notifications-notification-config]] § Findings:
+Locked from the original notification-config research project (per-install — not shipped in \_seed) § Findings:
 
 - Primary key is `(event_type, channel)` — the rule schema is intentionally per-event × per-channel so the settings UI can render as a matrix and the dispatcher can short-circuit on event arrival.
 - Filters are optional and conjunctive: every populated `filter.*` sub-key must match the event for the rule to fire.
@@ -36,7 +36,7 @@ Locked from [[automation-and-notifications-notification-config]] § Findings:
 
 ### Primary key
 
-The entry's shared `id:` IS the rule's primary key. It is the value the dispatcher stamps onto outbound `kind: notification` events as `source: 'rule:<id>'` (see [[automation-and-notifications-notification-config]] § Findings § Dispatch model — "Rule attribution on dispatched events"). Implications:
+The entry's shared `id:` IS the rule's primary key. It is the value the dispatcher stamps onto outbound `kind: notification` events as `source: 'rule:<id>'` (see the original notification-config research project (per-install — not shipped in \_seed) § Findings § Dispatch model — "Rule attribution on dispatched events"). Implications:
 
 - The settings UI must preserve `id` across edits and only issue a new id on rule creation — historical attribution in `events.db` breaks if an id is reissued.
 - The rate limiter's per-rule queries (`WHERE source = 'rule:' || :rule_id`) read this id directly; there is no separate `rule_id` field.
@@ -146,7 +146,7 @@ dispatch engine                            ← matches each event against active
    └─ notification-config(rule-C) → ChannelAdapter(desktop) → outbound event: source='rule:rule-C'
 ```
 
-Every outbound notification writes a `kind: notification` row back into `events.db` carrying `source: 'rule:<id>'`, which is what makes per-rule rate-limit queries and audit hooks (`notification-rate-limit-exceeded`, `notification-delivery-failed`) work. See [[automation-and-notifications-notification-config]] § Findings § Dispatch model for the full pipeline.
+Every outbound notification writes a `kind: notification` row back into `events.db` carrying `source: 'rule:<id>'`, which is what makes per-rule rate-limit queries and audit hooks (`notification-rate-limit-exceeded`, `notification-delivery-failed`) work. See the original notification-config research project (per-install — not shipped in \_seed) § Findings § Dispatch model for the full pipeline.
 
 ## Outputs / artifacts produced
 
@@ -193,7 +193,7 @@ Notify the engineering channel whenever a development-domain change merges. Used
 
 ## Related
 
-- [[automation-and-notifications-notification-config]] — the research report this archetype was locked from (rule schema, dispatch model, rate limiting, render caching)
+- the original notification-config research project (per-install — not shipped in \_seed) — the research report this archetype was locked from (rule schema, dispatch model, rate limiting, render caching)
 - [[archetype-runbook]] — for ad-hoc / scheduled procedures; scheduled summaries emit synthetic events that this archetype's rules then notify on
 - [[archetype-change]] — the lifecycle events most rules will match against (`change.*` event_types)
 - [[standard-event-store]] — events.db schema the dispatcher reads from and writes back to
