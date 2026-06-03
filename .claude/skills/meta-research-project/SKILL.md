@@ -39,13 +39,13 @@ spawns:
 
 ## Purpose
 
-**Deprecated.** This skill is the project-orchestration entry point for research from the pre-graduation era. Phase B of the [[research-domain]] project graduated the research-domain skills into [[research-write]] / [[research-review]] / [[research-revise]] / [[research-update]]; this skill is retained ONLY as a delegation alias so legacy callers don't break mid-graduation:
+**Deprecated.** This skill is the project-orchestration entry point for research from the pre-graduation era. The research-domain skills were graduated into [[research-write]] / [[research-review]] / [[research-revise]] / [[research-update]]; this skill is retained ONLY as a delegation alias so legacy callers don't break mid-graduation:
 
 - `domains/meta/app/server/routes/projects.ts` — the Project page's research-dispatch endpoint names this skill in its prompt
 - `domains/meta/app/src/apps/projects/View.tsx` — phase tooltips reference this skill
 - The dashboard run-system prompt template
 
-Phase D (the research app UI) is the natural place to switch those callers to [[research-write]] directly. After phase D + phase E ship, this alias becomes a one-line removal — captured as a follow-up in [[research-domain]]'s `## Out-of-scope`.
+The research app UI is the natural place to switch those callers to [[research-write]] directly. After that lands, this alias becomes a one-line removal.
 
 **New work should call [[research-write]] directly.** Use this alias only when something already names this skill by string.
 
@@ -126,5 +126,4 @@ node scripts/record-dashboard-action.mjs \
 
 - [[research-write]] — the graduation target this alias delegates to
 - [[research-review]] · [[research-revise]] · [[research-update]] — sibling skills in the research-domain lifecycle
-- [[research-domain]] — the project whose phase B introduced this graduation
 - [[meta-research-project]] — (legacy reference: this file IS the deprecation alias — direct callers should migrate to [[research-write]])

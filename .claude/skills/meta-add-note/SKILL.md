@@ -53,7 +53,7 @@ Create a new `note` archetype entry — a domain- or project-scoped observation.
 - Not a `research-report` — no investigation + recommendations
 - Just running observations, lessons, friction logs, etc.
 
-The dashboard's Overview quick-action "Note" dispatches this skill. Until this skill existed, generic notes had to be hand-authored — that gap blocked the Note button from being functional (see [[note-mull-version-2-dogfooding-findings]] and the deferred TODO #414).
+The dashboard's Overview quick-action "Note" dispatches this skill. Until this skill existed, generic notes had to be hand-authored — that gap blocked the Note button from being functional.
 
 The closest sibling is `meta-add-research-note` — that one appends to a research-report's `notes_log` (mid-lifecycle guidance for downstream skills). This skill is for stand-alone notes; the two don't overlap.
 
