@@ -101,55 +101,38 @@ After this loop, you'll have a clear feel for the canonical workflow. Everything
 
 ## Commands
 
-All actions are dispatched through the `/os` router skill. The router reads `OS.md`'s intent vocabulary and routes to the matching meta-\* or domain skill. Direct invocation (e.g. `/meta-brief`) is also supported as a power-user escape hatch.
+All actions dispatch through the `/os` router skill. The router reads `OS.md`'s intent vocabulary and routes to the matching meta-\* or domain skill. Direct invocation (e.g. `/meta-brief`) is the power-user escape hatch.
 
-### Info
+### Starter commands
 
-| command             | what                                                                                                                                                     |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/os brief`         | session brief — pending curation, **plans awaiting review**, **changes in flight**, active projects with deadlines, scheduler health, recent OS activity |
-| `/os dashboard`     | launch the OS dashboard (Vite + Fastify on localhost; opens browser)                                                                                     |
-| `/os audit`         | compliance check across skills, wiki, domains, archetypes, router, logs (exits non-zero on errors)                                                       |
-| `/os status report` | generate a project status report — synthesizes recent commits + decisions + scheduler runs + milestones into copy-pastable markdown                      |
+These ten cover ~80% of week-one usage. The full vocabulary is below.
 
-### Authoring (AI-driven scaffolders)
+| command             | what                                                                       |
+| ------------------- | -------------------------------------------------------------------------- |
+| `/os brief`         | Session brief — pending work, in-flight changes, recent activity           |
+| `/os dashboard`     | Launch the OS dashboard (Vite + Fastify on localhost; opens browser)       |
+| `/os ingest repo`   | Clone + analyze a GitHub repo so the OS knows about it                     |
+| `/os add project`   | Scaffold a project (scope + lifecycle + repos)                             |
+| `/os add change`    | Scaffold a code change against an ingested repo                            |
+| `/os write change`  | PLAN or EXECUTE based on the change's state (state-machine driven)         |
+| `/os review change` | Peer-review a plan before it executes                                      |
+| `/os review pr`     | Review a pull request — categorized comments + structured verdict          |
+| `/os audit`         | Compliance check across skills, wiki, domains, archetypes, router, logs    |
+| `/os status report` | Generate a project status report from commits + decisions + scheduler runs |
 
-| command             | what                                                                                                                       |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `/os add-domain`    | scaffold a new domain (top-level or sub-domain) — folder + playbook + vault dirs                                           |
-| `/os add-skill`     | scaffold a new skill in `.claude/skills/<name>/SKILL.md` + register in playbook                                            |
-| `/os add-app`       | scaffold a new Vite + React + Fastify app inside a domain + install deps + launch skill                                    |
-| `/os add-mcp`       | scaffold a new MCP server (structured tool surface — `mcps/<id>/` with manifest + server.mjs + .env) — see Integrations    |
-| `/os add-archetype` | register a new wiki archetype (template + reference entry + OS.md table)                                                   |
-| `/os add-schedule`  | scaffold a scheduled runbook (cron + prompt the OS fires when due — see Heartbeat)                                         |
-| `/os add-project`   | scaffold a project (scope + lifecycle + reporting cadence; optionally linked to one or more ingested repos) — see Projects |
-| `/os add-change`    | scaffold a code change (single repo, single branch, single PR; the atomic work unit) — see Changes                         |
-| `/os ingest repo`   | clone (GitHub) or reference (local) an external repository; produces a `kind: repo` entity entry — see Repo ingestion      |
-| `/os curate`        | promote `vault/raw/` items into typed `vault/wiki/` entries with archetype frontmatter                                     |
+### Full vocabulary
 
-### Destructive (require confirmation)
+The canonical, always-current intent → skill mapping lives in [**OS.md**](OS.md) (the `### Intent vocabulary` table — ~50 rows covering scaffolding, lifecycle, research, PR review, notifications, automation, and meta-evolution).
 
-| command      | what                                                                                                       |
-| ------------ | ---------------------------------------------------------------------------------------------------------- |
-| `/os rename` | rename a skill / domain / wiki entry; updates all cross-references                                         |
-| `/os delete` | delete a skill / domain / wiki entry; cleans up references; recursive for domains                          |
-| `/os evolve` | generic OS-structure modification (interactive plan mode) — escape hatch for non-add/rename/delete changes |
+For live discovery, open the dashboard's **Skills** view — every skill is listed with its frontmatter, inputs, and current invocation rate. Add new ones via **+ New Skill** (calls `meta-add-skill`).
 
-### Domain-specific
+**How dispatch + extension works:**
 
-| command               | what                                                                                                                                                                            |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/os review pr`       | review a pull request — fetch via gh, analyze, write structured report to `vault/output/development/pr-review/`                                                                 |
-| `/os write change`    | state-machine driven: PLAN phase composes a structured plan; EXECUTE phase (after review approval) creates branch + edits + tests — see Changes                                 |
-| `/os review change`   | peer-review a plan produced by write-change (read-only). Walks plan + repo + conventions; writes structured verdict (approve / request-changes / reject) — see Changes          |
-| `/os research write`  | author a structured research-report against a project — investigates open questions, walks materials, produces `recommended_changes[]` in frontmatter — see Research reports    |
-| `/os research review` | peer-review a research-report (approve / request-changes / reject). Reads `notes_log` for any mid-lifecycle guidance the user added since the prior pass — see Research reports |
-| `/os research revise` | fold review findings + unconsidered notes back into a new revision of the report — see Research reports                                                                         |
-| `/os research update` | incorporate new materials after approval — produces a `## Update N` section + may extend `recommended_changes[]` with new proposals — see Research reports                      |
+- Intents are matched against the OS.md vocabulary table; misses get logged to `vault/raw/router-log.jsonl` so the vocabulary grows with use
+- New skills auto-register into `OS.md` + the owning domain's playbook via `meta-add-skill-to-router-vocab` + `meta-add-skill-to-playbook` (or run them standalone to fix audit findings on existing skills)
+- The Action Items panel on the Overview surfaces missing-from-vocab / missing-from-playbook warnings with one-click resolutions
 
-Adding new commands: scaffold a skill via `/os add-skill` and add a row to `OS.md`'s Intent vocabulary table. Both can be done from the dashboard (Skills view → **+ New Skill**).
-
-The canonical intent → skill mapping lives in [OS.md](OS.md). Misses (intents that don't match any vocabulary row) get logged to `vault/raw/router-log.jsonl` so the vocabulary can grow with use.
+For destructive operations (`/os rename`, `/os delete`, `/os evolve`), the skill always prompts for confirmation before mutating cross-references. See the relevant SKILL.md.
 
 ## Heartbeat (scheduled jobs)
 

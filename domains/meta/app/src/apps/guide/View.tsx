@@ -121,6 +121,9 @@ const QUICK_START: Array<{ id: string; label: string }> = [
   { id: 'walkthrough-write-change', label: 'Write a change' },
   // Concepts second — for when you need to understand a primitive first.
   { id: 'concept-domain', label: 'What is a domain?' },
+  // Architecture last — for the "how is this whole thing shaped" question
+  // a new team member hits within the first session.
+  { id: 'decision-distribution-v1-architecture', label: 'How the OS is shaped' },
 ];
 
 const COLLAPSED_KEY = 'agentic-os/guide-collapsed-sections';
