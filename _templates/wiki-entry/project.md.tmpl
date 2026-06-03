@@ -1,0 +1,55 @@
+---
+id: {{slug}}
+type: project
+domain: {{domain}}
+created: {{datetime}}
+updated: {{datetime}}
+tags: []
+source: {{source}}
+private: false
+title: {{title}}
+status: active
+deadline: {{deadline}}
+stakeholders: []
+# Workflow fields (optional) — populate when the project drives code or
+# scheduled work. See standard-project-workflow.md for the full pattern.
+# repos:                                  # entity ids of ingested repos (kind: repo); empty for non-code projects
+#   - <repo-slug-1>
+#   - <repo-slug-2>                       # projects can span multiple repos
+# lifecycle_stage: planning               # planning | active | review | shipped | archived
+# milestones:
+#   - {date: YYYY-MM-DD, label: "Design locked", status: pending}
+#   - {date: YYYY-MM-DD, label: "Ship", status: pending}
+# reporting:
+#   cadence: weekly                       # daily | weekly | none
+#   target: clipboard                     # clipboard | notion | linear | slack | none
+#   target_ref: null                      # platform-specific id when target is not clipboard/none
+#   last_sent: null
+#   next_due: YYYY-MM-DD
+# Plan-tracking fields (plan_path, plan_status, plan_revision, plan_review_path,
+# plan_reviewed_at, plan_revised_at, plan_revised_from_review, plan_generated_at)
+# are populated at runtime by the project-orchestration skills (meta-research-project,
+# meta-review-project-plan, meta-revise-project-plan, meta-scaffold-project-plan).
+# Don't add them at scaffolding time. See archetype-project.md § Plan-tracking fields.
+---
+
+# {{title}}
+
+## Goal
+What success looks like, one paragraph.
+
+## Scope
+What's in. What's out. If this project owns a feature in an ingested repo, mention which sub-system / paths.
+
+## Milestones
+- [ ] TODO: milestone 1
+- [ ] TODO: milestone 2
+
+## Stakeholders
+`[[entity-id]]` references for people/teams involved.
+
+## Decisions
+Major calls made during this project (link out to `[[decision-...]]` entries that include `[[{{slug}}]]` in their body — the manifest's backlinks make this query work both directions).
+
+## Notes
+Ongoing observations, blockers, learnings. Long-form should become its own `[[note-...]]` entry that links back to this project.

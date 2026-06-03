@@ -1,0 +1,39 @@
+{
+  "id": "github",
+  "domain": "development",
+  "description": "GitHub integration via PAT — create PRs, read PR state, list PRs by head branch, snapshot PR check status, list + submit PR reviews, list inline review comments. Tight tool surface focused on what dev-open-pr + dev-pr-review + dev-pr-review-publish + future dev-pull-pr-comments need.",
+  "transport": "stdio",
+  "command": "node",
+  "args": ["mcps/github/server.mjs"],
+  "env": ["GITHUB_TOKEN"],
+  "tools": [
+    {
+      "name": "create_pull_request",
+      "summary": "Push-assumed; opens a PR on GitHub. Returns { number, url, state, draft, user_login }."
+    },
+    {
+      "name": "get_pull_request",
+      "summary": "Read PR state by number. Returns the full GitHub PR object."
+    },
+    {
+      "name": "list_pull_requests",
+      "summary": "List open PRs filtered by head branch (e.g. to detect 'PR already exists' for idempotent open-pr re-runs)."
+    },
+    {
+      "name": "list_pull_request_checks",
+      "summary": "Snapshot the PR's check runs + commit statuses for CI state reporting. Single read, no polling."
+    },
+    {
+      "name": "list_pull_request_reviews",
+      "summary": "List formal reviews on a PR — top-level review events with verdict (APPROVED / CHANGES_REQUESTED / COMMENTED / DISMISSED), body, submitter, and submitted_at. Use to surface external reviewers' verdicts back into the OS."
+    },
+    {
+      "name": "list_pull_request_review_comments",
+      "summary": "List inline file/line review comments on a PR. Returns each comment's id, review_id, in_reply_to_id (for threads), path, line, side, body, author, created_at, html_url. Optional `since` filter for incremental sync."
+    },
+    {
+      "name": "create_pull_request_review",
+      "summary": "Submit a batched PR review with inline comments + verdict (APPROVE / REQUEST_CHANGES / COMMENT). Used by dev-pr-review-publish to ship the OS-side review back to GitHub. Returns { id, html_url, state, submitted_at, comments: [{ id, path, line, html_url }] }."
+    }
+  ]
+}

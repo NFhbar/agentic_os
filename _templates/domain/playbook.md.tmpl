@@ -1,0 +1,44 @@
+---
+domain: {{name}}
+version: 1
+created: {{datetime}}
+updated: {{datetime}}
+---
+
+# {{display_name}}
+
+## Purpose
+{{purpose}}
+
+## Entities
+List the kinds of "things" this domain tracks (people, repos, decisions, etc.).
+Each entity type maps to a wiki archetype.
+
+- TODO
+
+## Skills
+Skills are added by `/os add-skill <name> --domain {{name}}`.
+List them here as they're created.
+
+- TODO
+
+## Apps
+This domain may optionally expose visual apps.
+List them here as they're added by `/os add-app <name> --domain {{name}}`.
+
+- (none yet)
+
+## Sub-domains
+Sub-domains live under `domains/{{name}}/<sub>/` and follow the same playbook structure.
+
+- (none yet)
+
+## Conventions
+- Wiki entries: `vault/wiki/{{name}}/<archetype>/<slug>.md`
+- Outputs:      `vault/output/{{name}}/<kind>/<slug>.md`
+- Skill prefix: `{{name}}-*` (e.g. `{{name}}-foo-bar`)
+
+## Cross-domain links
+Decisions or entities here that affect other domains. Mention `[[wikilink]]` references.
+
+- TODO

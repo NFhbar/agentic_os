@@ -1,0 +1,36 @@
+---
+name: {{name}}
+description: {{description}}
+version: 1
+created: {{datetime}}
+shared_frontmatter:
+  - id
+  - type
+  - domain
+  - created
+  - updated
+  - tags
+  - source
+  - private
+required_fields:
+  TODO: define required frontmatter fields for this archetype
+---
+
+# Archetype: {{name}}
+
+## Purpose
+{{description}}
+
+## Frontmatter contract
+Every entry of type `{{name}}` MUST include all shared frontmatter fields plus:
+
+- TODO: list archetype-specific required fields with types and constraints
+
+## When to use
+Describe what kind of knowledge this archetype captures and how it differs
+from related archetypes.
+
+- TODO
+
+## Example
+See `vault/wiki/_seed/<domain>/{{name}}/example.md` for a worked example.

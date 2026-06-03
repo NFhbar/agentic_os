@@ -1,0 +1,50 @@
+import type { FastifyPluginAsync } from 'fastify';
+import { spawn } from 'node:child_process';
+import { appendFile, mkdir } from 'node:fs/promises';
+import { resolve, join, dirname } from 'node:path';
+
+const REPO_ROOT = resolve(import.meta.dirname, '../../../../..');
+const AUDIT_LOG = join(REPO_ROOT, 'vault', 'raw', 'dashboard-actions.jsonl');
+
+export const actionRoutes: FastifyPluginAsync = async (fastify) => {
+  // Streams an AI action's output back via SSE.
+  // Each chunk is JSON: {chunk}, {stderr}, or {done, exit}.
+  fastify.post<{ Body: { prompt: string } }>('/', async (req, reply) => {
+    const { prompt } = req.body;
+    const ts = new Date().toISOString();
+
+    reply.raw.writeHead(200, {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+    });
+
+    // stdio: ignore stdin (otherwise claude -p waits 3s for piped input);
+    // pipe stdout/stderr so we can stream them back over SSE.
+    //
+    // --permission-mode bypassPermissions: required for -p (headless) mode
+    // so tool calls (Write/Edit/Bash) don't get denied for lack of a
+    // permission prompt. The dashboard layer is the user-confirmation point.
+    const child = spawn('claude', ['-p', prompt, '--permission-mode', 'bypassPermissions'], {
+      cwd: REPO_ROOT,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      reply.raw.write(`data: ${JSON.stringify({ chunk: chunk.toString('utf8') })}\n\n`);
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      reply.raw.write(`data: ${JSON.stringify({ stderr: chunk.toString('utf8') })}\n\n`);
+    });
+    child.on('close', async (code) => {
+      reply.raw.write(`data: ${JSON.stringify({ done: true, exit: code })}\n\n`);
+      reply.raw.end();
+
+      await mkdir(dirname(AUDIT_LOG), { recursive: true });
+      await appendFile(
+        AUDIT_LOG,
+        JSON.stringify({ ts, prompt, exit_status: code }) + '\n'
+      );
+    });
+  });
+};

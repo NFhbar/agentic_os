@@ -1,0 +1,39 @@
+---
+id: {{slug}}
+type: runbook
+domain: {{domain}}
+created: {{datetime}}
+updated: {{datetime}}
+tags: []
+source: {{source}}
+private: false
+title: {{title}}
+trigger: {{trigger}}
+owner: {{owner}}
+# Scheduling (optional): if both fields are set the scheduler-tick will
+# fire `prompt` via `claude -p` whenever `schedule` says it is due.
+# schedule: "0 9 * * *"     # standard 5-field cron, machine local time
+# prompt: "/os brief"
+---
+
+# {{title}}
+
+## Trigger
+{{trigger}}
+
+## Owner
+[[{{owner}}]]
+
+## Prerequisites
+Anything required before running this procedure.
+
+## Steps
+1. TODO: first step (verify state, gather inputs)
+2. TODO: action
+3. TODO: verify outcome
+
+## Verification
+How to know the runbook completed successfully.
+
+## Rollback
+How to undo or recover if it fails partway through.

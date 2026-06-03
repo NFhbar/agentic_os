@@ -1,0 +1,16 @@
+# Working OS state — not formatted
+vault/raw/
+vault/output/
+vault/.index/
+.claude/state/
+
+# Generated / dependency dirs
+node_modules/
+dist/
+.vite/
+
+# Templates carry Mustache placeholders that look like Prettier output but aren't markdown
+_templates/
+
+# Linter-managed by Biome inside the dashboard
+domains/meta/app/

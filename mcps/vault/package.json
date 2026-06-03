@@ -1,0 +1,13 @@
+{
+  "name": "agentic-os-mcp-vault",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP server: surfaces the OS vault (wiki entries) as structured search + read tools.",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}

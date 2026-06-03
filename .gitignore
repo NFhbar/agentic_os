@@ -1,0 +1,59 @@
+# Working OS state — not shipped with the OS itself
+vault/raw/*
+!vault/raw/.gitkeep
+vault/output/*
+!vault/output/.gitkeep
+vault/wiki/*
+!vault/wiki/.gitkeep
+!vault/wiki/_seed/
+!vault/wiki/_seed/**
+vault/.index/*
+!vault/.index/.gitkeep
+
+# Local harness state
+.claude/settings.local.json
+.claude/state/*
+!.claude/state/.gitkeep
+
+# Node / dashboard build
+node_modules/
+dist/
+.vite/
+*.log
+
+# Ingested external repositories (see standard-repo-ingestion)
+repos/
+
+# App + MCP server secrets — each surface's .env is gitignored.
+# .env.example (committed) documents required vars. See standard-env-config.
+#
+# The specific patterns below are kept for documentation clarity, but the
+# global wildcards below them are the actual safety net — they catch any
+# .env file anywhere in the tree (including future MCPs, new apps, accidental
+# root-level .env drops, or any contributor's local dotenv).
+mcps/*/.env
+domains/*/app/.env
+
+# Global safety net — gitignore every .env / .env.* / .envrc anywhere in the
+# tree. Allow-list .env.example (and variants) so each surface can ship a
+# committed template documenting its required vars.
+.env
+.env.*
+.envrc
+!.env.example
+!.env.*.example
+
+# Other commonly-credential-bearing dotfiles. .npmrc (npm publish auth),
+# .netrc (curl/git creds), .pypirc (pypi tokens). Allow .example variants
+# for any future setup-time scaffolding.
+.npmrc
+.netrc
+.pypirc
+!.npmrc.example
+!.netrc.example
+!.pypirc.example
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

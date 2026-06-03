@@ -1,0 +1,23 @@
+{
+  "id": "vault",
+  "domain": "meta",
+  "description": "Vault tools — search wiki entries by query/archetype/domain, fetch full entry by id or path. Surfaces the OS's structured memory to Claude as typed tools.",
+  "transport": "stdio",
+  "command": "node",
+  "args": ["mcps/vault/server.mjs"],
+  "env": [],
+  "tools": [
+    {
+      "name": "search_wiki",
+      "summary": "Search wiki entries by free-text query, optionally filtered by archetype + domain. Returns top-N hits with id, title, archetype, domain, path, snippet, score."
+    },
+    {
+      "name": "get_entry",
+      "summary": "Fetch a full wiki entry by id (preferred) or path. Returns frontmatter + body + computed metadata."
+    },
+    {
+      "name": "list_archetypes",
+      "summary": "List all wiki archetypes present in the index with entry counts. Useful when the caller wants to know what kinds of entries exist."
+    }
+  ]
+}

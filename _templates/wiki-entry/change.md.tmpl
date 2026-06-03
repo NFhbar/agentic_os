@@ -1,0 +1,46 @@
+---
+id: {{slug}}
+type: change
+domain: {{domain}}
+created: {{datetime}}
+updated: {{datetime}}
+tags: []
+source: {{source}}
+private: false
+title: {{title}}
+repo: {{repo}}
+status: planning
+branch: {{branch}}
+# Optional fields — populate as work progresses or up front.
+# Field semantics are documented in vault/wiki/_seed/meta/reference/archetype-change.md.
+# scope: src/path/to/files
+# size: small
+# pr_url: null
+# project: <owning-project-id>
+# parent_change: <previous-change-id>
+#
+# Review gate (managed by dev-write-change / dev-review-change skills).
+review_required: true
+review_status: pending
+# Set automatically by dev-write-change / dev-review-change:
+# plan_path: vault/output/.../<slug>-plan.md
+# review_path: vault/output/.../<slug>-review.md
+# plan_generated_at: <ISO>
+# reviewed_at: <ISO>
+---
+
+# {{title}}
+
+## Why
+One paragraph: what's broken, what's missing, or what we're improving — and why it matters.
+
+## Approach
+How you plan to do it. Files touched, key functions, test strategy. Keep it concrete.
+
+## Done when
+- [ ] TODO: concrete item 1
+- [ ] TODO: concrete item 2
+- [ ] PR opened and `pr_url:` updated in this entry's frontmatter
+
+## Notes
+Append observations as work progresses. If a significant choice arises that future-you (or other contributors) should know about, spawn a `[[decision-...]]` entry — capture it as proper architecture knowledge rather than leaving it buried here.

@@ -1,0 +1,46 @@
+---
+id: {{slug}}
+type: research-report
+domain: {{domain}}
+created: {{datetime}}
+updated: {{datetime}}
+tags: []
+source: {{source}}
+private: false
+title: {{title}}
+project: {{project}}
+status: draft
+# Optional fields — populate as work progresses or up front.
+# Field semantics are documented in vault/wiki/_seed/meta/reference/archetype-research-report.md.
+# materials_path: vault/raw/project-research/{{project}}/{{slug}}/
+# last_data_ingest: <ISO>
+# update_count: 0
+# dismissed_triggers: []
+# recommended_changes: [] (single-line JSON array — see archetype docs re: parser limits)
+#
+# Review gate (managed by research-write / research-review / research-revise skills, phase B).
+review_required: true
+review_status: pending
+# Set automatically by the research-* skills:
+# review_path: vault/output/research/reports/{{slug}}-review.md
+# reviewed_at: <ISO>
+# report_generated_at: <ISO>
+# report_revision: 1
+# report_revised_at: <ISO>
+# report_revised_from_review: <path>
+---
+
+# {{title}}
+
+## Why
+One paragraph: the question this report investigates and why it matters.
+
+## Findings
+The structured synthesis of the materials. Subsections as needed — the
+report's body is the most flexible section by design.
+
+## Recommended changes
+- [ ] TODO: summary — links to the matching row in the `recommended_changes` frontmatter array
+
+## Notes
+Open questions, ambiguities, follow-up reading. If a significant decision emerges, spawn a `[[decision-...]]` entry and reference it here.

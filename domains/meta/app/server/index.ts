@@ -1,0 +1,204 @@
+import cors from '@fastify/cors';
+import multipart from '@fastify/multipart';
+import Fastify from 'fastify';
+// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
+import { setAfterInsertHook } from '../../../../scripts/events-db.mjs';
+// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
+import { getEventsAfterId, getMaxEventId } from '../../../../scripts/events-db.mjs';
+// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
+import { sweepOrphanedRuns } from '../../../../scripts/runs-db.mjs';
+import { loadAppEnv } from './load-env.js';
+
+// Load app .env BEFORE importing routes — some route modules read process.env
+// at import time. Per standard-env-config: process.env wins (shell-exported
+// vars stay authoritative); the file populates anything still unset.
+{
+  const result = loadAppEnv();
+  if (result.missing) {
+    console.log(`[env] no .env at ${result.path} — using shell process.env only`);
+  } else {
+    console.log(`[env] loaded ${result.loaded} key(s) from ${result.path}`);
+  }
+}
+
+import { auth } from './auth.js';
+import { dispatchEvent } from './notifications/dispatcher.js';
+import { actionRoutes } from './routes/action.js';
+import { auditRoutes } from './routes/audit.js';
+import {
+  automationRoutes,
+  changeAutomationRoutes,
+  checkMergedChangesAndAdvance,
+} from './routes/automation.js';
+import { changesRoutes } from './routes/changes.js';
+import { commandsRoutes } from './routes/commands.js';
+import { curationRoutes } from './routes/curation.js';
+import { domainsRoutes } from './routes/domains.js';
+import { editRoutes } from './routes/edit.js';
+import { eventsDbRoutes } from './routes/events-db.js';
+import { eventsRoutes } from './routes/events.js';
+import { healthRoutes } from './routes/health.js';
+import { mcpsRoutes } from './routes/mcps.js';
+import { notificationsRoutes } from './routes/notifications.js';
+import { prReviewConfigRoutes } from './routes/pr-review-config.js';
+import { prReviewMetricsRoutes } from './routes/pr-review-metrics.js';
+import { projectsRoutes } from './routes/projects.js';
+import { reposRoutes } from './routes/repos.js';
+import { researchRoutes } from './routes/research.js';
+import { reviewsRoutes } from './routes/reviews.js';
+import { routerLogRoutes } from './routes/router-log.js';
+import { runsRoutes } from './routes/runs.js';
+import { schedulesRoutes } from './routes/schedules.js';
+import { skillsRoutes } from './routes/skills.js';
+import { vaultRoutes } from './routes/vault.js';
+
+// maxParamLength bumped from the find-my-way default of 100. Audit
+// action-item ids are composed `audit:<check-id>:<finding-path>:<msg-hash>`
+// and can comfortably exceed 100 chars when the finding-path is a long
+// catalog key (e.g. `event-catalog:dashboard.notification-rule-test-send`).
+// 512 is generous headroom that still bounds the param size for safety.
+const fastify = Fastify({ logger: { level: 'info' }, maxParamLength: 512 });
+
+await fastify.register(cors);
+await fastify.register(multipart, {
+  limits: {
+    fileSize: 25 * 1024 * 1024, // 25 MB per file
+    files: 20,
+  },
+});
+fastify.addHook('onRequest', auth);
+
+await fastify.register(vaultRoutes, { prefix: '/api/vault' });
+await fastify.register(skillsRoutes, { prefix: '/api/skills' });
+await fastify.register(domainsRoutes, { prefix: '/api/domains' });
+await fastify.register(commandsRoutes, { prefix: '/api/commands' });
+await fastify.register(routerLogRoutes, { prefix: '/api/router-log' });
+await fastify.register(curationRoutes, { prefix: '/api/curation' });
+await fastify.register(schedulesRoutes, { prefix: '/api/schedules' });
+await fastify.register(auditRoutes, { prefix: '/api/audit' });
+await fastify.register(eventsRoutes, { prefix: '/api/events' });
+await fastify.register(eventsDbRoutes, { prefix: '/api/events-db' });
+await fastify.register(projectsRoutes, { prefix: '/api/projects' });
+// Automation endpoints sit under /api/projects/:id/automation/* — registered
+// after projectsRoutes (same prefix) so the route table reflects the URL.
+await fastify.register(automationRoutes, { prefix: '/api/projects' });
+await fastify.register(researchRoutes, { prefix: '/api/research' });
+await fastify.register(changesRoutes, { prefix: '/api/changes' });
+// Per-change automation endpoints — Phase 2. Sit under /api/changes/:id/
+// automation/*. Registered after changesRoutes (same prefix) so route table
+// reflects URL.
+await fastify.register(changeAutomationRoutes, { prefix: '/api/changes' });
+await fastify.register(reviewsRoutes, { prefix: '/api/reviews' });
+await fastify.register(reposRoutes, { prefix: '/api/repos' });
+await fastify.register(prReviewConfigRoutes, { prefix: '/api/pr-review/config' });
+await fastify.register(prReviewMetricsRoutes, { prefix: '/api/pr-review/dashboard-metrics' });
+await fastify.register(mcpsRoutes, { prefix: '/api/mcps' });
+await fastify.register(notificationsRoutes, { prefix: '/api/notifications' });
+await fastify.register(actionRoutes, { prefix: '/api/action' });
+await fastify.register(runsRoutes, { prefix: '/api/runs' });
+await fastify.register(editRoutes, { prefix: '/api/edit' });
+await fastify.register(healthRoutes, { prefix: '/api/health' });
+
+// Orphan sweep — any `runs` row stuck in state='running' from a previous
+// process gets reaped here so the dashboard never strands rows after a
+// server restart. Boot mode also reaps queued-without-PID rows (the prior
+// process died before spawning the child).
+try {
+  const swept = sweepOrphanedRuns('server restart', 'boot');
+  if (swept > 0) console.log(`runs: reaped ${swept} orphaned run(s) from prior process`);
+} catch (e) {
+  console.error('runs orphan sweep failed', e);
+}
+
+// Periodic orphan sweep — catches the in-flight orphan pattern where the
+// child process dies without firing its `close` handler (observed on long
+// EXECUTE runs: JSONL goes silent, the child keeps writing files for a few
+// minutes, then dies; the run row stays state='running' forever). Every
+// 5 min we re-check live runs' PIDs and mark dead ones as failed. Only
+// touches rows with PID set + PID dead (queued/mid-spawn rows are left
+// alone to avoid racing the legitimate spawn).
+const ORPHAN_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+const orphanSweepTimer = setInterval(() => {
+  try {
+    const swept = sweepOrphanedRuns('orphan-sweep: PID not alive', 'periodic');
+    if (swept > 0) {
+      console.log(`runs: reaped ${swept} orphaned run(s) (periodic sweep)`);
+    }
+  } catch (e) {
+    console.error('periodic orphan sweep failed', e);
+  }
+}, ORPHAN_SWEEP_INTERVAL_MS);
+// Don't let the sweep timer keep the process alive on shutdown.
+orphanSweepTimer.unref();
+
+// Project automation merge watcher (Phase 1.5+1). The orchestrator parks
+// at the `merge` step after dev-pr-review approves because the actual PR
+// merge happens outside our skill-dispatch surface. This timer polls every
+// 60s and ticks any parked automation whose current_change has reached
+// `status: merged`. Runs once at startup too, so server restarts don't miss
+// merges that landed while we were down.
+const MERGE_WATCHER_INTERVAL_MS = 60 * 1000;
+checkMergedChangesAndAdvance().catch((e) => console.error('merge watcher startup run failed', e));
+const mergeWatcherTimer = setInterval(() => {
+  void checkMergedChangesAndAdvance().catch((e) => console.error('merge watcher tick failed', e));
+}, MERGE_WATCHER_INTERVAL_MS);
+mergeWatcherTimer.unref();
+
+// Notification dispatcher — fired off the events-db write path via
+// setImmediate inside recordEvent, so this handler runs after the row is
+// visible. Swallow + log: the hook's caller re-catches, but dispatcher
+// errors are actionable and belong in dashboard logs.
+//
+// CAVEAT: this hook only fires for events recorded IN-PROCESS (test-sends from
+// the dashboard, server-side helpers). External writers like
+// `record-dashboard-action.mjs` (invoked by every skill) are separate Node
+// processes with no hook registered — they insert events.db rows directly,
+// bypassing this callback. The poller below closes that gap.
+setAfterInsertHook((row: unknown) => {
+  dispatchEvent(row as Parameters<typeof dispatchEvent>[0]).catch((err) =>
+    console.error('notifications/dispatcher: dispatch failed', err),
+  );
+});
+
+// Cross-process notification dispatcher poller. Skills + scripts invoke
+// `record-dashboard-action.mjs` (separate Node process) to write events.db
+// rows — those inserts don't trigger setAfterInsertHook in THIS process.
+// Poll the events table every 10s for new rows since the last seen id and
+// feed each through the same dispatchEvent path. Initialized to the current
+// MAX(id) at startup so rows recorded BEFORE the server started don't get
+// re-dispatched (they had their chance at original write time).
+const NOTIFICATION_POLL_INTERVAL_MS = 10 * 1000;
+let lastDispatchedEventId: number = (() => {
+  try {
+    return getMaxEventId();
+  } catch (e) {
+    console.error('notifications/poll: getMaxEventId failed at startup', e);
+    return 0;
+  }
+})();
+const notificationPollTimer = setInterval(() => {
+  try {
+    const rows = getEventsAfterId(lastDispatchedEventId, 200);
+    if (rows.length === 0) return;
+    // Advance high-water mark BEFORE dispatching so a slow dispatch doesn't
+    // cause re-dispatch on the next tick. dispatchEvent is best-effort and
+    // self-logs its own errors; we don't want to re-fire the same row.
+    lastDispatchedEventId = rows[rows.length - 1].id;
+    for (const row of rows) {
+      // Skip notification-kind events to avoid loops — same guard the
+      // in-process hook relies on. dispatchEvent re-checks this too, but
+      // doing it here is cheap and reduces noise.
+      if (row.kind === 'notification') continue;
+      dispatchEvent(row as Parameters<typeof dispatchEvent>[0]).catch((err) =>
+        console.error(`notifications/poll: dispatch failed for event ${row.id}`, err),
+      );
+    }
+  } catch (err) {
+    console.error('notifications/poll: tick failed', err);
+  }
+}, NOTIFICATION_POLL_INTERVAL_MS);
+notificationPollTimer.unref();
+
+const port = Number(process.env.PORT) || 5174;
+await fastify.listen({ port, host: '127.0.0.1' });
+console.log(`Agentic OS dashboard api on http://127.0.0.1:${port}`);

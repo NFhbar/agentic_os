@@ -1,0 +1,17 @@
+import Fastify from 'fastify';
+import cors from '@fastify/cors';
+import { auth } from './auth.js';
+import { vaultRoutes } from './routes/vault.js';
+import { actionRoutes } from './routes/action.js';
+
+const fastify = Fastify({ logger: { level: 'info' } });
+
+await fastify.register(cors);
+fastify.addHook('onRequest', auth);
+
+await fastify.register(vaultRoutes, { prefix: '/api/vault' });
+await fastify.register(actionRoutes, { prefix: '/api/action' });
+
+const port = Number(process.env.PORT) || 5174;
+await fastify.listen({ port, host: '127.0.0.1' });
+console.log(`{{display_name}} api listening on http://127.0.0.1:${port}`);

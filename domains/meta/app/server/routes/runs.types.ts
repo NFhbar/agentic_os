@@ -1,0 +1,79 @@
+// Wire-shape types for the runs route. Per standard-shared-types — the
+// server (`runs.ts`) and the client (`src/lib/runs.ts`) consume the same
+// data shape; this is the canonical definition.
+//
+// Convention: this file holds ONLY type defs. No node:* imports, no
+// runtime values. Anything stateful belongs in the sibling `runs.ts` (or
+// `scripts/runs-db.mjs` for storage).
+
+export type RunState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+
+// Attribution tags written at start-time. Used for change/project/repo
+// filtering in the Processes view + cost rollups on the change/project
+// detail pages. Both server (storage column names) and client (input
+// shape for startRun) use the same field names.
+export interface RunTags {
+  skill?: string | null;
+  change_id?: string | null;
+  project?: string | null;
+  repo?: string | null;
+  domain?: string | null;
+}
+
+// One row from runs-db. The server's internal RunRow + the client's
+// RunRecord are byte-equivalent — this is the unified canonical shape.
+export interface RunRecord {
+  id: string;
+  started_at: string;
+  ended_at: string | null;
+  state: RunState;
+  exit_status: number | null;
+  pid: number | null;
+  skill: string | null;
+  change_id: string | null;
+  project: string | null;
+  repo: string | null;
+  domain: string | null;
+  title: string | null;
+  prompt: string;
+  output_path: string;
+  duration_ms: number | null;
+  error: string | null;
+  // Cost/model observability stamped at finishRun time from the
+  // stream-json `result` event the subprocess emits on exit.
+  cost_usd: number | null;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  tokens_cache_hit: number | null;
+  tokens_cache_write: number | null;
+  model: string | null;
+}
+
+// Filter passed to GET /api/runs. Client + server share the shape.
+export interface RunFilter {
+  state?: RunState;
+  skill?: string;
+  change_id?: string;
+  project?: string;
+  repo?: string;
+  domain?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+}
+
+// Input to startRun() (the cross-route helper exported from runs.ts).
+export interface StartRunInput {
+  prompt: string;
+  title?: string | null;
+  tags?: RunTags;
+}
+
+// Result of startRun(). Server uses a discriminated union (ok: boolean +
+// payload). Client currently parses this into an optional-field shape;
+// that divergence is a known gap — unify on the server's discriminated
+// shape in a follow-up that updates the client's parse path.
+export type StartRunResult =
+  | { ok: true; run_id: string }
+  | { ok: false; error: 'blocked'; blocking: { run_id: string; skill: string | null } }
+  | { ok: false; error: string };

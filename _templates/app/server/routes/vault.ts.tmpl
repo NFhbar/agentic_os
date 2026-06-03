@@ -1,0 +1,41 @@
+import type { FastifyPluginAsync } from 'fastify';
+import { readdir, readFile, writeFile } from 'node:fs/promises';
+import { resolve, join } from 'node:path';
+
+// Repo root is five levels up: domains/<domain>/<app>/server/routes → repo
+const REPO_ROOT = resolve(import.meta.dirname, '../../../../..');
+
+function safePath(rel: string): string {
+  const abs = resolve(REPO_ROOT, rel);
+  if (!abs.startsWith(REPO_ROOT)) throw new Error('path escapes repo root');
+  return abs;
+}
+
+export const vaultRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.get('/output/:domain', async (req) => {
+    const { domain } = req.params as { domain: string };
+    const dir = join(REPO_ROOT, 'vault', 'output', domain);
+    try {
+      const files = await readdir(dir, { recursive: true, withFileTypes: true });
+      return files
+        .filter((f) => f.isFile())
+        .map((f) => join(f.parentPath ?? '', f.name));
+    } catch {
+      return [];
+    }
+  });
+
+  fastify.get('/entry', async (req) => {
+    const { path } = req.query as { path: string };
+    const abs = safePath(path);
+    const content = await readFile(abs, 'utf8');
+    return { path, content };
+  });
+
+  fastify.post<{ Body: { path: string; content: string } }>('/entry', async (req) => {
+    const { path, content } = req.body;
+    const abs = safePath(path);
+    await writeFile(abs, content, 'utf8');
+    return { ok: true };
+  });
+};

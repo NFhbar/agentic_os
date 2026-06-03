@@ -1,0 +1,22 @@
+# {{display_name}}
+
+App for the `{{domain}}` domain.
+
+## Run
+
+```bash
+npm install
+npm run dev
+```
+
+- Frontend: <http://localhost:5173>
+- API:      <http://localhost:5174>
+
+## Architecture
+
+- **Frontend**: Vite + React. Reads vault via `/api/vault/*`.
+- **Backend**: Fastify on 5174, proxied by Vite at `/api/*`.
+- **AI actions**: POST `/api/action` shells out to the `claude` CLI and streams output back over SSE.
+- **Auth**: no-op middleware in `server/auth.ts` — replace with a token check when exposing via tunnel.
+
+See `domains/meta/playbook.md` for the OS app standard this conforms to.

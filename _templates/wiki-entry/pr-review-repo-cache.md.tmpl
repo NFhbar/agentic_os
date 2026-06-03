@@ -1,0 +1,40 @@
+---
+id: {{slug}}
+type: pr-review-repo-cache
+domain: {{domain}}
+created: {{datetime}}
+updated: {{datetime}}
+tags: [cache, review]
+source: {{source}}
+private: false
+title: 'Repo cache: {{owner}}/{{repo}}'
+owner: {{owner}}
+repo: {{repo}}
+default_branch: {{default_branch}}
+local_path: {{local_path}}
+clone_url: {{clone_url}}
+status: ready
+last_pulled: {{datetime}}
+head_sha: {{head_sha}}
+files_count: {{files_count}}
+size_bytes: {{size_bytes}}
+build_system: {{build_system}}
+type_system: {{type_system}}
+test_pattern: {{test_pattern}}
+deps_count: {{deps_count}}
+has_readme: {{has_readme}}
+has_contributing: {{has_contributing}}
+has_changelog: {{has_changelog}}
+languages:
+{{languages_yaml}}
+---
+
+# Repo cache: {{owner}}/{{repo}}
+
+## Purpose
+Read-only shallow clone of `{{default_branch}}` for [[dev-pr-review]] to consult when reviewing PRs against this repo. Never written to; refreshed via `git fetch + reset --hard` by [[dev-cache-pr-review-repo]].
+
+The Stage 1 heuristic fields above (`build_system`, `type_system`, `test_pattern`, `languages`, etc.) are refreshed on every pull. For Stage 2 prose knowledge (overview, conventions, deps detail), see the companion [[{{knowledge_id}}]] entry.
+
+## Refresh history
+- {{datetime}}: clone (initial)

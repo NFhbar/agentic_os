@@ -1,0 +1,422 @@
+// Runs store helper — write/read API for the `runs` table in events.db plus
+// the on-disk JSONL output files at .claude/state/runs/<id>.jsonl.
+//
+// Design mirrors events-db.mjs:
+// - Lazy DB connection, kept alive for process lifetime
+// - Best-effort writes (telemetry must not break the action)
+// - One open WriteStream per active run, cached so we don't reopen per chunk
+//
+// Output JSONL format: one line per chunk, each line is
+//   { ts, kind: 'stdout' | 'stderr' | 'meta' | 'done', data?, exit_status? }
+
+import { createWriteStream, existsSync, mkdirSync, statSync, unlinkSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { DEFAULT_DB_PATH, initDb } from './events-db-init.mjs';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = join(__dirname, '..');
+const RUNS_DIR = join(REPO_ROOT, '.claude', 'state', 'runs');
+
+export const DEFAULT_RUNS_DIR = RUNS_DIR;
+
+let _db = null;
+function getDb() {
+  if (_db) return _db;
+  _db = initDb(DEFAULT_DB_PATH);
+  return _db;
+}
+
+export function closeDb() {
+  if (_db) {
+    try {
+      _db.close();
+    } catch {}
+    _db = null;
+  }
+}
+
+// Cached WriteStreams keyed by run id. Closed in finishRun().
+const _streams = new Map();
+// Running byte tallies — equal to the size of the JSONL file. Lets the
+// stream route snapshot a precise replay offset without an fs.stat() call.
+const _bytesWritten = new Map();
+
+function ensureRunsDir() {
+  mkdirSync(RUNS_DIR, { recursive: true });
+}
+
+export function outputPathFor(runId) {
+  return join(RUNS_DIR, `${runId}.jsonl`);
+}
+
+function getStream(runId, outputPath) {
+  let s = _streams.get(runId);
+  if (s) return s;
+  ensureRunsDir();
+  s = createWriteStream(outputPath, { flags: 'a' });
+  _streams.set(runId, s);
+  if (!_bytesWritten.has(runId)) {
+    try {
+      const sz = existsSync(outputPath) ? statSync(outputPath).size : 0;
+      _bytesWritten.set(runId, sz);
+    } catch {
+      _bytesWritten.set(runId, 0);
+    }
+  }
+  return s;
+}
+
+const INSERT_SQL = `
+INSERT INTO runs (
+  id, started_at, state, pid, skill, change_id, project, repo, domain,
+  title, prompt, output_path
+) VALUES (
+  @id, @started_at, @state, @pid, @skill, @change_id, @project, @repo, @domain,
+  @title, @prompt, @output_path
+)`;
+
+let _insertStmt = null;
+function getInsertStmt() {
+  if (_insertStmt) return _insertStmt;
+  _insertStmt = getDb().prepare(INSERT_SQL);
+  return _insertStmt;
+}
+
+/**
+ * Insert a row in state='queued'. Returns { run_id } on success, { error } on
+ * failure (does not throw — telemetry must not break the action).
+ */
+export function createRun(payload) {
+  try {
+    const id = payload.id;
+    if (!id) throw new Error('createRun: id is required');
+    const row = {
+      id,
+      started_at: payload.started_at ?? new Date().toISOString(),
+      state: payload.state ?? 'queued',
+      pid: payload.pid ?? null,
+      skill: payload.skill ?? null,
+      change_id: payload.change_id ?? null,
+      project: payload.project ?? null,
+      repo: payload.repo ?? null,
+      domain: payload.domain ?? null,
+      title: payload.title ?? null,
+      prompt: payload.prompt ?? '',
+      output_path: payload.output_path ?? outputPathFor(id),
+    };
+    getInsertStmt().run(row);
+    return { run_id: id };
+  } catch (e) {
+    try {
+      process.stderr.write(`createRun error: ${e.message}\n`);
+    } catch {}
+    return { error: e.message };
+  }
+}
+
+export function markRunning(id, pid) {
+  try {
+    getDb()
+      .prepare(`UPDATE runs SET state='running', pid=@pid WHERE id=@id`)
+      .run({ id, pid });
+  } catch (e) {
+    try {
+      process.stderr.write(`markRunning error: ${e.message}\n`);
+    } catch {}
+  }
+}
+
+/**
+ * Append one JSONL line for a chunk. Returns { offset, length } — `offset` is
+ * the byte position at which the line started in the file (before write),
+ * `length` is the byte length of the line. Callers can use offset+length for
+ * late-joiner replay slicing.
+ */
+export function appendChunk(id, kind, data) {
+  try {
+    const outputPath = outputPathFor(id);
+    const stream = getStream(id, outputPath);
+    const line = JSON.stringify({ ts: new Date().toISOString(), kind, data }) + '\n';
+    const buf = Buffer.from(line, 'utf8');
+    const offset = _bytesWritten.get(id) ?? 0;
+    stream.write(buf);
+    _bytesWritten.set(id, offset + buf.byteLength);
+    return { offset, length: buf.byteLength };
+  } catch (e) {
+    try {
+      process.stderr.write(`appendChunk error: ${e.message}\n`);
+    } catch {}
+    return { error: e.message };
+  }
+}
+
+/** Bytes written so far for a run (matches the JSONL file size). */
+export function bytesWritten(id) {
+  return _bytesWritten.get(id) ?? 0;
+}
+
+const FINISH_SQL = `
+UPDATE runs
+   SET state = @state,
+       exit_status = @exit_status,
+       ended_at = @ended_at,
+       duration_ms = @duration_ms,
+       error = @error,
+       cost_usd = @cost_usd,
+       tokens_in = @tokens_in,
+       tokens_out = @tokens_out,
+       tokens_cache_hit = @tokens_cache_hit,
+       tokens_cache_write = @tokens_cache_write,
+       model = @model,
+       pid = NULL
+ WHERE id = @id`;
+
+let _finishStmt = null;
+function getFinishStmt() {
+  if (_finishStmt) return _finishStmt;
+  _finishStmt = getDb().prepare(FINISH_SQL);
+  return _finishStmt;
+}
+
+export function finishRun(
+  id,
+  {
+    state,
+    exit_status = null,
+    duration_ms = null,
+    error = null,
+    cost_usd = null,
+    tokens_in = null,
+    tokens_out = null,
+    tokens_cache_hit = null,
+    tokens_cache_write = null,
+    model = null,
+  },
+) {
+  try {
+    // Append the terminal marker line so late joiners reading from disk see it.
+    const outputPath = outputPathFor(id);
+    const stream = getStream(id, outputPath);
+    const line =
+      JSON.stringify({ ts: new Date().toISOString(), kind: 'done', exit_status }) + '\n';
+    const buf = Buffer.from(line, 'utf8');
+    const offset = _bytesWritten.get(id) ?? 0;
+    stream.write(buf);
+    _bytesWritten.set(id, offset + buf.byteLength);
+
+    getFinishStmt().run({
+      id,
+      state,
+      exit_status,
+      ended_at: new Date().toISOString(),
+      duration_ms,
+      error,
+      cost_usd,
+      tokens_in,
+      tokens_out,
+      tokens_cache_hit,
+      tokens_cache_write,
+      model,
+    });
+
+    // Close the stream — no more writes expected.
+    stream.end();
+    _streams.delete(id);
+  } catch (e) {
+    try {
+      process.stderr.write(`finishRun error: ${e.message}\n`);
+    } catch {}
+  }
+}
+
+export function getRun(id) {
+  try {
+    return getDb().prepare('SELECT * FROM runs WHERE id = ?').get(id) ?? null;
+  } catch (e) {
+    try {
+      process.stderr.write(`getRun error: ${e.message}\n`);
+    } catch {}
+    return null;
+  }
+}
+
+const FILTER_KEYS = ['state', 'skill', 'change_id', 'project', 'repo', 'domain'];
+
+export function listRuns(filter = {}) {
+  try {
+    const where = [];
+    const params = {};
+    for (const key of FILTER_KEYS) {
+      if (filter[key] != null) {
+        where.push(`${key} = @${key}`);
+        params[key] = filter[key];
+      }
+    }
+    if (filter.since != null) {
+      where.push('started_at >= @since');
+      params.since = filter.since;
+    }
+    if (filter.until != null) {
+      where.push('started_at <= @until');
+      params.until = filter.until;
+    }
+    const limit = Math.min(Math.max(parseInt(filter.limit ?? 200, 10) || 200, 1), 5000);
+    const sql = `
+      SELECT * FROM runs
+      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      ORDER BY started_at DESC
+      LIMIT ${limit}
+    `;
+    return getDb().prepare(sql).all(params);
+  } catch (e) {
+    try {
+      process.stderr.write(`listRuns error: ${e.message}\n`);
+    } catch {}
+    return [];
+  }
+}
+
+export function countRuns(filter = {}) {
+  try {
+    const where = [];
+    const params = {};
+    for (const key of FILTER_KEYS) {
+      if (filter[key] != null) {
+        where.push(`${key} = @${key}`);
+        params[key] = filter[key];
+      }
+    }
+    const sql = `SELECT count(*) AS n FROM runs ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`;
+    const row = getDb().prepare(sql).get(params);
+    return row?.n ?? 0;
+  } catch (e) {
+    try {
+      process.stderr.write(`countRuns error: ${e.message}\n`);
+    } catch {}
+    return 0;
+  }
+}
+
+export function getActiveRunForChange(change_id) {
+  try {
+    return (
+      getDb()
+        .prepare(
+          `SELECT id, skill FROM runs
+            WHERE change_id = ? AND state IN ('queued','running')
+            ORDER BY started_at DESC
+            LIMIT 1`,
+        )
+        .get(change_id) ?? null
+    );
+  } catch {
+    return null;
+  }
+}
+
+export function countRunningRuns() {
+  try {
+    const row = getDb()
+      .prepare(`SELECT count(*) AS n FROM runs WHERE state='running'`)
+      .get();
+    return row?.n ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Evict completed runs beyond the cap. Never evicts queued/running. Returns
+ * the evicted ids (caller is responsible for unlinking their JSONL files).
+ */
+export function evictBeyondCap(cap = 200) {
+  try {
+    const db = getDb();
+    const evict = db.prepare(`
+      SELECT id, output_path FROM runs
+       WHERE id NOT IN (SELECT id FROM runs ORDER BY started_at DESC LIMIT @cap)
+         AND state NOT IN ('queued','running')
+    `);
+    const rows = evict.all({ cap });
+    if (rows.length === 0) return [];
+    const stmt = db.prepare('DELETE FROM runs WHERE id = ?');
+    for (const r of rows) stmt.run(r.id);
+    return rows;
+  } catch (e) {
+    try {
+      process.stderr.write(`evictBeyondCap error: ${e.message}\n`);
+    } catch {}
+    return [];
+  }
+}
+
+/** Best-effort unlink for evicted JSONL files. */
+export function unlinkOutput(outputPath) {
+  try {
+    unlinkSync(outputPath);
+  } catch {
+    /* ENOENT or permission issue — best-effort */
+  }
+}
+
+/**
+ * Mark any runs in state='running' whose pid is no longer alive as failed.
+ * Called on server boot — handles the "server restarted mid-run" case so
+ * stale rows don't linger.
+ */
+// Sweep runs stuck in `state: running` whose child process is no longer
+// alive. Called on server boot (reason: 'server restart' — every running row
+// is orphaned because the prior process is gone, including queued rows that
+// never spawned a child) AND from a periodic interval (reason describes the
+// in-flight orphan pattern — child died without firing close handler).
+//
+// `mode` controls how queued-without-PID rows are treated:
+//   - 'boot' — sweep them (default; matches prior behavior).
+//   - 'periodic' — leave them (a queued row mid-spawn has no PID for a few
+//     ms; killing it would race with the legitimate spawn that's about to
+//     land). Periodic sweep only acts on rows with PID set + PID dead.
+//
+// `reason` is written into the run row's `error` column so post-mortem
+// debugging can distinguish boot orphans from periodic ones.
+export function sweepOrphanedRuns(reason = 'server restart', mode = 'boot') {
+  try {
+    const rows = getDb()
+      .prepare(`SELECT id, pid, started_at FROM runs WHERE state='running'`)
+      .all();
+    let swept = 0;
+    for (const r of rows) {
+      let alive = false;
+      if (r.pid) {
+        try {
+          process.kill(r.pid, 0);
+          alive = true;
+        } catch {
+          alive = false;
+        }
+      }
+      if (mode === 'periodic' && !r.pid) {
+        // Queued / mid-spawn — leave for next sweep.
+        continue;
+      }
+      if (!alive) {
+        const startedMs = r.started_at ? new Date(r.started_at).getTime() : null;
+        const durationMs =
+          startedMs && Number.isFinite(startedMs) ? Date.now() - startedMs : null;
+        finishRun(r.id, {
+          state: 'failed',
+          exit_status: null,
+          duration_ms: durationMs,
+          error: reason,
+        });
+        swept += 1;
+      }
+    }
+    return swept;
+  } catch (e) {
+    try {
+      process.stderr.write(`sweepOrphanedRuns error: ${e.message}\n`);
+    } catch {}
+    return 0;
+  }
+}

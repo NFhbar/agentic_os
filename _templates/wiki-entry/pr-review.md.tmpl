@@ -1,0 +1,56 @@
+---
+id: {{slug}}
+type: pr-review
+domain: {{domain}}
+created: {{datetime}}
+updated: {{datetime}}
+tags: [review]
+source: {{source}}
+private: false
+title: {{title}}
+pr_url: {{pr_url}}
+pr_number: {{pr_number}}
+repo: {{repo}}
+# Optional — set when this review is for an OS-tracked change. The skill
+# auto-fills this when it can find a change with matching pr_url.
+# change_id: <change-slug>
+pr_author: {{pr_author}}
+branch: {{branch}}
+base: {{base}}
+status: completed
+result: {{result}}
+started: {{started}}
+completed: {{completed}}
+pass_count: 1
+files_changed: {{files_changed}}
+additions: {{additions}}
+deletions: {{deletions}}
+commits: {{commits}}
+config:
+  primary_model: {{model}}
+  comment_style: {{comment_style}}
+  focus_areas: [{{focus_areas}}]
+  context_strategy: full-diff
+  custom_instructions_hash: {{custom_instructions_hash}}
+---
+
+# {{title}}
+
+## Summary
+{{summary}}
+
+## Pass 1 — {{started}}
+
+### Pass config
+- model: {{model}}
+- focus areas: {{focus_areas}}
+- style: {{comment_style}}
+
+### Comments
+
+{{comments}}
+
+### Stats
+- files: {{files_changed}}
+- +{{additions}} / -{{deletions}}
+- commits: {{commits}}

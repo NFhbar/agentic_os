@@ -1,0 +1,17 @@
+import React from 'react';
+
+export function App() {
+  return (
+    <main style={{ padding: 16, fontFamily: 'system-ui', maxWidth: 800 }}>
+      <h1>{{display_name}}</h1>
+      <p>
+        App scaffold for the <code>{{domain}}</code> domain. Edit{' '}
+        <code>src/App.tsx</code> to build your views.
+      </p>
+      <p>
+        The backend serves vault data at <code>/api/vault/*</code> and AI
+        actions at <code>/api/action</code>.
+      </p>
+    </main>
+  );
+}

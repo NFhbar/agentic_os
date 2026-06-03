@@ -1,0 +1,386 @@
+---
+name: dev-pr-review
+description: 'Review a pull request — read the diff, produce categorized comments, write a structured pr-review archetype entry to the vault. Supports multi-pass review: re-running on the same PR appends a new pass.'
+user-invocable: true
+version: 2
+domain: development
+tags: [review, pr, github, mcp, archetype, lifecycle]
+inputs:
+  pr:
+    type: string
+    required: true
+    description: 'PR identifier — URL (https://github.com/owner/repo/pull/N) or shorthand (owner/repo#N)'
+  change:
+    type: string
+    required: false
+    pattern: '^[a-z0-9][a-z0-9-]*$'
+    description: 'Optional change id to link this review to. If omitted, the skill searches the vault for a change with matching pr_url.'
+  pass_kind:
+    type: string
+    required: false
+    default: auto
+    description: '"new" (force new entry, error if one exists), "continuation" (force new pass on existing entry), or "auto" (detect by file existence — recommended)'
+  focus_notes:
+    type: string
+    required: false
+    description: 'Free-text guidance to inject into the analysis prompt — used by the dashboard''s Re-analyze flow to target a specific concern (e.g. "focus on the auth handler", "ignore style nits, look for race conditions"). Appended to CUSTOM INSTRUCTIONS in the review prompt without replacing the config-level custom_instructions.'
+outputs:
+  - kind: file
+    path: 'vault/wiki/<domain>/pr-review/pr-review-<owner>-<repo>-<n>.md'
+  - kind: event
+    path: '.claude/state/events.db (kind: dashboard, action: pr-review, change_id: <change?>, files_touched: [vault/wiki/.../pr-review-*.md])'
+spawns: []
+---
+
+# dev-pr-review
+
+## Purpose
+
+Run a structured review against a pull request and persist the result as a [[archetype-pr-review]] entry in the vault. Each invocation produces one **pass** — a single review snapshot. Re-running the skill on the same PR after new commits land appends a new pass to the existing entry, with `prior:` links so the UI can diff resolved/new/unresolved comments across passes.
+
+The review is a **single-model, single-call** review: one prompt that asks the model to consider the PR across all configured `focus_areas` and tag each comment with its category. This intentionally collapses the multi-agent fan-out pattern into one model call — see [[archetype-pr-review]] § Comments for the rationale.
+
+## When to use
+
+- Right after [[dev-open-pr]] opens a PR for an OS-tracked change (the natural follow-up)
+- When you want a review of an external PR (paste a URL into the dashboard's PR Review app)
+- When the PR you reviewed has new commits and you want a fresh pass
+
+## When NOT to use
+
+- The PR has no commits / is empty — the skill will report nothing useful
+- You want to write code in response to review comments — that's `dev-address-comments` (planned)
+- You want to publish the review back to GitHub as inline comments — that's `dev-pr-review-publish` (planned)
+
+## Prerequisites
+
+- `github` MCP configured + authenticated. Verify via:
+
+  ```bash
+  node scripts/check-mcp.mjs github
+  ```
+
+- `gh` CLI installed and authenticated (`gh auth status`). The skill uses `gh pr diff` until the github MCP gains `get_pull_request_diff` (Phase 2 work).
+- `git` CLI on PATH (used by [[dev-cache-pr-review-repo]], invoked as a sub-step to maintain a read-only shallow clone of the PR's base branch for code context).
+- [[reference-pr-review-config]] exists at `vault/wiki/development/reference/reference-pr-review-config.md` — ships in `_seed/` so this is satisfied by default.
+- For OS-tracked PRs: the change entry's `pr_url` matches the `pr` input (the skill auto-links).
+- For external PRs: ideally the repo is ingested as a `[[archetype-entity]]` with `kind: repo`. If not, the skill stores the GitHub `<owner>/<repo>` reference without an entity link.
+
+## Procedure
+
+1. **Pre-flight: verify the github MCP.** Run:
+
+   ```bash
+   node scripts/check-mcp.mjs github --json
+   ```
+
+   If exit code is non-zero, surface the script's `hint` field verbatim and stop.
+
+2. **Parse the `pr` input.** Accept two forms:
+   - URL: `https://github.com/<owner>/<repo>/pull/<n>`
+   - Shorthand: `<owner>/<repo>#<n>`
+
+   Extract `owner`, `repo`, `n` (integer). Compute canonical URL: `https://github.com/<owner>/<repo>/pull/<n>`. Reject malformed input with: `Invalid pr identifier: <input>. Expected URL or owner/repo#N shorthand.`
+
+3. **Compute the pr-review id**: `pr-review-<owner>-<repo>-<n>` (lowercase, kebab). The file lives at `vault/wiki/development/pr-review/<id>.md`.
+
+4. **Determine pass kind** based on file existence at the path from step 3:
+   - File missing + `inputs.pass_kind` in `{auto, new}` → this is a **new review** (Pass 1)
+   - File exists + `inputs.pass_kind` in `{auto, continuation}` → this is a **continuation** (Pass N+1 where N is current `pass_count`)
+   - File missing + `inputs.pass_kind == continuation` → reject with: `No prior pr-review entry exists for <pr_url>. Run with pass_kind=new (or auto) for the first pass.`
+   - File exists + `inputs.pass_kind == new` → reject with: `pr-review entry already exists at <path>. Use pass_kind=continuation (or auto) to append a pass, or delete the entry first.`
+
+5. **Resolve `change_id` link** (sets the `change_id:` frontmatter field):
+   - If `inputs.change` is set, use it directly (do NOT verify — surface as-is).
+   - Else, search `vault/wiki/*/change/*.md` for an entry with `pr_url == <canonical pr_url from step 2>`. If exactly one matches, capture its `id`. If zero matches, leave `change_id` unset (external PR). If more than one matches, log a warning to the report ("multiple changes claim this PR"), pick the most recently `updated`, and continue.
+
+6. **Resolve `repo` entity id** (sets the `repo:` frontmatter field):
+   - If `change_id` is set, use that change's `repo` field.
+   - Else, search `vault/wiki/*/entity/*.md` for `kind: repo` entities whose `remote_url` parses to `<owner>/<repo>`. If found, use that entity's id.
+   - Else, set `repo: '<owner>/<repo>'` (raw string, no entity link). The audit will surface this as a "repo not ingested" suggestion.
+
+7. **Load config** from `vault/wiki/development/reference/reference-pr-review-config.md`. Parse frontmatter; capture:
+   - `primary_model`
+   - `comment_style`
+   - `focus_areas` (list)
+   - `context_strategy` (v1: must be `full-diff`; reject anything else with a "not yet supported in v1" message)
+   - `custom_instructions` (string; may be empty)
+
+   Compute `custom_instructions_hash`: if empty/null → `null`. Else `sha256(custom_instructions)`, first 12 hex chars. Implementation:
+
+   ```bash
+   echo -n "$instructions" | shasum -a 256 | cut -c1-12
+   ```
+
+8. **Fetch PR metadata** via the github MCP's `get_pull_request` tool:
+
+   ```json
+   {"owner": "<owner>", "repo": "<repo>", "pullNumber": <n>}
+   ```
+
+   Capture: `title`, `body`, `user.login` (author), `head.ref` (branch), `base.ref` (base), `additions`, `deletions`, `changed_files`, `commits`, `merged`, `state`.
+
+   If the call fails with auth errors → surface `Run mcps/github/.env setup — see decision-github-mcp-custom-not-hosted.md` and stop.
+
+9. **Fetch the diff** via Bash:
+
+   ```bash
+   gh pr diff <canonical_pr_url>
+   ```
+
+   Capture stdout as `diff_text`. If `gh` is not authenticated, surface: `gh CLI not authenticated. Run \`gh auth login\` and re-run.`and stop. If the diff is empty (no-op PR), surface:`PR has no diff — nothing to review.` and stop without writing.
+
+10. **Ensure the repo cache is fresh + load repo knowledge.** Two sub-steps:
+
+    **a. Cache pull.** Invoke [[dev-cache-pr-review-repo]] with `pr: <canonical_pr_url>`. The sub-skill owns its own staleness gate (5 min default), so back-to-back reviews of multiple PRs on the same repo don't trigger redundant fetches. On the first-ever clone, that skill ALSO auto-triggers [[dev-analyze-repo-for-review]] to produce the repo-knowledge entry.
+
+    On success, capture `cache_path = .claude/state/pr-review-cache/<owner>/<repo>` for use in step 11's analysis.
+
+    **On cache failure** (network, auth to a private repo, git not installed), DO NOT abort the parent review — log a warning in the final report and proceed with `cache_path = null` and `knowledge_path = null`. The review will be **diff-only**, which is degraded but still useful. A degraded review beats no review when the cache is briefly broken.
+
+    **b. Load repo knowledge.** Compute `knowledge_id = repo-knowledge-<owner>-<repo>` (lowercase, kebab). Check for `vault/wiki/development/repo-knowledge/<knowledge_id>.md`:
+    - If present + `status: ready`: capture `knowledge_path` for step 11. Read it once into the model's context.
+    - If present + `status: error` or `status: analyzing`: skip (treat as missing); flag in final report.
+    - If absent: leave `knowledge_path = null`. Flag in final report: "no repo knowledge — convention judgments may be generic; consider /os analyze repo <owner>/<repo>".
+
+    Knowledge absence is **not an error** — first reviews on a freshly-added external repo may race the analyze skill. The review proceeds against diff + cache files, just without prose conventions to guide it.
+
+11. **Run the review.** Compose a prompt to yourself (the model running this skill) with this structure. **The skeleton below is the contract; the knobs come from config.**
+
+    ```
+    You are reviewing the pull request below. Produce a list of review comments.
+
+    REPO: <owner>/<repo>
+    PR: #<n> — <title>
+    AUTHOR: <pr_author>
+    BRANCH: <head> → <base>
+
+    PR DESCRIPTION:
+    <pr_body>
+
+    DIFF:
+    <diff_text>
+
+    CODE CONTEXT:
+    - Raw clone at <cache_path> (or "(unavailable — diff-only review)" if step 10a failed). Read tool works on any file under it. Do NOT edit anything there — read-only by contract.
+    - Repo knowledge at <knowledge_path> (or "(none — generic-judgment review)" if absent). Read this FIRST, before forming opinions on style, conventions, error handling, or testing patterns. It describes how THIS REPO does things — review by those standards, not generic best practices.
+    When a convention is documented in the knowledge entry, prefer the repo's convention over your defaults. When the knowledge entry is silent on a topic, fall back to general principles + what you see in the cache.
+
+    FOCUS AREAS: <comma-joined focus_areas from config>
+    COMMENT STYLE: <comment_style from config>
+    CUSTOM INSTRUCTIONS:
+    <custom_instructions from config — included verbatim if non-empty, else "(none)">
+    <if inputs.focus_notes is set: append a second line block:
+        "Focus for this pass: <inputs.focus_notes>"
+     — this overrides nothing in the config; it's additional targeted guidance
+     supplied via the Re-analyze flow. If unset, omit this line entirely.>
+
+    Output requirements:
+    1. Produce zero or more comments. A clean PR with no concerns is a valid review — output zero comments and a Summary saying so.
+    2. Each comment carries:
+       - category: ONE of <focus_areas>
+       - severity: ONE of nit | suggestion | bug | blocker
+       - file: the path relative to the repo root (or null for PR-level comments)
+       - line: integer line number in the new file, OR a range like "42-58", OR null for file-level / PR-level
+       - body: the comment text. Respect the COMMENT STYLE knob.
+    3. Suggest a `result` for the review overall: one of approved | request-changes | comment | none
+       - approved: no blockers, optional suggestions only
+       - request-changes: at least one blocker or bug-severity comment
+       - comment: observations only, no action requested
+       - none: zero comments produced
+    ```
+
+    Do the analysis. Produce comments matching the requirements.
+
+12. **Format the entry body.** Two cases:
+
+    **Case A — New review (Pass 1)**: Compose the full file.
+
+    ```markdown
+    ---
+    id: <pr-review-id>
+    type: pr-review
+    domain: development
+    created: <ISO now>
+    updated: <ISO now>
+    tags: [review]
+    source: dev-pr-review
+    private: false
+    title: 'PR Review: #<n> <pr_title>'
+    pr_url: <canonical>
+    pr_number: <n>
+    repo: <repo_id_or_raw>
+    change_id: <change_id_or_omit>
+    pr_author: <author>
+    branch: <head>
+    base: <base>
+    status: completed
+    result: <suggested_result>
+    started: <ISO_start>
+    completed: <ISO_now>
+    pass_count: 1
+    files_changed: <changed_files>
+    additions: <additions>
+    deletions: <deletions>
+    commits: <commits>
+    config:
+      primary_model: <model>
+      comment_style: <style>
+      focus_areas: <list>
+      context_strategy: full-diff
+      custom_instructions_hash: <hash_or_null>
+    ---
+
+    # PR Review: #<n> <pr_title>
+
+    ## Summary
+    <one paragraph: overall assessment + counts by category, e.g. "Clean PR — 3 logic suggestions, 1 docs nit. Approved with optional follow-ups.">
+
+    ## Pass 1 — <local_start>
+
+    <!-- Pass header timestamp: format as user's local-TZ readable string,
+         e.g. "Jun 2, 2026 1:53 PM PDT" — generated via `date -j -f
+         '%Y-%m-%dT%H:%M:%SZ' '<ISO_start>' '+%b %-d, %Y %-I:%M %p %Z'` on
+         macOS. Same rule as meta-status-report § "Timestamp formatting in
+         BODY content": frontmatter stays ISO 8601 UTC (sortable, machine-
+         parsed), body text uses local TZ (human-readable). The frontmatter
+         `started:`/`completed:` fields below stay UTC. Per Task #406. -->
+
+
+    ### Pass config
+    - model: <model>
+    - focus areas: <comma-joined>
+    - style: <style>
+
+    ### Comments
+
+    <for each comment, in order:>
+
+    #### Comment <n>: <category> · <severity>
+    - file: `<file_or_null>`
+    - line: <line_or_null>
+    - status: new
+
+    <comment body>
+
+    <end for>
+
+    ### Stats
+    - files: <changed_files>
+    - +<additions> / -<deletions>
+    - commits: <commits>
+    ```
+
+    If zero comments: omit the `### Comments` section's items but keep the heading with an italic "_No comments — clean review._" line.
+
+    **Case B — Continuation (Pass N+1)**: Edit the existing file.
+    1. Read the existing entry. Parse frontmatter + body.
+    2. Compute the new `pass_count = old + 1`. Capture old comments by `(file, line, body[:50])` signature for `prior:` linking — only for comments with `status: new` (resolved/dismissed are terminal).
+    3. Update frontmatter:
+       - `updated`: now
+       - `status`: `completed`
+       - `result`: new suggested result
+       - `completed`: now
+       - `pass_count`: new value
+       - `files_changed`, `additions`, `deletions`, `commits`: refresh from step 8
+       - `config.*`: re-snapshot (config may have changed between passes)
+    4. Update the Summary (rewrite as: "Pass <N>: <new assessment>. <delta vs prior: e.g. '2 prior comments resolved, 1 new'>".)
+    5. Append a new `## Pass <N>` section mirroring Case A's Pass 1 structure, with one addition: any new comment whose body matches an old comment's location gets `- prior: <old-comment-section-anchor>` (e.g. `- prior: pass-1-comment-3`).
+
+13. **Write the file** via Write tool (new) or Edit tool (continuation). The directory `vault/wiki/development/pr-review/` may not exist on a fresh clone — `mkdir -p` first via Bash if writing new.
+
+14. **Write back PR review summary onto the change entry — only when `change_id` is set** (the OS-authored PR flow). The pr-review entry holds the authoritative content; these four fields on the change are a roll-up so the change's PR tab + Lifecycle stepper can render review state without a second fetch. See [[archetype-change]] § "PR review fields".
+
+    Read `vault/wiki/<domain>/change/<change_id>.md` and surgically update its frontmatter (Edit tool, NOT a full rewrite — preserve comments, ordering, and unrelated fields):
+
+    | field              | value                                                                                                                                                                                                                                                                                                              |
+    | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+    | `pr_review_path`   | path to the pr-review entry from step 3 (e.g. `vault/wiki/development/pr-review/<id>.md`)                                                                                                                                                                                                                          |
+    | `pr_review_passes` | `<pass_n>` (current pass number from step 4 — 1 on new, N+1 on continuation)                                                                                                                                                                                                                                       |
+    | `pr_review_status` | `needs-changes` when `<suggested_result>` is `request-changes` (the model flagged blockers); else `pending` (review ran but no hard blocks — comments may exist as suggestions/nits, but the user explicitly decides what to address). This skill NEVER sets `ready-for-human` — that's `dev-mark-pr-ready`'s job. |
+    | `pr_reviewed_at`   | now (ISO 8601 UTC)                                                                                                                                                                                                                                                                                                 |
+    | `updated`          | now (bump the change's own `updated` so freshness audits don't fire)                                                                                                                                                                                                                                               |
+
+    **When `change_id` is null** (external PR — no change entry): skip this step entirely. The pr-review entry is the sole source of truth.
+
+    **On failure** (change entry missing, permission error, etc.): log a warning in the final report and continue to step 15. The pr-review entry already exists and is the canonical record; missing the change writeback is a UX regression, not data loss.
+
+15. **Record the event** via the dual-write wrapper:
+
+    ```bash
+    node scripts/record-dashboard-action.mjs \
+      --action pr-review \
+      --skill dev-pr-review \
+      --args '{"pr":"<canonical_url>","change":"<change_id_or_null>","pass":<pass_n>,"result":"<suggested_result>","comment_count":<n>,"severity_breakdown":{"bug":<n>,"nit":<n>,"suggestion":<n>,"blocker":<n>},"category_breakdown":{"logic":<n>,"security":<n>,"performance":<n>,"style":<n>,"tests":<n>,"docs":<n>}}' \
+      --files-touched '<["vault/wiki/development/pr-review/<id>.md", "vault/wiki/<domain>/change/<change_id>.md"] if change_id was set in step 14, else just the pr-review path>' \
+      --exit-status 0
+    ```
+
+    The shared event-attribution helper picks up `change_id` from `args.change` (when set), so OS-tracked reviews land in `events.db` tagged to the owning change. External PR reviews land with `change_id: null`. The `files_touched` list reflects every vault file actually mutated this run — including the change entry when step 14 fired — so the manifest rebuild (auto-triggered by `record-dashboard-action.mjs` on any `vault/wiki/` path) catches both writes.
+
+    **`severity_breakdown` and `category_breakdown` semantics** — counts of THIS pass's comments grouped by their `severity` and `category` header fields respectively. These are aggregates of the comment headers you just emitted to the entry's body, NOT cross-pass totals. The dashboard's metrics endpoint reads these directly so it never has to body-parse historical reviews. Always emit all standard keys (zeros included) for clean SQL queries — but DO include any custom category labels the model produced (e.g. `"accessibility": 2`) as extra keys; the endpoint sums any non-standard categories into an `other` bucket.
+
+16. **Confirm to user** with a tight report:
+
+    ```
+    ✓ PR review complete — <id> · pass <pass_n>
+      pr:        <canonical_url>
+      result:    <suggested_result>
+      comments:  <n> (<by-category breakdown, e.g. "3 logic, 1 docs">)
+      entry:     vault/wiki/development/pr-review/<id>.md
+      change:    <change_id or "(external PR)">
+      next:      <next-hint>
+    ```
+
+    `<next-hint>` depends on `<suggested_result>`:
+    - `approved` → wait for human review/merge, or `/os pr-review <pr>` again after new commits
+    - `request-changes` → `/os address-comments <id>` (planned) or hand-edit and push
+    - `comment` → review the comments at the entry path; act as appropriate
+    - `none` → nothing to do
+
+## Inputs schema notes
+
+- `pr`: required. URL or shorthand — see step 2 for parsing rules.
+- `change`: optional override. When set, the skill skips the auto-link search in step 5 and uses this id verbatim.
+- `pass_kind`: defaults to `auto`. Set explicitly only when you need to force a new entry over an existing one (`new`) or guarantee an append even on a missing file (`continuation` — will reject, since you can't continue what doesn't exist).
+
+## Outputs
+
+- A new or updated `pr-review` entry at `vault/wiki/development/pr-review/<id>.md`
+- An `events.db` row with `kind: dashboard`, `action: pr-review`, `skill: dev-pr-review`, `change_id: <change?>`, `files_touched: [<entry-path>]`
+- (Not yet) GitHub-side comments — publishing is `dev-pr-review-publish`'s job
+
+## Errors
+
+- `Invalid pr identifier: <input>` → fix the URL/shorthand format
+- `MCP github not configured` → run `/os add-mcp` and add the github MCP (`mcps/github/` is the canonical setup)
+- `GitHub MCP auth failed` → configure `mcps/github/.env` per `decision-github-mcp-custom-not-hosted.md`
+- `gh CLI not authenticated` → run `gh auth login` and re-run
+- `PR has no diff — nothing to review.` → not an error; idempotent stop
+- `pr-review entry already exists` → pass `pass_kind: continuation` or delete the entry
+- `No prior pr-review entry exists for <pr_url>` → pass `pass_kind: new` (or `auto`)
+- `context_strategy "<value>" not yet supported in v1` → edit `reference-pr-review-config.md` to set `context_strategy: full-diff`
+
+## What this skill must NOT do
+
+- **Edit the reviewed PR's code.** This skill only reads diffs and writes review entries to the vault. Code mutations belong to `dev-address-comments` (planned).
+- **Post comments to GitHub.** Publishing is `dev-pr-review-publish`'s job (planned). The vault entry is the authoritative source of the review until then.
+- **Modify the change entry.** The PR review is a separate archetype that _references_ the change via `change_id`; the change entry itself is owned by [[dev-write-change]] / [[dev-open-pr]].
+- **Block on CI.** This skill reviews the diff; CI state is the [[runbook-pr-ci-monitor]]'s domain.
+- **Run multiple model calls.** Single call, categorized output. See [[archetype-pr-review]] § Comments for why.
+
+## See also
+
+- [[archetype-pr-review]] — the archetype this skill produces (the data contract)
+- [[reference-pr-review-config]] — the singleton config this skill reads
+- [[dev-cache-pr-review-repo]] — sub-skill invoked at step 10a to maintain the read-only repo cache used as code context
+- [[archetype-pr-review-repo-cache]] — the cache archetype the sub-skill produces
+- [[dev-analyze-repo-for-review]] — produces the Stage 2 prose knowledge consumed at step 10b
+- [[archetype-repo-knowledge]] — the prose knowledge archetype loaded into the CODE CONTEXT block
+- [[dev-open-pr]] — the upstream skill that creates the PR being reviewed
+- [[archetype-change]] — the change this review may link to via `change_id`
+- [[archetype-entity]] — repos this review may link to via `repo`
+- [[standard-mcp-usage]] — calling MCP tools from a skill (pre-flight + naming + auth + errors)
+- [[decision-github-mcp-custom-not-hosted]] — why the github MCP uses PAT, not OAuth
+- `scripts/check-mcp.mjs` — pre-flight helper used in step 1
+- `scripts/record-dashboard-action.mjs` — event-recording wrapper used in step 15

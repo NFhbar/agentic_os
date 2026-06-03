@@ -1,0 +1,36 @@
+---
+id: {{slug}}
+type: notification-config
+domain: {{domain}}
+created: {{datetime}}
+updated: {{datetime}}
+tags: []
+source: {{source}}
+private: false
+title: {{title}}
+event_type: {{event_type}}
+channel: {{channel}}
+enabled: true
+# Optional blocks — uncomment and fill the ones you need. Field semantics are
+# documented in vault/wiki/_seed/meta/reference/archetype-notification-config.md.
+#
+# filter:                       # all sub-keys must match for the rule to fire (null = any)
+#   project: null
+#   domain: null
+#   severity: null              # success | info | warning | urgent
+#
+# delivery:                     # channel-specific delivery shape; see contract per channel
+#   slack_channel: '#example'
+#   tags: []                    # e.g. ['@oncall']
+#
+# rate_limit:
+#   cap_per_day: null           # null = inherit global default
+---
+
+# {{title}}
+
+## Purpose
+One paragraph: what this rule notifies about, who it's for, and why it exists.
+
+## Notes
+Append observations as the rule evolves — tuning history, false-positive incidents, decisions about filters or rate-limit overrides.

@@ -1,0 +1,86 @@
+// Helper: read a pr-review entry and count the curated-not-yet-acted-on
+// comments on the latest pass. Used by both the changes route (drives the
+// "N comments to address" UI signal) and the automation orchestrator (drives
+// the no-op-loop guard in the state machine — see Task #427).
+//
+// Lives in its own file so the orchestrator doesn't have to import the
+// changes route module (architectural keep-route-modules-independent rule).
+// Both call sites do their own I/O around the pure work below.
+
+import { existsSync, readFileSync } from 'node:fs';
+import { safePath } from '../repo.js';
+
+export interface ReviewLookup {
+  // Count of comments on the latest pass with status in
+  // {accepted, published, published-as-body} AND no `acted_on_at` field —
+  // i.e. comments curated by the user that dev-write-change in
+  // address-comments mode would actually re-implement.
+  commentsToAddress: number;
+  // True when the linked pr-review's frontmatter has `published: true`.
+  reviewPublished: boolean;
+  // Any GitHub review id captured on a comment header on the latest pass.
+  // Used to build the deep link to the parent GitHub review.
+  reviewGithubReviewId: number | null;
+}
+
+export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
+  const empty: ReviewLookup = {
+    commentsToAddress: 0,
+    reviewPublished: false,
+    reviewGithubReviewId: null,
+  };
+  const abs = safePath(prReviewPath);
+  if (!abs || !existsSync(abs)) return empty;
+  let raw: string;
+  try {
+    raw = readFileSync(abs, 'utf8');
+  } catch {
+    return empty;
+  }
+  const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n?/);
+  const reviewPublished = !!fmMatch?.[1]?.match(/^published:\s*true\s*$/m);
+  const body = raw.replace(/^---\n[\s\S]*?\n---\n?/, '');
+  // Locate every `## Pass <N>` header — the latest-N section is the one we
+  // care about (re-implementation always targets the most-recent pass).
+  const passHeaderRe = /^## Pass (\d+)\b/gm;
+  const headers: Array<{ n: number; start: number }> = [];
+  let m: RegExpExecArray | null = passHeaderRe.exec(body);
+  while (m !== null) {
+    headers.push({ n: Number(m[1]), start: m.index });
+    m = passHeaderRe.exec(body);
+  }
+  if (headers.length === 0) return { ...empty, reviewPublished };
+  headers.sort((a, b) => a.n - b.n);
+  const latest = headers[headers.length - 1];
+  const latestIdx = headers.indexOf(latest);
+  const sectionEnd = latestIdx + 1 < headers.length ? headers[latestIdx + 1].start : body.length;
+  const section = body.slice(latest.start, sectionEnd);
+
+  const commentRe = /^#### Comment \d+:/gm;
+  const commentStarts: number[] = [];
+  let cm: RegExpExecArray | null = commentRe.exec(section);
+  while (cm !== null) {
+    commentStarts.push(cm.index);
+    cm = commentRe.exec(section);
+  }
+  let count = 0;
+  let firstReviewId: number | null = null;
+  for (let i = 0; i < commentStarts.length; i++) {
+    const start = commentStarts[i];
+    const end = i + 1 < commentStarts.length ? commentStarts[i + 1] : section.length;
+    const block = section.slice(start, end);
+    const blankIdx = block.search(/\n\s*\n/);
+    const header = blankIdx >= 0 ? block.slice(0, blankIdx) : block;
+    const statusM = header.match(/^- status:\s*([\w-]+)/m);
+    const status = statusM ? statusM[1] : 'new';
+    const actedOn = /^- acted_on_at:\s*\S/m.test(header);
+    const ghReviewM = header.match(/^- github_review_id:\s*(\d+)/m);
+    if (ghReviewM && firstReviewId == null) firstReviewId = Number(ghReviewM[1]);
+    if (
+      !actedOn &&
+      (status === 'accepted' || status === 'published' || status === 'published-as-body')
+    )
+      count++;
+  }
+  return { commentsToAddress: count, reviewPublished, reviewGithubReviewId: firstReviewId };
+}

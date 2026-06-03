@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Agentic OS — git pre-commit hook
+#
+# Runs the same checks CI runs (.github/workflows/ci.yml) but locally before
+# the commit lands. Fast feedback when a change breaks something — much
+# cheaper than waiting for CI on a pushed branch.
+#
+# install.sh symlinks this into .git/hooks/pre-commit when a git repo is
+# detected. To install manually: `ln -sf ../../scripts/git-hooks/pre-commit
+# .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit`.
+#
+# To bypass for an emergency commit (don't make a habit of it):
+#   git commit --no-verify ...
+
+set -euo pipefail
+
+# Always run from the repo root so paths resolve regardless of where the
+# commit was invoked from.
+cd "$(git rev-parse --show-toplevel)"
+
+started=$(date +%s)
+fail() {
+  echo ""
+  echo "✗ pre-commit failed at: $1"
+  echo "  Fix the issue + re-stage + commit. To bypass (NOT recommended):"
+  echo "    git commit --no-verify ..."
+  exit 1
+}
+
+echo "→ pre-commit checks (rebuilds manifest, typechecks, tests, format)..."
+
+# 1. Rebuild the vault manifest. Catches per-entry frontmatter shape drift
+#    early — same check CI runs. Idempotent: if no entries changed since the
+#    last rebuild, manifest content is byte-identical.
+echo "  • Rebuilding vault manifest..."
+node .claude/hooks/rebuild-vault-index.mjs >/dev/null || fail "manifest rebuild (vault entry frontmatter issue)"
+
+# 2. Typecheck the dashboard app. The TS strict-mode catches most contract
+#    drift between server route types and client consumers.
+if [ -f domains/meta/app/package.json ]; then
+  echo "  • Typechecking dashboard app..."
+  ( cd domains/meta/app && npx tsc --noEmit ) || fail "dashboard typecheck"
+fi
+
+# 3. Run the structural + unit test suites. Fast (~500ms locally).
+echo "  • Running test suite..."
+npm test --silent >/dev/null 2>&1 || {
+  # Re-run on failure WITH output so the user can see what broke.
+  echo ""
+  echo "  Test failure — running again with output:"
+  npm test
+  fail "test suite"
+}
+
+# 4. Markdown format check (Prettier). Keeps docs consistent across the team.
+echo "  • Checking markdown formatting..."
+npm run md:check --silent >/dev/null 2>&1 || {
+  echo ""
+  echo "  Markdown format check failed. Run \`npm run md:format\` to auto-fix."
+  fail "markdown formatting"
+}
+
+elapsed=$(( $(date +%s) - started ))
+echo ""
+echo "✓ pre-commit checks passed in ${elapsed}s"

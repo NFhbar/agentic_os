@@ -1,0 +1,8 @@
+import type { FastifyRequest, FastifyReply } from 'fastify';
+
+// No-op auth for local-only mode. When exposing the app over a tunnel
+// (Tailscale, Cloudflare), replace with a real token check — e.g. compare
+// req.headers.authorization against an env-supplied secret.
+export async function auth(_req: FastifyRequest, _reply: FastifyReply): Promise<void> {
+  return;
+}

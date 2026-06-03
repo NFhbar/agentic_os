@@ -1,0 +1,14 @@
+{
+  "name": "agentic-os-mcp-github",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP server exposing GitHub operations (PR open/read/list, check status) to the Agentic OS. PAT-based auth via mcps/github/.env.",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@octokit/rest": "^21.0.0"
+  }
+}

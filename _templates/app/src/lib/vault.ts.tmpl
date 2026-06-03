@@ -1,0 +1,20 @@
+// Vault reader — calls /api/vault endpoints on the local backend.
+
+const base = '/api/vault';
+
+export interface VaultEntry {
+  path: string;
+  content: string;
+}
+
+export async function listOutputs(domain: string): Promise<string[]> {
+  const r = await fetch(`${base}/output/${domain}`);
+  if (!r.ok) throw new Error(`listOutputs: ${r.status}`);
+  return r.json();
+}
+
+export async function readEntry(path: string): Promise<VaultEntry> {
+  const r = await fetch(`${base}/entry?path=${encodeURIComponent(path)}`);
+  if (!r.ok) throw new Error(`readEntry: ${r.status}`);
+  return r.json();
+}

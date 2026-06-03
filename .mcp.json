@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "github": {
+      "command": "node",
+      "args": [
+        "mcps/github/server.mjs"
+      ]
+    },
+    "vault": {
+      "command": "node",
+      "args": [
+        "mcps/vault/server.mjs"
+      ]
+    }
+  }
+}

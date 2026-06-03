@@ -1,0 +1,34 @@
+// Frontend wrapper for /api/action — streams SSE responses chunk-by-chunk.
+
+export interface ActionChunk {
+  chunk?: string;
+  stderr?: string;
+  done?: boolean;
+  exit?: number;
+}
+
+export async function* runAction(prompt: string): AsyncGenerator<ActionChunk> {
+  const r = await fetch('/api/action', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt }),
+  });
+  if (!r.body) return;
+
+  const reader = r.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        yield JSON.parse(line.slice(6));
+      }
+    }
+  }
+}
