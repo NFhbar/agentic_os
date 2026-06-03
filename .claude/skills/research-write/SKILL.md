@@ -46,7 +46,7 @@ Compose a **research-report** entry — the durable, queryable artifact that cap
 
 This skill is the **entry phase** of the research-domain lifecycle. It mirrors [[dev-write-change]]'s PLAN phase and [[meta-research-project]]'s research phase — but produces a durable typed wiki entry (with its own review gate, update loop, and `recommended_changes` array) rather than a transient output markdown.
 
-Graduated from `meta-research-project` in phase B of the [[research-domain]] project. The legacy skill is retained as a deprecation alias that derives `report_topic` from its free-form `prompt` and delegates here — callers that haven't migrated continue to work transparently.
+Graduated from `meta-research-project` during the research-domain refactor (per-install project tracking the graduation phases). The legacy skill is retained as a deprecation alias that derives `report_topic` from its free-form `prompt` and delegates here — callers that haven't migrated continue to work transparently.
 
 Downstream: [[research-review]] gates the report; [[research-revise]] folds review findings back in; [[research-update]] rewrites the report when new materials land or milestones fire.
 

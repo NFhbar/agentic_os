@@ -101,8 +101,17 @@ echo "→ Initializing empty state files..."
 mkdir -p vault/raw vault/.index
 : > vault/raw/router-log.jsonl
 : > vault/raw/dashboard-actions.jsonl
-echo '{"version":1,"generated":null,"entries":[]}' > vault/.index/manifest.json
 echo "  ✓ state files initialized"
+
+echo ""
+echo "→ Building vault manifest from seed entries..."
+# The manifest indexes every wiki entry's frontmatter so the dashboard's Vault
+# view (and downstream skills) can find them. On a fresh install this populates
+# the manifest with the 100+ shipped seed entries (standards, archetypes,
+# concepts, walkthroughs, decisions, example artifacts). Without this step the
+# dashboard would show an empty vault even though the seed content is on disk.
+node .claude/hooks/rebuild-vault-index.mjs
+echo "  ✓ manifest built"
 
 echo ""
 echo "→ Initializing event store (.claude/state/events.db)..."
