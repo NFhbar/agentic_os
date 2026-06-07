@@ -184,7 +184,15 @@ const EVENT_COLS = [
 ] as const;
 const EXPAND_COL_WIDTH = 28;
 
+// View modes — Insights has two top-level surfaces: the original telemetry
+// view (events from events.db, the OS's own runtime metrics) and the new
+// audits view (lifecycle audits produced by meta-overseer-review — quality
+// signal across the work the OS has done). They share the page chrome but
+// query different backends.
+type ViewMode = 'telemetry' | 'audits';
+
 export default function Insights() {
+  const [viewMode, setViewMode] = useState<ViewMode>('telemetry');
   const [windowDays, setWindowDays] = useState(30);
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [events, setEvents] = useState<EventRow[] | null>(null);
@@ -251,33 +259,110 @@ export default function Insights() {
         }}
       >
         <h1 className="h1">Insights</h1>
-        <span className="spacer" />
-        <div className="tabs" role="tablist" aria-label="Time window">
-          {WINDOWS.map((w) => (
-            <button
-              key={w.days}
-              type="button"
-              role="tab"
-              aria-selected={windowDays === w.days}
-              className="tab"
-              onClick={() => setWindowDays(w.days)}
-            >
-              {w.label}
-            </button>
-          ))}
+        {/* View-mode tabs: Telemetry (events.db runtime metrics) vs Audits
+            (lifecycle-audit entries from meta-overseer-review). Two distinct
+            data substrates that share the page chrome. */}
+        <div className="tabs" role="tablist" aria-label="Insights view">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={viewMode === 'telemetry'}
+            className="tab"
+            onClick={() => setViewMode('telemetry')}
+          >
+            Telemetry
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={viewMode === 'audits'}
+            className="tab"
+            onClick={() => setViewMode('audits')}
+          >
+            Audits
+          </button>
         </div>
-        <button type="button" className="btn btn-primary" onClick={refresh} disabled={loading}>
-          {loading ? (
-            <>
-              <Icons.Sparkles size={13} /> Loading…
-            </>
-          ) : (
-            <>
-              <Icons.Refresh size={13} /> Refresh
-            </>
-          )}
-        </button>
+        <span className="spacer" />
+        {viewMode === 'telemetry' && (
+          <div className="tabs" role="tablist" aria-label="Time window">
+            {WINDOWS.map((w) => (
+              <button
+                key={w.days}
+                type="button"
+                role="tab"
+                aria-selected={windowDays === w.days}
+                className="tab"
+                onClick={() => setWindowDays(w.days)}
+              >
+                {w.label}
+              </button>
+            ))}
+          </div>
+        )}
+        {viewMode === 'telemetry' && (
+          <button type="button" className="btn btn-primary" onClick={refresh} disabled={loading}>
+            {loading ? (
+              <>
+                <Icons.Sparkles size={13} /> Loading…
+              </>
+            ) : (
+              <>
+                <Icons.Refresh size={13} /> Refresh
+              </>
+            )}
+          </button>
+        )}
       </header>
+
+      {viewMode === 'audits' && <AuditsView />}
+      {viewMode === 'telemetry' && (
+        <>
+          <TelemetryBody
+            stats={stats}
+            events={events}
+            expanded={expanded}
+            toggleExpand={toggleExpand}
+            loading={loading}
+            error={error}
+            columns={columns}
+            gridTemplate={gridTemplate}
+            navigateToSkill={navigateToSkill}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// TelemetryBody — preserved current behavior. Lifted into a sub-component
+// to keep the top-level Insights() cleaner with the new view-mode split.
+
+interface TelemetryBodyProps {
+  stats: StatsResponse | null;
+  events: EventRow[] | null;
+  expanded: Set<number>;
+  toggleExpand: (id: number) => void;
+  loading: boolean;
+  error: string | null;
+  columns: ReturnType<typeof useResizable>[];
+  gridTemplate: string;
+  navigateToSkill: (skill: string) => void;
+}
+
+function TelemetryBody({
+  stats,
+  events,
+  expanded,
+  toggleExpand,
+  loading,
+  error,
+  columns,
+  gridTemplate,
+  navigateToSkill,
+}: TelemetryBodyProps) {
+  return (
+    <>
 
       <p className="subtle" style={{ marginBottom: 6 }}>
         Telemetry from <span className="mono">.claude/state/events.db</span>. Counts every router
@@ -590,7 +675,7 @@ export default function Insights() {
           </div>
         </>
       )}
-    </div>
+    </>
   );
 }
 
@@ -621,4 +706,238 @@ function ColumnResizeHandle({
   onMouseDown: (e: React.MouseEvent) => void;
 }) {
   return <div className="col-resize-handle" onMouseDown={onMouseDown} aria-hidden />;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// AuditsView — list of lifecycle-audit entries with click-through to the
+// existing Vault entry renderer for detail.
+//
+// Phase 1c skinny slice: no filters yet (defer to Phase 2 dedicated app),
+// no charts, no by-skill drill-in. Just a sortable list grouped by recency.
+// The detail surface reuses the Vault app — clicking a row routes to
+// /vault/entries/<audit-id> which already renders the audit's markdown.
+
+interface AuditSummaryRow {
+  id: string;
+  path: string;
+  title: string;
+  audited_change_id: string;
+  audited_change_path: string;
+  project: string;
+  audit_status: 'pending' | 'provisional' | 'final';
+  verdict_overall: 'good' | 'mixed' | 'poor' | null;
+  scores: { correctness: number; completeness: number; efficiency: number } | null;
+  overseer_completed_at: string | null;
+  rubric_version: string;
+  audit_cost_usd: number | null;
+  tag_count: number;
+  tuning_suggestions_count: number;
+  has_human_override: boolean;
+  has_followups: boolean;
+}
+
+interface AuditsListResponse {
+  audits: AuditSummaryRow[];
+}
+
+function verdictBadgeStyle(verdict: AuditSummaryRow['verdict_overall']) {
+  if (verdict === 'good') {
+    return {
+      background: 'var(--success-bg, rgba(80,200,120,0.12))',
+      color: 'var(--success-text, #4caf80)',
+      border: '1px solid var(--success-border, rgba(80,200,120,0.4))',
+    };
+  }
+  if (verdict === 'mixed') {
+    return {
+      background: 'var(--warning-bg, rgba(250,200,80,0.1))',
+      color: 'var(--warning-text, #e0a02a)',
+      border: '1px solid var(--warning-border, rgba(250,200,80,0.4))',
+    };
+  }
+  if (verdict === 'poor') {
+    return {
+      background: 'var(--danger-bg, rgba(250,80,80,0.1))',
+      color: 'var(--danger-text, #e05050)',
+      border: '1px solid var(--danger-border, rgba(250,80,80,0.4))',
+    };
+  }
+  // null/unknown — pending audit
+  return {
+    background: 'var(--bg-2, rgba(255,255,255,0.04))',
+    color: 'var(--text-3)',
+    border: '1px solid var(--border)',
+  };
+}
+
+function AuditsView() {
+  const nav = useNavigation();
+  const [audits, setAudits] = useState<AuditSummaryRow[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    getJson<AuditsListResponse>('/api/audits')
+      .then((r) => {
+        if (cancelled) return;
+        setAudits(r.audits);
+        setLoading(false);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : String(e));
+        setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (loading) {
+    return (
+      <p className="subtle" style={{ padding: '20px 4px' }}>
+        Loading audits…
+      </p>
+    );
+  }
+  if (error) {
+    return (
+      <div
+        className="card"
+        style={{
+          padding: '10px 14px',
+          borderColor: 'var(--danger)',
+          background: 'var(--danger-soft)',
+          color: 'var(--danger-text)',
+        }}
+      >
+        <strong>Failed to load:</strong> {error}
+      </div>
+    );
+  }
+  if (!audits || audits.length === 0) {
+    return (
+      <div className="card" style={{ padding: 24 }}>
+        <h3 className="card-title" style={{ marginBottom: 8 }}>
+          No audits yet
+        </h3>
+        <p className="subtle" style={{ marginBottom: 12 }}>
+          The Overseer (
+          <code className="mono">meta-overseer-review</code>) produces a structured assessment of
+          each completed change's lifecycle. Aggregated across many audits, the signal drives
+          skill improvement.
+        </p>
+        <p className="subtle" style={{ marginBottom: 12 }}>
+          Audits are <strong>opt-in per project</strong>. Add the following to a project's
+          frontmatter to enable auto-fire on <code className="mono">change-automation-complete</code>
+          :
+        </p>
+        <pre
+          className="mono"
+          style={{
+            fontSize: 12,
+            padding: 10,
+            background: 'var(--bg-2)',
+            borderRadius: 4,
+            overflowX: 'auto',
+          }}
+        >
+{`audit:
+  enabled: true
+  mode: on-complete   # or: sampled (with sample_rate: N) | manual`}
+        </pre>
+        <p className="subtle" style={{ fontSize: 12, marginTop: 12 }}>
+          Or run a one-off retrospective audit manually:{' '}
+          <code className="mono">/os audit lifecycle &lt;change-id&gt;</code>. See{' '}
+          <code className="mono">archetype-lifecycle-audit</code> for the rubric + tag vocabulary.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="card" style={{ padding: 0 }}>
+      <div className="card-header">
+        <h3 className="card-title">{audits.length} audit{audits.length !== 1 ? 's' : ''}</h3>
+        <span className="tiny subtle">click any row to open the full audit entry</span>
+      </div>
+      <table className="table">
+        <thead>
+          <tr>
+            <th style={{ width: 90 }}>Verdict</th>
+            <th>Change audited</th>
+            <th style={{ width: 130 }}>Project</th>
+            <th style={{ width: 180 }}>Scores (C / Cm / E)</th>
+            <th style={{ width: 80 }}>Tags</th>
+            <th style={{ width: 110 }}>Suggestions</th>
+            <th style={{ width: 110 }}>Audited</th>
+          </tr>
+        </thead>
+        <tbody>
+          {audits.map((a) => (
+            <tr
+              key={a.id}
+              className="clickable"
+              onClick={() => nav.navigateToEntry(a.id)}
+              style={{ cursor: 'pointer' }}
+              title={`Open audit ${a.id} in the Vault`}
+            >
+              <td>
+                <span
+                  className="badge"
+                  style={{ fontSize: 11, ...verdictBadgeStyle(a.verdict_overall) }}
+                >
+                  {a.verdict_overall ?? a.audit_status}
+                </span>
+              </td>
+              <td>
+                <div style={{ fontWeight: 500, fontSize: 13 }}>{a.title}</div>
+                <div
+                  className="tiny mono"
+                  style={{ marginTop: 2, color: 'var(--muted)' }}
+                  title={a.audited_change_id}
+                >
+                  → {a.audited_change_id}
+                </div>
+              </td>
+              <td className="mono" style={{ color: 'var(--text-2)', fontSize: 12 }}>
+                {a.project}
+              </td>
+              <td className="mono" style={{ fontSize: 12 }}>
+                {a.scores
+                  ? `${a.scores.correctness.toFixed(1)} / ${a.scores.completeness.toFixed(1)} / ${a.scores.efficiency.toFixed(1)}`
+                  : '—'}
+              </td>
+              <td className="mono" style={{ fontSize: 12, color: 'var(--text-2)' }}>
+                {a.tag_count}
+              </td>
+              <td className="mono" style={{ fontSize: 12, color: 'var(--text-2)' }}>
+                {a.tuning_suggestions_count > 0 ? (
+                  <strong style={{ color: 'var(--accent-text)' }}>
+                    {a.tuning_suggestions_count}
+                  </strong>
+                ) : (
+                  '—'
+                )}
+              </td>
+              <td className="mono" style={{ fontSize: 12, color: 'var(--muted)' }}>
+                {a.overseer_completed_at ? formatRelative(a.overseer_completed_at) : '—'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div
+        className="tiny subtle"
+        style={{ padding: '10px 14px', borderTop: '1px solid var(--border)' }}
+      >
+        Scores: <code className="mono">Correctness / Completeness / Efficiency</code> (means
+        across per-skill findings, 1-5 scale).{' '}
+        <code className="mono">Suggestions</code> highlighted when the Overseer raised concrete
+        skill-tuning recommendations.
+      </div>
+    </div>
+  );
 }

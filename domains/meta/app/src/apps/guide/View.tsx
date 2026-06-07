@@ -119,6 +119,10 @@ const QUICK_START: Array<{ id: string; label: string }> = [
   { id: 'walkthrough-ingest-repo', label: 'Ingest a repo' },
   { id: 'walkthrough-add-project', label: 'Add a project' },
   { id: 'walkthrough-write-change', label: 'Write a change' },
+  // Self-improvement loop — surfaced prominently because it's a large feature
+  // with non-obvious flow. Sits next to the task triad so users hit it once
+  // they have lifecycles to audit.
+  { id: 'walkthrough-overseer', label: 'Use the Overseer' },
   // Concepts second — for when you need to understand a primitive first.
   { id: 'concept-domain', label: 'What is a domain?' },
   // Architecture last — for the "how is this whole thing shaped" question

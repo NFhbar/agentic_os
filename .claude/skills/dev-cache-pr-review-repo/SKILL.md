@@ -256,6 +256,23 @@ This is the **other repo concept** in the OS. The [[archetype-entity]] (`kind: r
 
     Cap the history at 10 most recent bullets — drop the oldest when adding the 11th.
 
+10a. **Extract the import graph.** Run `scripts/extract-imports.mjs` against the freshly-pulled cache to produce a structured file-level import graph that [[dev-pr-review]] consumes at review time for blast-radius reasoning. This fires on BOTH first-time and refresh — the graph is cheap to rebuild and can drift across pulls (new files, new imports, refactors).
+
+    ```bash
+    SIDECAR="vault/output/development/repo-cache/<owner>-<repo>/import-graph.json"
+    node scripts/extract-imports.mjs --repo "<cache_path>" --out "$SIDECAR"
+    ```
+
+    On success: surgically Edit the cache entry's frontmatter to set:
+
+    ```yaml
+    import_graph_path: vault/output/development/repo-cache/<owner>-<repo>/import-graph.json
+    ```
+
+    Insert immediately after the `local_path:` field if not already present. If present, leave the value alone — it's stable per `<owner>-<repo>`.
+
+    On failure (script errors, unsupported language, etc.): log a one-line warning to the refresh history (`- <ISO>: import-graph extraction failed — <stderr short>`) and DO NOT set `import_graph_path`. The cache itself succeeded; the import graph is a downstream enhancement. dev-pr-review tolerates a missing field by skipping the IMPORT GRAPH section of the analysis prompt.
+
 11. **Trigger Stage 2 analysis when there was no prior archetype entry.** Trigger condition is STRICTLY `entry_existed_at_start == false` (from step 3). If true, invoke [[dev-analyze-repo-for-review]] as a sub-step with `owner` + `repo` from the inputs. This produces the [[archetype-repo-knowledge]] entry that [[dev-pr-review]] reads for repo-specific convention judgments.
 
     **Do not** key this trigger off the cache dir's git state, off `action_label` directly, off the entry's current state on disk (you just wrote it in step 10 — it'll always "exist" now), or off any re-read of `entry_path`. ONLY `entry_existed_at_start` controls this.

@@ -2,7 +2,7 @@
 name: dev-pr-review
 description: 'Review a pull request — read the diff, produce categorized comments, write a structured pr-review archetype entry to the vault. Supports multi-pass review: re-running on the same PR appends a new pass.'
 user-invocable: true
-version: 2
+version: 3
 domain: development
 tags: [review, pr, github, mcp, archetype, lifecycle]
 inputs:
@@ -24,6 +24,11 @@ inputs:
     type: string
     required: false
     description: 'Free-text guidance to inject into the analysis prompt — used by the dashboard''s Re-analyze flow to target a specific concern (e.g. "focus on the auth handler", "ignore style nits, look for race conditions"). Appended to CUSTOM INSTRUCTIONS in the review prompt without replacing the config-level custom_instructions.'
+  force:
+    type: boolean
+    required: false
+    default: false
+    description: 'Skip the head_sha debounce gate (step 8a) and re-review even when the PR head is unchanged since the prior pass. Use when the surrounding context changed (config tweak, focus_notes shift, custom_instructions update) even though the diff did not.'
 outputs:
   - kind: file
     path: 'vault/wiki/<domain>/pr-review/pr-review-<owner>-<repo>-<n>.md'
@@ -118,9 +123,32 @@ The review is a **single-model, single-call** review: one prompt that asks the m
    {"owner": "<owner>", "repo": "<repo>", "pullNumber": <n>}
    ```
 
-   Capture: `title`, `body`, `user.login` (author), `head.ref` (branch), `base.ref` (base), `additions`, `deletions`, `changed_files`, `commits`, `merged`, `state`.
+   Capture: `title`, `body`, `user.login` (author), `head.ref` (branch), **`head.sha` (the PR's current head commit — required by step 8a)**, `base.ref` (base), `additions`, `deletions`, `changed_files`, `commits`, `merged`, `state`.
 
    If the call fails with auth errors → surface `Run mcps/github/.env setup — see decision-github-mcp-custom-not-hosted.md` and stop.
+
+8a. **Pre-flight: head_sha debounce (continuations only).** Mirrors the `meta-overseer-review` 24h-debounce pattern — same shape, content-based instead of time-based. Wasteful re-reviews against an unchanged commit are the dominant cost pattern in PR-review audits (`pr-review-re-runs-against-unchanged-head-sha` tag); this gate stops them before any LLM token is spent.
+
+    Run this gate only when `pass_kind == continuation` (from step 4). Skip entirely on Pass 1 (no prior pass to compare).
+
+    - Read the existing entry's frontmatter `last_head_sha` field (written by step 12 on the prior pass — falls back to scanning the body for the last `## Pass N` block's recorded head SHA if the field is absent for entries created before this gate landed).
+    - Compare against the current `head.sha` from step 8's PR metadata.
+    - If they match AND `inputs.force != true` → **short-circuit with no-op**. Skip steps 9–14 entirely. JUMP TO step 15 to record the event (use `action_label = "no-op-head-sha-unchanged"` and `status = "success"` — this is a successful no-op, not a failure), THEN step 16 to confirm. The confirm message MUST include the hint for the orchestrator:
+
+      ```
+      ⊘ PR review skipped — head_sha unchanged from pass <N>
+        prior pass head: <sha-7>
+        current pr head: <sha-7>
+        no new commit since last review; advance the orchestrator only after a new commit lands
+        (override with force: true if config/focus_notes/custom_instructions changed
+         and you genuinely want a fresh pass against the same commit)
+      ```
+
+      Do NOT write a new pass body, do NOT mutate the pr-review entry, do NOT call the model. The vault state is unchanged; the only side effect is the event row in step 15 (for traceability — every dispatch produces exactly one event).
+
+    - Else (head_sha differs OR force=true) → set `gate_result = "proceed"` and continue with step 9.
+
+    Steps 9–16 read `gate_result`; do NOT re-evaluate this gate later — by then step 12 may have written a new `last_head_sha` and the check would self-trip.
 
 9. **Fetch the diff** via Bash:
 
@@ -145,6 +173,28 @@ The review is a **single-model, single-call** review: one prompt that asks the m
 
     Knowledge absence is **not an error** — first reviews on a freshly-added external repo may race the analyze skill. The review proceeds against diff + cache files, just without prose conventions to guide it.
 
+    **c. Load the import graph (if present).** Check the cache entry's frontmatter for `import_graph_path`. If set + the file exists, read it; otherwise skip this sub-step and treat `import_graph = null` (the IMPORT GRAPH block in step 11's prompt becomes "(unavailable)" and the model falls back to filename-only reasoning).
+
+    The import graph is a sidecar JSON produced by `dev-cache-pr-review-repo` at cache-pull time via `scripts/extract-imports.mjs`. Shape:
+
+    ```json
+    {
+      "files": {
+        "<rel-path>": {
+          "lang": "go|tsjs|py",
+          "imports": ["<rel-path>", ...],
+          "imported_by": ["<rel-path>", ...],
+          "tests": ["<rel-path>", ...]
+        }
+      },
+      "hubs": [{"file": "<rel-path>", "callers": <n>}, ...]
+    }
+    ```
+
+    From the diff (step 9), extract the set of `touched_files` (file paths after the `+++ b/...` markers, normalized to repo-relative). For each touched file, look it up in `import_graph.files` and capture its `imports` / `imported_by` / `tests` arrays. Also compute `touched_hubs = touched_files ∩ hubs` so the prompt can flag hub-file changes prominently.
+
+    Absence is **not an error** — graph extraction may have failed at cache time (unsupported language, etc.), or the cache may predate the import-graph feature. The review degrades gracefully to filename-only reasoning.
+
 11. **Run the review.** Compose a prompt to yourself (the model running this skill) with this structure. **The skeleton below is the contract; the knobs come from config.**
 
     ```
@@ -165,6 +215,20 @@ The review is a **single-model, single-call** review: one prompt that asks the m
     - Raw clone at <cache_path> (or "(unavailable — diff-only review)" if step 10a failed). Read tool works on any file under it. Do NOT edit anything there — read-only by contract.
     - Repo knowledge at <knowledge_path> (or "(none — generic-judgment review)" if absent). Read this FIRST, before forming opinions on style, conventions, error handling, or testing patterns. It describes how THIS REPO does things — review by those standards, not generic best practices.
     When a convention is documented in the knowledge entry, prefer the repo's convention over your defaults. When the knowledge entry is silent on a topic, fall back to general principles + what you see in the cache.
+
+    IMPORT GRAPH (touched files):
+    <for each touched file, render one block — or "(unavailable — no import graph for this cache)" if step 10c had nothing to load>
+        <touched-file-rel-path>
+          imports:     <comma-list of imports, or "(none)">
+          imported by: <comma-list of imported_by, or "(none — leaf / entry point)">
+          tests:       <comma-list of tests, or "(none — no co-located tests detected)">
+
+    HUBS IN THIS REPO (>3 callers, top 20):
+    <render each hub as one line:>
+        <hub-file-rel-path> (<callers> callers)<flag with " ← TOUCHED BY THIS PR" if file is in touched_hubs>
+    <if hubs list is empty, render "(none above threshold)">
+
+    Use the import graph as blast-radius context: when a touched file is imported by many others, review the changed behavior with extra care for backwards compatibility. When a touched file is itself a hub, treat that as a prompt to consider every downstream caller's assumptions. Tests adjacent to a touched file are the natural place to verify behavior — if the PR doesn't update those tests, flag it.
 
     FOCUS AREAS: <comma-joined focus_areas from config>
     COMMENT STYLE: <comment_style from config>
@@ -219,6 +283,7 @@ The review is a **single-model, single-call** review: one prompt that asks the m
     started: <ISO_start>
     completed: <ISO_now>
     pass_count: 1
+    last_head_sha: <head.sha from step 8>
     files_changed: <changed_files>
     additions: <additions>
     deletions: <deletions>
@@ -282,6 +347,7 @@ The review is a **single-model, single-call** review: one prompt that asks the m
        - `result`: new suggested result
        - `completed`: now
        - `pass_count`: new value
+       - `last_head_sha`: `<head.sha from step 8>` — required for step 8a's debounce gate on the NEXT pass; without this the gate has no anchor and re-reviews against unchanged commits will recur
        - `files_changed`, `additions`, `deletions`, `commits`: refresh from step 8
        - `config.*`: re-snapshot (config may have changed between passes)
     4. Update the Summary (rewrite as: "Pass <N>: <new assessment>. <delta vs prior: e.g. '2 prior comments resolved, 1 new'>".)

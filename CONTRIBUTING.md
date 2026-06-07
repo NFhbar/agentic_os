@@ -85,6 +85,67 @@ The `_seed/` boundary is load-bearing: anything under `vault/wiki/_seed/` ships 
 
 `./install.sh` handles `npm install` + manifest rebuild + initial vault scaffolding. Run it after cloning.
 
+## Upgrading
+
+When the OS core ships new versions, teams pull the updates into their fork. The compatibility contract (versioning policy + what's guaranteed across versions) lives at [`vault/wiki/_seed/meta/reference/os-version.md`](vault/wiki/_seed/meta/reference/os-version.md). The changelog at [`CHANGELOG.md`](CHANGELOG.md) records what shipped in each version, including any required actions.
+
+### The upgrade dance
+
+```bash
+# 1. Pull upstream
+git remote add upstream <core-os-repo-url>   # one-time, if not already added
+git fetch upstream
+git merge upstream/main                       # or: git rebase upstream/main
+
+# 2. Resolve any conflicts (see § Where conflicts land below)
+
+# 3. Re-run install (idempotent — picks up new deps, regenerates manifest, refreshes hooks)
+./install.sh
+
+# 4. Verify the install
+npm test
+node scripts/audit.mjs    # surfaces any drift
+
+# 5. Read the CHANGELOG for the version range you just pulled — any required actions?
+```
+
+For loose tracking, teams stay on `main` and pull periodically. For strict control, teams pin to a specific tag or SHA and update deliberately:
+
+```bash
+git checkout v0.2.0      # pin to release tag
+git checkout <sha>       # pin to specific commit
+```
+
+### Where conflicts land
+
+When you pull updates, conflicts are most likely in:
+
+- **`OS.md`** (router vocabulary table) — teams add custom skills here; core might also add new core skills. Resolution: keep both, ordered by the table's existing grouping.
+- **`domains/<your-domain>/playbook.md`** (Skills section) — same shape as OS.md vocabulary; keep both.
+- **`.claude/skills/<name>/SKILL.md`** when a core skill gets revised AND your team has local edits to it. Resolution: either re-apply your edits on top of upstream, OR fork the skill into a team-named variant (`acme-write-change` shadowing `dev-write-change`) and ignore upstream updates to the original.
+- **`vault/wiki/_seed/meta/reference/standard-*.md`** when a team has overridden a core standard. Same resolution pattern as skills.
+- **`CLAUDE.md`** — should NOT conflict if your customizations stay inside the `<!-- team-config-start --> ... <!-- team-config-end -->` markers. If they don't, move them inside before next pull.
+
+If the CHANGELOG documents a major-version bump, read it carefully — it'll name the specific schemas / files / behaviors that changed and what action your team needs to take.
+
+### What's guaranteed across versions
+
+Within a major version (e.g., 0.x.y → 0.x+1.y), teams can pull with confidence that:
+
+- No skill they were using has been removed (skills deprecated for one minor before removal)
+- No archetype field has changed shape (additive only)
+- No event store schema migration required (additive only)
+- No notification template variable removed
+- Existing wiki entries continue to load and render
+
+Across major versions, the CHANGELOG explicitly names what changed and the migration steps required. Major bumps are rare and discussed in advance via decision entries.
+
+### Versioning your team's customizations
+
+If your team customizes heavily, consider a brief decision entry recording your team's compatibility position — what core version you're on, what you've customized, why. Lives at `vault/wiki/meta/decision/decision-team-customizations-<topic>.md` (per-install, gitignored from upstream perspective).
+
+When you pull a new core version, that decision entry becomes the reference for "what we need to re-verify after this merge."
+
 ## Filing findings (bugs / improvements)
 
 For findings about the OS itself, use the dashboard's Add Note quick-action (`meta-add-note`) — note lands at `vault/wiki/meta/note/` per-install. If the finding is shareable (a real bug, a feature gap that affects all teams), open an issue against the OS repo on GitHub.

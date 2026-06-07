@@ -3,8 +3,11 @@ import type { Dirent } from 'node:fs';
 import { appendFile, mkdir, readFile, readdir } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import type { FastifyPluginAsync } from 'fastify';
+// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
+import { extractSkill } from '../../../../../scripts/extract-event-attribution.mjs';
 import { parseFrontmatter } from '../frontmatter.js';
 import { REPO_ROOT } from '../repo.js';
+import { resolveEffortForRun } from './runs.js';
 import type { RunEntry, ScheduleSummary } from './schedules.types.js';
 
 // Re-export wire-shape types for backward-compat. New consumers should import
@@ -241,7 +244,15 @@ export const schedulesRoutes: FastifyPluginAsync = async (fastify) => {
       connection: 'keep-alive',
     });
 
-    const child = spawn('claude', ['-p', target.prompt, '--permission-mode', 'bypassPermissions'], {
+    const scheduledSkill = extractSkill(target.prompt) as string | null;
+    const effort = await resolveEffortForRun(scheduledSkill);
+    const args = ['-p', target.prompt, '--permission-mode', 'bypassPermissions'];
+    if (effort) args.push('--effort', effort);
+    if (effort)
+      console.log(
+        `schedules: spawning ${scheduledSkill ?? '(unknown skill)'} with --effort ${effort}`,
+      );
+    const child = spawn('claude', args, {
       cwd: REPO_ROOT,
       stdio: ['ignore', 'pipe', 'pipe'],
     });

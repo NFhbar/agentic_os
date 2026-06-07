@@ -34,18 +34,19 @@ A review is single-PR by design. Re-reviewing the same PR after new commits crea
 
 ## Optional frontmatter
 
-| field        | type    | notes                                                                                 |
-| ------------ | ------- | ------------------------------------------------------------------------------------- |
-| `pr_number`  | integer | Convenience — extracted from `pr_url`                                                 |
-| `change_id`  | string  | Owning [[archetype-change]] id when the OS authored the PR; omit for external PRs     |
-| `pr_author`  | string  | GitHub login of the PR author                                                         |
-| `branch`     | string  | Head branch of the PR                                                                 |
-| `base`       | string  | Base branch the PR targets                                                            |
-| `result`     | enum    | `approved`, `request-changes`, `comment`, `none` — set only when `status: completed`  |
-| `started`    | string  | ISO timestamp — when the first pass began                                             |
-| `completed`  | string  | ISO timestamp — when the most recent pass finished                                    |
-| `pass_count` | integer | Number of passes in the body. Defaults to 1; increments when re-reviewed              |
-| `published`  | boolean | `true` if any pass has been published to GitHub via `dev-pr-review-publish` (planned) |
+| field           | type    | notes                                                                                                                                                                                                                                                                                          |
+| --------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pr_number`     | integer | Convenience — extracted from `pr_url`                                                                                                                                                                                                                                                          |
+| `change_id`     | string  | Owning [[archetype-change]] id when the OS authored the PR; omit for external PRs                                                                                                                                                                                                              |
+| `pr_author`     | string  | GitHub login of the PR author                                                                                                                                                                                                                                                                  |
+| `branch`        | string  | Head branch of the PR                                                                                                                                                                                                                                                                          |
+| `base`          | string  | Base branch the PR targets                                                                                                                                                                                                                                                                     |
+| `result`        | enum    | `approved`, `request-changes`, `comment`, `none` — set only when `status: completed`                                                                                                                                                                                                           |
+| `started`       | string  | ISO timestamp — when the first pass began                                                                                                                                                                                                                                                      |
+| `completed`     | string  | ISO timestamp — when the most recent pass finished                                                                                                                                                                                                                                             |
+| `pass_count`    | integer | Number of passes in the body. Defaults to 1; increments when re-reviewed                                                                                                                                                                                                                       |
+| `last_head_sha` | string  | The PR's `head.sha` at the time of the most recent pass. Used by `dev-pr-review`'s step 8a debounce gate to short-circuit re-reviews against an unchanged commit (the `pr-review-re-runs-against-unchanged-head-sha` waste pattern). Written on every pass; the gate reads it on continuations |
+| `published`     | boolean | `true` if any pass has been published to GitHub via `dev-pr-review-publish` (planned)                                                                                                                                                                                                          |
 
 ## Stats fields (snapshotted from GitHub)
 

@@ -138,6 +138,27 @@ When you reach this phase:
 
    **Important:** `read_path` reflects `default_branch`, not whatever the user's local clone is currently on. References to file paths in the plan are relative to the repo root — they're equally valid in the user's local clone when EXECUTE runs.
 
+7a. **Surface rationale comments in the candidate touched files.** Inline `// TAG:` comments (WHY, HACK, NOTE, FIXME, TODO, XXX, CAVEAT, IMPORTANT, WARNING, GOTCHA) are institutional memory — they explain _why_ code is shaped weirdly. Easy to skim past in a 1000-line file; pulled into a focused block they become constraints the plan must respect.
+
+    Run the extractor against the set of files step 7 identified as likely-to-modify:
+
+    ```bash
+    node scripts/extract-rationale-comments.mjs \
+      --repo "<read_path>" \
+      --files "<comma-list of candidate files>"
+    ```
+
+    Stdout is a JSON blob shape `{ files: { <rel>: [{ line, tag, body, context }] }, summary: { findings_total, by_tag } }`. Read it as part of your planning context. For each finding:
+
+    - **HACK / CAVEAT / WARNING / GOTCHA**: a documented constraint. The plan MUST either preserve the workaround OR explicitly call out that it's being removed (with a one-line "why this is safe to remove now" in the Risk section).
+    - **WHY**: rationale for the current shape. Read it; the plan should not blindly contradict the explanation without addressing it.
+    - **NOTE / IMPORTANT**: context the reader (or future-you, the executor) should know about. Cite the relevant ones inline in the plan's `## Approach` if they shape decisions.
+    - **TODO / FIXME / XXX**: incomplete work flagged by a previous author. If the plan happens to address one of these, mention it. If the plan moves code containing one of these without fixing it, preserve it verbatim.
+
+    Findings with empty bodies are dropped by the extractor. Findings on lines the plan intends to delete should still be acknowledged (the comment was load-bearing once; if you're removing it, say why).
+
+    If the extractor finds nothing across all candidate files, skip this consideration. Don't pad the plan with "no rationale comments found" — silence is fine.
+
 8. Compose a plan with EXACTLY the structure below — be precise. The reviewer will check each section against `standard-code-quality` + `standard-git-hygiene` + the entity's Conventions.
 9. Write the plan to `vault/output/<domain>/changes/<change>-plan.md`. Create the directory if needed.
 10. Update the change entry's frontmatter (via Edit tool):
@@ -223,6 +244,24 @@ While reading the repo I noticed:
 When you reach this phase:
 
 1. Read `plan_path`. Reject with `plan missing — re-run write-change to regenerate` if not found.
+
+1a. **Parent change invariant check.** If the change entry's frontmatter has a `parent_change` field set, read the parent at `vault/wiki/<domain>/change/<parent_change>.md`. Enumerate the parent's load-bearing invariants — state-mutation, rewind/migration semantics, error-propagation contracts, snapshot/checkpoint obligations. For each new persistent surface this change introduces (new tables, new on-disk format, new long-lived in-memory cache, new fanout target), verify the parent's invariants extend correctly.
+
+The plan should already account for this, but EXECUTE is the last cheap point to catch a "frontmatter named the predecessor; neither plan nor review carried the implication forward" miss. If a gap surfaces, abort:
+
+```
+⚠ Parent-change invariant gap — <change>
+  parent:    [[<parent_change>]]
+  invariant: <one-line — e.g. "reorg handler must rewind all persistent state">
+  surface:   <one-line — e.g. "new typed-tables introduced with no rewind hook">
+  next:      either extend this change to honor the invariant, OR re-plan with
+             force_replan=true and explicitly justify the carve-out in § Risk.
+```
+
+When no `parent_change` is set, skip silently.
+
+_Rationale: added in response to the `parent_change frontmatter is load-bearing context that wasn't used` finding in [[audit-abi-decoding-via-codegen-typed-event-structs-and-per-event]] — the change's parent named the reorg handler, but execute introduced typed tables with no rewind hook (caught only at PR-review pass-3, ~$5+ in intermediate cycles). See [[decision-dev-write-change-when-a-change-has-a-parent-change-field-execute]]._
+
 2. If `review_status == "overridden"`: record an audit event BEFORE proceeding (makes overrides auditable):
    ```bash
    node scripts/record-dashboard-action.mjs \
@@ -378,6 +417,18 @@ Triggered by the Step 2 first-check: change is `status: in-review`, has a linked
    - Prefer one edit per comment when possible. When two comments target the same hunk, apply both in one Edit call.
    - Run the repo's `test_command` after edits. Capture exit code.
    - Do NOT proceed to step 7 (writeback) if tests fail — leave the branch in place, write a failure log per the EXECUTE step 8 template (replace action name `write-change-execute` with `write-change-address-comments`), and stop. The user can inspect and either fix manually or re-run.
+
+6a. **Post-fix boundary check.** Before committing, examine the diff produced in step 6. If the diff introduced **new abstractions** — a new function call, a new code-path branch, a new state-mutating fanout, a new helper signature — run a focused self-review on the boundaries of those additions. Skip this check entirely for **mechanical fixes** (reorder, defensive-copy, comment/docs-only edits) — those don't have the failure mode this check targets.
+
+For each new abstraction in the diff, verify:
+
+- **(a) Every new function call resolves to a definition in the diff or pre-existing code.** If the fix added `decodeBytesNTopic(...)`, confirm the helper exists. Orphan calls become compile failures or missing-symbol bugs the next PR-review pass catches.
+- **(b) Every new state mutation reasons about partial-failure / atomicity.** If the fix added fanout (`for _, sink := range sinks { sink.RewindTo(n) }`), reason explicitly about what happens if one fanout target fails mid-loop. Pick a semantics — best-effort, atomic, transactional — and document the choice inline OR accept the half-state risk explicitly in the commit body.
+- **(c) Every new test path exercises actual production code, not a parallel implementation.** If a test reimplements the production logic to verify the result, the test passes regardless of whether production is correct — it tests the test. Sanity-check that the test calls the same code path the production caller would.
+
+When the check surfaces an issue, fix it in this same address-comments cycle (loop back to step 6 for the additional edit, then re-check). The point is to catch boundary defects pre-commit, not punt them to the next PR-review pass.
+
+_Rationale: this check was added in response to the `fix-introduces-defect-at-boundary` pattern observed across 3 consecutive address-comments cycles in [[audit-abi-decoding-via-codegen-typed-event-structs-and-per-event]]. Each cycle's fix introduced a new abstraction whose boundary obligations were not satisfied — caught only by the next PR-review pass at $5/occurrence. See [[decision-dev-write-change-after-applying-a-fix-in-the-address-comments-phase]] for evidence + validation target._
 
 7. **Commit the follow-up** following [[standard-git-hygiene]] § 4. Subject convention:
    - `<type>(<scope>): address review comments — <short summary>` where `<short summary>` is a one-clause description (e.g. "fix copyright year, drop unused import").

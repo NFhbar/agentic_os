@@ -5,9 +5,12 @@ import type { FastifyPluginAsync } from 'fastify';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { recordEvent } from '../../../../../scripts/events-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
-import { extractFromPrompt, extractSkill } from '../../../../../scripts/extract-event-attribution.mjs';
+import { extractFromPrompt } from '../../../../../scripts/extract-event-attribution.mjs';
+// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
+import { extractSkill } from '../../../../../scripts/extract-event-attribution.mjs';
 import { parseStreamJsonLine } from '../lib/stream-json.js';
 import { REPO_ROOT } from '../repo.js';
+import { resolveEffortForRun } from './runs.js';
 
 const AUDIT_LOG = join(REPO_ROOT, 'vault', 'raw', 'dashboard-actions.jsonl');
 
@@ -40,22 +43,23 @@ export const actionRoutes: FastifyPluginAsync = async (fastify) => {
     // --permission-mode bypassPermissions: in -p (headless) mode there's
     // no interactive prompt for tool approvals. The dashboard has already
     // collected user confirmation (button click + form/typed-confirm).
-    const child = spawn(
-      'claude',
-      [
-        '-p',
-        prompt,
-        '--permission-mode',
-        'bypassPermissions',
-        '--output-format',
-        'stream-json',
-        '--verbose',
-      ],
-      {
-        cwd: REPO_ROOT,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
-    );
+    const effort = await resolveEffortForRun(skill);
+    const args = [
+      '-p',
+      prompt,
+      '--permission-mode',
+      'bypassPermissions',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+    ];
+    if (effort) args.push('--effort', effort);
+    if (effort)
+      console.log(`action: spawning ${skill ?? '(unknown skill)'} with --effort ${effort}`);
+    const child = spawn('claude', args, {
+      cwd: REPO_ROOT,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
 
     let stdoutBuf = '';
     let stderrAll = '';

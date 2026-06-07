@@ -6,8 +6,8 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useDispatch, useRunTerminal } from '../../lib/dispatch';
 import { Toast } from '../../shared';
 import '../../shared/styles.css';
-import { AddResearchReportModal } from './components';
 import type { ResearchReportDetail, ResearchReportSummary } from './data';
+import { AddPage } from './pages/Add';
 import { DetailPage } from './pages/Detail';
 import { ListPage } from './pages/List';
 
@@ -20,11 +20,18 @@ export default function Research() {
   const navigate = useNavigate();
   // URL shape (mounted at /research/* by App.tsx):
   //   ''             → list view
+  //   'new'          → add page (replaces the prior AddResearchReportModal)
   //   '<id>'         → detail view for that report id
   const { '*': splat = '' } = useParams<{ '*': string }>();
   const reportId = useMemo(() => {
     const parts = splat.split('/').filter(Boolean);
-    return parts[0] ?? null;
+    const first = parts[0] ?? null;
+    // Treat 'new' as a sentinel route, not a report id.
+    return first === 'new' ? null : first;
+  }, [splat]);
+  const isAddPage = useMemo(() => {
+    const parts = splat.split('/').filter(Boolean);
+    return parts[0] === 'new';
   }, [splat]);
 
   const [searchParams, setSearchParams] = useSearchParams();
@@ -33,22 +40,16 @@ export default function Research() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [projects, setProjects] = useState<ProjectChip[]>([]);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
-  const [addOpen, setAddOpen] = useState(false);
-  // When deep-linked from a Project page's "Add research report" button
-  // (Task #390), `?add=1&project=<id>` opens the modal pre-selected on the
-  // owning project. Captured once on mount; the modal's own state takes over
-  // after that so subsequent URL changes don't re-fire.
-  const [addInitialProject, setAddInitialProject] = useState<string | null>(null);
+  // Legacy URL migration: `?add=1&project=<id>` used to open a modal in place.
+  // Phase 4.x replaced the modal with /research/new — redirect old links so
+  // bookmarks and stale buttons keep working. Strips the params + navigates
+  // once on mount.
   useEffect(() => {
     if (searchParams.get('add') === '1') {
-      setAddInitialProject(searchParams.get('project'));
-      setAddOpen(true);
-      // Strip the params so a refresh doesn't reopen — but preserve any other
-      // filters/query state the Research app uses.
-      const next = new URLSearchParams(searchParams);
-      next.delete('add');
-      next.delete('project');
-      setSearchParams(next, { replace: true });
+      const proj = searchParams.get('project');
+      navigate(proj ? `/research/new?project=${encodeURIComponent(proj)}` : '/research/new', {
+        replace: true,
+      });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -355,7 +356,10 @@ export default function Research() {
           return;
         }
         toast(`Research write dispatched (${id})`);
-        setAddOpen(false);
+        // Navigate back to the list view — dispatch is async; the new report
+        // entry shows up once research-write writes the file, at which point
+        // it's visible in the list. Drawer surfaces the live run.
+        navigate('/research');
         showDispatchInDrawer({ project: args.project, skill: 'research-write' });
       })
       .catch(() => toast('Add dispatch failed — network error'));
@@ -364,14 +368,25 @@ export default function Research() {
   return (
     <div className="page-wide" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
-        {!reportId && (
+        {!reportId && !isAddPage && (
           <ListPage
             reports={reports}
             projects={projects}
             searchParams={searchParams}
             setSearchParams={setSearchParams}
             onOpen={openReport}
-            onAddReport={() => setAddOpen(true)}
+            onAddReport={() => navigate('/research/new')}
+          />
+        )}
+        {isAddPage && (
+          <AddPage
+            projects={projects}
+            onSubmit={submitAddReport}
+            onCancel={() => {
+              /* AddPage navigates back to /research on its own; nothing else
+                 to do here in the parent. */
+            }}
+            toast={toast}
           />
         )}
         {reportId && detail && (
@@ -395,17 +410,6 @@ export default function Research() {
           </div>
         )}
       </div>
-      {addOpen && (
-        <AddResearchReportModal
-          projects={projects}
-          initialProject={addInitialProject}
-          onCancel={() => {
-            setAddOpen(false);
-            setAddInitialProject(null);
-          }}
-          onConfirm={submitAddReport}
-        />
-      )}
       <Toast msg={toastMsg} />
     </div>
   );

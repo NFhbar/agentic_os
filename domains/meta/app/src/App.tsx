@@ -36,8 +36,10 @@ const DOMAIN_ORDER: Record<string, ViewId[]> = {
     'vault',
     'activity',
     'insights',
+    'overseer',
     'curation',
     'mcps',
+    'settings',
   ],
 };
 
@@ -69,8 +71,10 @@ const APP_ICONS: Record<string, React.ReactElement> = {
   vault: <Icons.File size={15} />,
   activity: <Icons.Activity size={15} />,
   insights: <Icons.Sparkles size={15} />,
+  overseer: <Icons.Eye size={15} />,
   curation: <Icons.Check size={15} />,
   mcps: <Icons.Cpu size={15} />,
+  settings: <Icons.Settings size={15} />,
   router: <Icons.ArrowRight size={15} />,
   health: <Icons.Shield size={15} />,
   guide: <Icons.Bug size={15} />,

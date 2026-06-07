@@ -76,6 +76,12 @@ export function Settings() {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Models registry loaded once on mount; the dropdowns in SectionModels
+  // consume it via props. Cached for the lifetime of this view — the
+  // registry is updated by editing scripts/models-registry.mjs which
+  // requires a server restart anyway.
+  const [models, setModels] = useState<ModelEntry[] | null>(null);
+  const [modelsError, setModelsError] = useState<string | null>(null);
 
   const loadConfig = useCallback(async () => {
     try {
@@ -93,6 +99,26 @@ export function Settings() {
   useEffect(() => {
     loadConfig();
   }, [loadConfig]);
+
+  // Load the models registry once. Failure is non-fatal — SectionModels
+  // renders a degraded read-only view with the saved value as plain text.
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/models')
+      .then((r) => {
+        if (!r.ok) throw new Error(`status ${r.status}`);
+        return r.json() as Promise<{ models: ModelEntry[] }>;
+      })
+      .then((j) => {
+        if (!cancelled) setModels(j.models);
+      })
+      .catch((e) => {
+        if (!cancelled) setModelsError((e as Error).message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const dirty = useMemo(() => {
     if (!config || !editing) return [] as Array<keyof EditableConfig>;
@@ -183,7 +209,12 @@ export function Settings() {
           {!error && !config && <LoadingCard />}
           {config && editing && section === 'overview' && <SectionOverview config={config} />}
           {config && editing && section === 'models' && (
-            <SectionModels editing={editing} update={update} />
+            <SectionModels
+              editing={editing}
+              update={update}
+              models={models}
+              modelsError={modelsError}
+            />
           )}
           {config && editing && section === 'review' && (
             <SectionReview editing={editing} update={update} />
@@ -379,13 +410,114 @@ function SectionOverview({ config }: { config: PrReviewConfig }) {
   );
 }
 
+// Model registry shape — mirrors scripts/models-registry.mjs. Inlined here
+// as a narrow client-side projection so the .tsx doesn't have to import a
+// .mjs across the dashboard build boundary.
+interface ModelEntry {
+  id: string;
+  family: 'opus' | 'sonnet' | 'haiku';
+  latest: boolean;
+  pricing: {
+    input: number;
+    output: number;
+    cache_read: number;
+    cache_write_1h: number;
+  };
+  aliases?: string;
+}
+
+// Picker that drives both primary_model and analyzer_model. Loads the
+// registry from /api/models once; renders a dropdown showing latest-of-family
+// by default with a "Show historical versions" toggle for older minor versions.
+function ModelPicker({
+  value,
+  onChange,
+  models,
+  showAll,
+}: {
+  value: string;
+  onChange: (id: string) => void;
+  models: ModelEntry[];
+  showAll: boolean;
+}) {
+  // Visible set = latest-of-family by default; full registry when showAll.
+  const visible = showAll ? models : models.filter((m) => m.latest);
+  // If the current value isn't in the visible set (e.g. user has a historical
+  // model saved + showAll is off), inject it so the dropdown stays consistent
+  // with the saved state instead of silently switching away from it.
+  const inVisible = visible.some((m) => m.id === value);
+  const options = inVisible
+    ? visible
+    : [...visible, models.find((m) => m.id === value) ?? null].filter(Boolean as unknown as (x: ModelEntry | null) => x is ModelEntry);
+
+  return (
+    <select
+      className="input mono"
+      style={{ width: 320, padding: '6px 10px', fontSize: 13 }}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    >
+      {options.map((m) => {
+        // Per-Mtoken pricing summary — input/output in USD with one decimal.
+        const price = `$${m.pricing.input.toFixed(2)} / $${m.pricing.output.toFixed(2)} per M tok`;
+        const flag = m.latest ? '' : ' (older)';
+        return (
+          <option key={m.id} value={m.id}>
+            {m.id}{flag} — {m.family} — {price}
+          </option>
+        );
+      })}
+      {/* If value isn't in the registry at all (e.g. a model id added since
+          this OS install was last updated), surface it as a disabled fallback
+          so the user sees what they have without us silently rewriting their
+          config. */}
+      {!models.some((m) => m.id === value) && value && (
+        <option value={value} disabled>
+          {value} (not in registry — update scripts/models-registry.mjs)
+        </option>
+      )}
+    </select>
+  );
+}
+
 function SectionModels({
   editing,
   update,
+  models,
+  modelsError,
 }: {
   editing: EditableConfig;
   update: <K extends keyof EditableConfig>(k: K, v: EditableConfig[K]) => void;
+  models: ModelEntry[] | null;
+  modelsError: string | null;
 }) {
+  const [showAll, setShowAll] = useState(false);
+
+  if (modelsError) {
+    return (
+      <SettingsCard title="Model picker unavailable" desc="Failed to load /api/models">
+        <div className="tiny" style={{ color: 'var(--danger-text)' }}>
+          {modelsError} — saved values shown below as plain text. Refresh once the server is
+          available.
+        </div>
+        <KvRow label="Review model">
+          <span className="mono tiny">{editing.primary_model || '(unset)'}</span>
+        </KvRow>
+        <KvRow label="Analyzer model">
+          <span className="mono tiny">{editing.analyzer_model || '(unset)'}</span>
+        </KvRow>
+      </SettingsCard>
+    );
+  }
+
+  if (!models) {
+    return (
+      <SettingsCard title="Loading models…" desc="Fetching the registry from /api/models">
+        <div className="tiny" style={{ color: 'var(--muted)' }}>Loading…</div>
+      </SettingsCard>
+    );
+  }
+
   return (
     <>
       <SettingsCard
@@ -393,12 +525,11 @@ function SectionModels({
         desc="The model dev-pr-review uses when analyzing a pull request diff and producing comments"
       >
         <KvRow label="Model id">
-          <input
-            className="input mono"
-            style={{ width: 260 }}
+          <ModelPicker
             value={editing.primary_model}
-            onChange={(e) => update('primary_model', e.target.value)}
-            placeholder="claude-opus-4-7"
+            onChange={(id) => update('primary_model', id)}
+            models={models}
+            showAll={showAll}
           />
         </KvRow>
         <KvRow label="Snapshotted" hint="Each pr-review entry records the model it ran under">
@@ -413,18 +544,18 @@ function SectionModels({
         desc="The model dev-analyze-repo-for-review uses to generate the Stage 2 prose knowledge doc (repo overview / conventions / deps)"
       >
         <KvRow label="Model id">
-          <input
-            className="input mono"
-            style={{ width: 260 }}
+          <ModelPicker
             value={editing.analyzer_model}
-            onChange={(e) => update('analyzer_model', e.target.value)}
-            placeholder="claude-opus-4-7"
+            onChange={(id) => update('analyzer_model', id)}
+            models={models}
+            showAll={showAll}
           />
         </KvRow>
-        <KvRow label="Trade-off" hint="Opus is richer; Haiku is ~3× faster">
+        <KvRow label="Trade-off" hint="Opus is richer; Haiku is ~3× faster + ~20× cheaper per token">
           <span className="tiny">
-            For small repos, switching to <code>claude-haiku-4-5</code> gives noticeably snappier
-            re-indexing at modest cost to overview depth.
+            For small repos, switching to{' '}
+            <code>{models.find((m) => m.family === 'haiku' && m.latest)?.id ?? 'claude-haiku-4-5'}</code>{' '}
+            gives noticeably snappier re-indexing at modest cost to overview depth.
           </span>
         </KvRow>
         <KvRow
@@ -435,6 +566,26 @@ function SectionModels({
             Saving persists the choice to the config file. The running model is still inherited from
             the parent <code>claude -p</code> invocation until Phase C wires this to the actual
             dispatch.
+          </span>
+        </KvRow>
+      </SettingsCard>
+
+      <SettingsCard title="Versions" desc="Toggle visibility of older minor versions in the dropdowns">
+        <KvRow label="Show historical versions">
+          <label
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13 }}
+          >
+            <input
+              type="checkbox"
+              checked={showAll}
+              onChange={(e) => setShowAll(e.target.checked)}
+            />
+            {showAll ? 'Showing all versions' : 'Latest of each family only'}
+          </label>
+        </KvRow>
+        <KvRow label="Registry" hint="Source of truth for the dropdown list + cost-per-token data">
+          <span className="tiny">
+            <code>scripts/models-registry.mjs</code> — update when new models release
           </span>
         </KvRow>
       </SettingsCard>

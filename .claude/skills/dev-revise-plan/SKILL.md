@@ -87,10 +87,34 @@ Produce a NEW plan that:
    - Explicitly noting in the section why the finding does not apply (e.g. `// nit acknowledged — kept as-is because <reason>`). Don't silently drop findings; the audit trail is the point.
 3. Addresses every Suggested changes item the same way — incorporated or explicitly justified.
 4. Appends a new section at the END of the body titled `## Revision <N> notes`, where `<N>` is `(prior plan_revision || 1) + 1`. List each finding the revision addressed, in the form:
+
    ```
    - [from review rev 1] <one-line summary of finding> — <how this revision addresses it>
    ```
+
    This is the auditable diff between revisions. Future readers (and the next dev-review-change pass, if run) will look here.
+
+5. **Emit a `findings_absorbed` self-report as frontmatter on the revised plan file.** After composing the plan body, classify the revise into one of three states based on how comprehensively it addressed the prior review:
+   - `full` — every prior-review finding was addressed (acted on OR explicitly justified-as-not-fixable in the revise notes)
+   - `partial` — some findings addressed, others deferred to a follow-up
+   - `none` — no findings were addressable (e.g. they were misframed; the revise pushed back rather than absorbing)
+
+   Emit the classification as YAML frontmatter at the TOP of the revised plan file:
+
+   ```yaml
+   ---
+   findings_absorbed: full | partial | none
+   findings_absorbed_note: "<one sentence justifying the classification, e.g. 'all 5 plan-review concerns addressed inline; cursor-coupling fix is in §3'>"
+   ---
+   ```
+
+   Append a one-line cross-reference at the bottom of the `## Revision <N> notes` section so a human-only reader notices the structured field:
+
+   ```
+   Findings absorption: **<full | partial | none>** — see `findings_absorbed` in frontmatter.
+   ```
+
+   The classification is the model's own honest judgment about the revise it just produced. The Overseer audits it later for honesty — over-claiming `full` when the next review still finds prior concerns will show up as a calibration signal in subsequent audits.
 
 ### Step 5: Write outputs
 

@@ -549,6 +549,38 @@ function asResult(v: unknown): ReviewDetail['result'] {
   return typeof v === 'string' && VALID_RESULTS.has(v) ? (v as ReviewDetail['result']) : null;
 }
 
+// Project the frontmatter `config:` block into the wire-shape snapshot.
+// Returns null when the block is missing OR malformed (any required field
+// absent) — the UI surfaces that as a "no snapshot recorded" state rather
+// than rendering partial fields that could mislead the reader.
+function parseConfigSnapshot(fm: Record<string, unknown>): ReviewDetail['config'] {
+  const raw = fm.config;
+  if (!raw || typeof raw !== 'object') return null;
+  const c = raw as Record<string, unknown>;
+  const primary_model = typeof c.primary_model === 'string' ? c.primary_model : null;
+  const comment_style = typeof c.comment_style === 'string' ? c.comment_style : null;
+  const focus_areas = Array.isArray(c.focus_areas)
+    ? (c.focus_areas as unknown[]).filter((x): x is string => typeof x === 'string')
+    : null;
+  const context_strategy = typeof c.context_strategy === 'string' ? c.context_strategy : null;
+  // custom_instructions_hash may be null intentionally (empty instructions);
+  // null is a valid value, only undefined / wrong-type counts as missing.
+  let custom_instructions_hash: string | null = null;
+  if (c.custom_instructions_hash === null) {
+    custom_instructions_hash = null;
+  } else if (typeof c.custom_instructions_hash === 'string') {
+    custom_instructions_hash = c.custom_instructions_hash;
+  }
+  if (!primary_model || !comment_style || !focus_areas || !context_strategy) return null;
+  return {
+    primary_model,
+    comment_style,
+    focus_areas,
+    context_strategy,
+    custom_instructions_hash,
+  };
+}
+
 // Scan vault/raw/dashboard-actions.jsonl for events relevant to this review.
 // Strategy: match the review id against the event's prompt (ai-prompt events)
 // or args (skill-completion events). Returns the most recent ~5 dispatches
@@ -689,6 +721,7 @@ async function toReviewDetailWithRuns(
     passes: rawPasses.map((p) => toReviewPass(p, summary)),
     recentRuns,
     linkedChange,
+    config: parseConfigSnapshot(fm),
   };
 }
 
@@ -715,6 +748,7 @@ function toReviewDetail(fm: Record<string, unknown>, body: string): ReviewDetail
     passes: rawPasses.map((p) => toReviewPass(p, summary)),
     recentRuns: [],
     linkedChange: null,
+    config: parseConfigSnapshot(fm),
   };
 }
 
@@ -833,10 +867,7 @@ export const reviewsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get('/', async () => {
     const wikiDir = join(REPO_ROOT, 'vault', 'wiki');
     const files = await walkMd(wikiDir);
-    const changeMetaById = new Map<
-      string,
-      { status: string; prReviewStatus: string | null }
-    >();
+    const changeMetaById = new Map<string, { status: string; prReviewStatus: string | null }>();
     const reviewEntries: Array<{ file: string; fm: Record<string, unknown>; body: string }> = [];
     for (const file of files) {
       let content: string;
@@ -850,8 +881,7 @@ export const reviewsRoutes: FastifyPluginAsync = async (fastify) => {
       if (fm.type === 'change' && typeof fm.id === 'string' && typeof fm.status === 'string') {
         changeMetaById.set(fm.id, {
           status: fm.status,
-          prReviewStatus:
-            typeof fm.pr_review_status === 'string' ? fm.pr_review_status : null,
+          prReviewStatus: typeof fm.pr_review_status === 'string' ? fm.pr_review_status : null,
         });
         continue;
       }
@@ -1079,8 +1109,7 @@ export const reviewsRoutes: FastifyPluginAsync = async (fastify) => {
       reply.code(404);
       return { ok: false, error: `repo entity "${repoId}" not found` };
     }
-    const localPath =
-      typeof repoEntityFm.local_path === 'string' ? repoEntityFm.local_path : null;
+    const localPath = typeof repoEntityFm.local_path === 'string' ? repoEntityFm.local_path : null;
     if (!localPath) {
       reply.code(404);
       return { ok: false, error: `repo "${repoId}" has no local_path set` };

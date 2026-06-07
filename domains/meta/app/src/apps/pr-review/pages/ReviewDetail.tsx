@@ -293,9 +293,7 @@ export function ReviewDetail({
   // (or terminally accepted via publish) but not yet acted on in code.
   // Mirrors detail.comments_to_address that the changes API computes server
   // side — calculated client-side here from the same source of truth.
-  const addressableCount = comments.filter(
-    (c) => c.state === 'accepted' && !c.actedOnAt,
-  ).length;
+  const addressableCount = comments.filter((c) => c.state === 'accepted' && !c.actedOnAt).length;
   const linkedChangeForReimplement = detail.linkedChange?.id ?? null;
   const [acceptingAll, setAcceptingAll] = useState(false);
 
@@ -452,17 +450,16 @@ export function ReviewDetail({
               <Icons.Code size={13} /> Re-implement ({addressableCount})
             </button>
           )}
-          {detail.linkedChange?.id &&
-            detail.linkedChange?.prReviewStatus === 'pending' && (
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={() => detail.linkedChange?.id && onMarkReady(detail.linkedChange.id)}
-                title={`Runs dev-mark-pr-ready against change ${detail.linkedChange.id}: flips pr_review_status to ready-for-human and stamps pr_ready_at. Vault-only — NO GitHub calls. Same action as the Mark Ready button on the change's PR tab. Merge the PR on GitHub yourself after.`}
-              >
-                <Icons.Check size={13} /> Mark ready
-              </button>
-            )}
+          {detail.linkedChange?.id && detail.linkedChange?.prReviewStatus === 'pending' && (
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => detail.linkedChange?.id && onMarkReady(detail.linkedChange.id)}
+              title={`Runs dev-mark-pr-ready against change ${detail.linkedChange.id}: flips pr_review_status to ready-for-human and stamps pr_ready_at. Vault-only — NO GitHub calls. Same action as the Mark Ready button on the change's PR tab. Merge the PR on GitHub yourself after.`}
+            >
+              <Icons.Check size={13} /> Mark ready
+            </button>
+          )}
           {detail.linkedChange?.prReviewStatus === 'ready-for-human' && (
             <span
               className="badge success"
@@ -520,6 +517,8 @@ export function ReviewDetail({
         acceptedCount={acceptedCount}
         totalComments={comments.length}
       />
+
+      <ConfigSnapshotCard config={detail.config} />
 
       <div className="filter-row" style={{ marginTop: 18 }}>
         <div className="tabs">
@@ -765,7 +764,10 @@ function PassesTimeline({
                   }}
                 >
                   {statsBits.map((b, ix) => (
-                    <span key={`stat-${ix}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    <span
+                      key={`stat-${ix}`}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                    >
                       <span style={{ fontSize: 8 }}>●</span>
                       {b}
                     </span>
@@ -1306,7 +1308,13 @@ function SourceSnippet({
   line: number;
 }) {
   type SnippetResp =
-    | { ok: true; lines: Array<{ n: number; t: string; kind?: 'highlight' | 'context' }>; focus: number; file: string; totalLines: number }
+    | {
+        ok: true;
+        lines: Array<{ n: number; t: string; kind?: 'highlight' | 'context' }>;
+        focus: number;
+        file: string;
+        totalLines: number;
+      }
     | { ok: false; error: string };
   const [data, setData] = useState<SnippetResp | null>(null);
 
@@ -1338,10 +1346,7 @@ function SourceSnippet({
   if (!file || !Number.isInteger(line) || line < 1) {
     // File-level comment — no anchor to show source for.
     return (
-      <div
-        className="tiny subtle"
-        style={{ padding: '6px 12px', fontStyle: 'italic' }}
-      >
+      <div className="tiny subtle" style={{ padding: '6px 12px', fontStyle: 'italic' }}>
         File-level comment — no specific line.
       </div>
     );
@@ -1817,9 +1822,7 @@ function PublishButton({
   // preferable to a double-click hazard that double-posts to GitHub.
   const { runs } = useDispatch();
   const publishInFlight = runs.some(
-    (r) =>
-      r.skill === 'dev-pr-review-publish' &&
-      (r.state === 'queued' || r.state === 'running'),
+    (r) => r.skill === 'dev-pr-review-publish' && (r.state === 'queued' || r.state === 'running'),
   );
   const disabled = pass.status === 'running' || n === 0 || publishInFlight;
   // Long tooltip explains the action AND when to use it. Publish is the
@@ -1983,6 +1986,180 @@ function Row({ k, v }: { k: string; v: React.ReactNode }) {
     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
       <span style={{ color: 'var(--muted)' }}>{k}</span>
       <span className="mono">{v}</span>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Config snapshot card — surfaces the policy values active when Pass 1 of
+// this review ran. Read-only; lives between SummaryCard and the comment
+// filter row. Compact one-line layout when collapsed (default); expands on
+// click for the full focus_areas list + custom_instructions_hash.
+//
+// Renders nothing when detail.config is null — entries that predate the
+// config-snapshot convention OR that fall back to the legacy parser path
+// don't carry the block. That's a graceful absence, not an error.
+
+function ConfigSnapshotCard({
+  config,
+}: {
+  config: ReviewDetailType['config'];
+}) {
+  const [expanded, setExpanded] = useState(false);
+  if (!config) return null;
+
+  // Compact pills shown in collapsed state. Click anywhere on the card body
+  // toggles expanded; the Settings link uses stopPropagation so it doesn't
+  // also toggle when clicked.
+  const pillStyle: React.CSSProperties = {
+    fontSize: 11,
+    padding: '3px 8px',
+    background: 'var(--bg-2)',
+    border: '1px solid var(--border)',
+    borderRadius: 4,
+    color: 'var(--text-2)',
+    fontFamily: 'var(--font-mono)',
+    whiteSpace: 'nowrap',
+  };
+
+  return (
+    <div
+      className="card"
+      style={{
+        marginTop: 14,
+        padding: '10px 14px',
+        cursor: 'pointer',
+      }}
+      onClick={() => setExpanded(!expanded)}
+      aria-expanded={expanded}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          flexWrap: 'wrap',
+        }}
+      >
+        <span
+          className="tiny"
+          style={{
+            fontSize: 10.5,
+            textTransform: 'uppercase',
+            letterSpacing: 0.4,
+            color: 'var(--muted)',
+            fontWeight: 600,
+          }}
+        >
+          Config snapshot
+        </span>
+        <span style={pillStyle} title="Review model active at Pass 1">
+          {config.primary_model}
+        </span>
+        <span style={pillStyle} title="Comment style">
+          {config.comment_style}
+        </span>
+        <span style={pillStyle} title="Context assembly strategy">
+          {config.context_strategy}
+        </span>
+        <span style={pillStyle} title="Focus areas count — expand for the full list">
+          {config.focus_areas.length} focus area{config.focus_areas.length !== 1 ? 's' : ''}
+        </span>
+        {config.custom_instructions_hash ? (
+          <span style={pillStyle} title="Custom instructions hash (first 12 hex chars of SHA256)">
+            instr: {config.custom_instructions_hash}
+          </span>
+        ) : (
+          <span style={{ ...pillStyle, color: 'var(--text-3)' }} title="No custom instructions">
+            no custom instructions
+          </span>
+        )}
+        <span style={{ flex: 1 }} />
+        <Link
+          to="/pr-review/settings"
+          onClick={(e) => e.stopPropagation()}
+          className="tiny"
+          style={{ color: 'var(--accent-text)', textDecoration: 'none' }}
+          title="Open current PR review settings"
+        >
+          Settings →
+        </Link>
+        <span
+          className="tiny"
+          style={{ color: 'var(--text-3)', fontSize: 11, marginLeft: 4 }}
+          aria-hidden
+        >
+          {expanded ? '▾' : '▸'}
+        </span>
+      </div>
+
+      {expanded && (
+        <div
+          style={{
+            marginTop: 10,
+            paddingTop: 10,
+            borderTop: '1px solid var(--border)',
+            display: 'grid',
+            gridTemplateColumns: 'auto 1fr',
+            gap: '6px 12px',
+            fontSize: 12,
+            lineHeight: 1.5,
+          }}
+        >
+          <span className="tiny subtle">Review model</span>
+          <code className="mono" style={{ fontSize: 12 }}>
+            {config.primary_model}
+          </code>
+          <span className="tiny subtle">Comment style</span>
+          <span>{config.comment_style}</span>
+          <span className="tiny subtle">Context strategy</span>
+          <code className="mono" style={{ fontSize: 12 }}>
+            {config.context_strategy}
+          </code>
+          <span className="tiny subtle">Focus areas</span>
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            {config.focus_areas.map((a) => (
+              <code
+                key={a}
+                className="mono"
+                style={{
+                  fontSize: 11,
+                  padding: '1px 6px',
+                  background: 'var(--bg-2)',
+                  borderRadius: 3,
+                }}
+              >
+                {a}
+              </code>
+            ))}
+          </div>
+          <span className="tiny subtle">Custom instructions</span>
+          <span>
+            {config.custom_instructions_hash ? (
+              <span>
+                <span className="tiny subtle">(hash: </span>
+                <code className="mono" style={{ fontSize: 11 }}>
+                  {config.custom_instructions_hash}
+                </code>
+                <span className="tiny subtle">
+                  ) — text not stored on entry. Compare against current value in Settings to detect
+                  policy drift.
+                </span>
+              </span>
+            ) : (
+              <span className="tiny subtle">(none — no extra prompt instructions were active)</span>
+            )}
+          </span>
+          <span className="tiny subtle" style={{ alignSelf: 'start' }}>
+            About
+          </span>
+          <span className="tiny subtle" style={{ lineHeight: 1.5 }}>
+            These values were active when Pass 1 ran. Subsequent passes carry their own per-pass
+            config in the body (see "Pass config" inside each Pass section); the snapshot here is
+            the merge-time-of-review reference.
+          </span>
+        </div>
+      )}
     </div>
   );
 }

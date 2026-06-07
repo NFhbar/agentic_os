@@ -1,0 +1,51 @@
+---
+id: {{slug}}
+type: lifecycle-audit
+domain: {{domain}}
+created: {{datetime}}
+updated: {{datetime}}
+tags: [audit, overseer]
+source: {{source}}
+private: false
+title: {{title}}
+audited_change_id: {{audited_change_id}}
+audited_change_path: {{audited_change_path}}
+project: {{project}}
+audit_status: provisional
+overseer_model: {{overseer_model}}
+overseer_dispatched_at: {{overseer_dispatched_at}}
+overseer_completed_at: {{datetime}}
+rubric_version: {{rubric_version}}
+verdict_overall: {{verdict_overall}}
+scores: {{scores}}
+per_skill_findings: {{per_skill_findings}}
+tuning_suggestions: {{tuning_suggestions}}
+red_flags: []
+files_touched: {{files_touched}}
+followup_signals: []
+audit_cost_usd: {{audit_cost_usd}}
+audit_duration_ms: {{audit_duration_ms}}
+---
+
+# {{title}}
+
+## Summary
+{{summary}}
+
+## Lifecycle trace
+{{lifecycle_trace}}
+
+## Per-skill assessment
+{{per_skill_assessment}}
+
+## Patterns observed
+{{patterns}}
+
+## Tuning suggestions
+{{tuning_suggestions_prose}}
+
+## Cost + duration
+{{cost_breakdown}}
+
+## Open questions
+{{open_questions}}
