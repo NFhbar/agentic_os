@@ -260,7 +260,7 @@ The plan should already account for this, but EXECUTE is the last cheap point to
 
 When no `parent_change` is set, skip silently.
 
-_Rationale: added in response to the `parent_change frontmatter is load-bearing context that wasn't used` finding in [[audit-abi-decoding-via-codegen-typed-event-structs-and-per-event]] — the change's parent named the reorg handler, but execute introduced typed tables with no rewind hook (caught only at PR-review pass-3, ~$5+ in intermediate cycles). See [[decision-dev-write-change-when-a-change-has-a-parent-change-field-execute]]._
+_Rationale: added in response to the `parent_change frontmatter is load-bearing context that wasn't used` finding in audit `audit-abi-decoding-via-codegen-typed-event-structs-and-per-event` — the change's parent named the reorg handler, but execute introduced typed tables with no rewind hook (caught only at PR-review pass-3, ~$5+ in intermediate cycles). See decision `decision-dev-write-change-when-a-change-has-a-parent-change-field-execute` in your local vault (per-install — these references are intentionally NOT wikilinks because the targets live in gitignored audit/decision paths and won't resolve on other installs)._
 
 2. If `review_status == "overridden"`: record an audit event BEFORE proceeding (makes overrides auditable):
    ```bash
@@ -428,7 +428,7 @@ For each new abstraction in the diff, verify:
 
 When the check surfaces an issue, fix it in this same address-comments cycle (loop back to step 6 for the additional edit, then re-check). The point is to catch boundary defects pre-commit, not punt them to the next PR-review pass.
 
-_Rationale: this check was added in response to the `fix-introduces-defect-at-boundary` pattern observed across 3 consecutive address-comments cycles in [[audit-abi-decoding-via-codegen-typed-event-structs-and-per-event]]. Each cycle's fix introduced a new abstraction whose boundary obligations were not satisfied — caught only by the next PR-review pass at $5/occurrence. See [[decision-dev-write-change-after-applying-a-fix-in-the-address-comments-phase]] for evidence + validation target._
+_Rationale: this check was added in response to the `fix-introduces-defect-at-boundary` pattern observed across 3 consecutive address-comments cycles in audit `audit-abi-decoding-via-codegen-typed-event-structs-and-per-event`. Each cycle's fix introduced a new abstraction whose boundary obligations were not satisfied — caught only by the next PR-review pass at $5/occurrence. See decision `decision-dev-write-change-after-applying-a-fix-in-the-address-comments-phase` in your local vault (per-install — these references are intentionally NOT wikilinks because the targets live in gitignored audit/decision paths)._
 
 7. **Commit the follow-up** following [[standard-git-hygiene]] § 4. Subject convention:
    - `<type>(<scope>): address review comments — <short summary>` where `<short summary>` is a one-clause description (e.g. "fix copyright year, drop unused import").
