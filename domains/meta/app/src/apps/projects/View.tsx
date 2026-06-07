@@ -958,6 +958,7 @@ function ProjectDetailPane({
               (Task #425). */}
           {detail.owned_changes.length > 0 && (
             <ProjectPulseCard
+              projectId={detail.project.id ?? ''}
               ownedChanges={detail.owned_changes}
               rollup={detail.rollup}
               researchReports={detail.research_reports}
@@ -3328,9 +3329,9 @@ function ResearchReportsSubsection({
 }: {
   reports: ResearchReportRef[];
   // Owning project id — used to deep-link the Add button to
-  // /research?add=1&project=<id> so the modal opens pre-selected
-  // (Task #390). Optional so other call sites without a project context
-  // can still render the list.
+  // /research/new?project=<id> so the form opens pre-selected on this
+  // project. Optional so other call sites without a project context can
+  // still render the list.
   projectId?: string;
   onOpenReport: (id: string) => void;
 }) {
@@ -3341,10 +3342,8 @@ function ResearchReportsSubsection({
     <button
       type="button"
       className="btn btn-sm btn-primary"
-      onClick={() =>
-        navigate(`/research?add=1&project=${encodeURIComponent(projectId)}`)
-      }
-      title="Scaffold a research-report entry under this project. Opens the Research app's Add Report modal pre-selected on this project; you supply the topic + materials."
+      onClick={() => navigate(`/research/new?project=${encodeURIComponent(projectId)}`)}
+      title="Scaffold a research-report entry under this project. Opens the Research app's Add page pre-selected on this project; you supply the topic + materials."
     >
       <Icons.Plus size={11} /> Add research report
     </button>
@@ -3750,15 +3749,50 @@ function ProjectPhaseTimeline({ project }: { project: ProjectSummary }) {
 //   - comment-severity mix across owned PR-reviews
 //   - notification fire counts scoped to project
 //   - reviews-to-approve historical avg
+// Lightweight audit-aggregate shape — mirrors the server's AuditAggregate
+// type at domains/meta/app/server/routes/audits.types.ts. Inlined here as
+// a narrow projection rather than importing from server.types to keep this
+// file's dependency surface small. Update both when the wire shape changes.
+interface PulseAuditAggregate {
+  total_audits: number;
+  verdict_distribution: { good: number; mixed: number; poor: number; unknown: number };
+  top_tags: Array<{ tag: string; count: number }>;
+  top_tuning_suggestions: Array<{ skill: string; count: number }>;
+  mean_scores: { correctness: number; completeness: number; efficiency: number } | null;
+}
+
 function ProjectPulseCard({
+  projectId,
   ownedChanges,
   rollup,
   researchReports,
 }: {
+  // Project id — used to scope the audits-aggregate fetch via
+  // /api/audits/aggregate?project=<id>. Empty string is a valid no-op
+  // (the request still works, returns global aggregate; tile renders
+  // an opt-in hint instead).
+  projectId: string;
   ownedChanges: OwnedChangeRef[];
   rollup: ProjectRollup;
   researchReports: ResearchReportSummary[];
 }) {
+  // Audit aggregate — fetched on mount. Null while loading; null after
+  // failure (tile gracefully degrades to the "enable audits" hint).
+  const [auditAggregate, setAuditAggregate] = useState<PulseAuditAggregate | null>(null);
+  useEffect(() => {
+    if (!projectId) return;
+    let cancelled = false;
+    getJson<PulseAuditAggregate>(`/api/audits/aggregate?project=${encodeURIComponent(projectId)}`)
+      .then((r) => {
+        if (!cancelled) setAuditAggregate(r);
+      })
+      .catch(() => {
+        // Silent — audits are opt-in, missing aggregate is normal.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
   // Lifecycle distribution
   const lifecycle = ownedChanges.reduce<Record<string, number>>((acc, c) => {
     const k = c.status ?? 'unknown';
@@ -3831,12 +3865,13 @@ function ProjectPulseCard({
         )}
       </div>
 
-      {/* Four metric tiles — top row */}
+      {/* Five metric tiles — top row. auto-fit so a 5th tile wraps gracefully
+          on narrower screens rather than forcing 5 cramped columns. */}
       <div
         style={{
           padding: '12px 16px',
           display: 'grid',
-          gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
           gap: 16,
           borderBottom: '1px solid var(--border)',
         }}
@@ -3878,8 +3913,28 @@ function ProjectPulseCard({
           }
           tooltip="Research-report entries owned by this project, grouped by review_status."
         />
+        <PulseTile
+          label="Audits"
+          value={
+            auditAggregate && auditAggregate.total_audits > 0
+              ? String(auditAggregate.total_audits)
+              : 'Off'
+          }
+          sub={
+            auditAggregate && auditAggregate.total_audits > 0
+              ? `${auditAggregate.verdict_distribution.good} good · ${auditAggregate.verdict_distribution.mixed} mixed · ${auditAggregate.verdict_distribution.poor} poor`
+              : 'Enable in project frontmatter'
+          }
+          tooltip={
+            auditAggregate && auditAggregate.total_audits > 0
+              ? `${auditAggregate.total_audits} lifecycle audits produced by meta-overseer-review. ${auditAggregate.top_tuning_suggestions.length > 0 ? `${auditAggregate.top_tuning_suggestions.length} recurring tuning suggestions raised — see Insights → Audits.` : 'No recurring tuning suggestions yet.'}`
+              : 'Lifecycle audits are opt-in per project. Add `audit: { enabled: true, mode: on-complete }` to project frontmatter to auto-fire the Overseer when changes merge. Audits feed the self-improvement loop.'
+          }
+          severity={
+            auditAggregate && auditAggregate.verdict_distribution.poor > 0 ? 'warn' : 'neutral'
+          }
+        />
       </div>
-
 
       {/* Top-N skills by cost — readable as a small leaderboard */}
       {topSkills.length > 0 && (
@@ -3920,9 +3975,9 @@ function ProjectPulseCard({
           color: 'var(--text-3)',
         }}
       >
-        Live derive from events.db + owned-changes manifest. V2 candidates: lifecycle velocity
-        (plan → merged median), review efficiency (passes-to-approve median), bottleneck-stage
-        wall-time, comment-severity mix.
+        Live derive from events.db + owned-changes manifest. V2 candidates: lifecycle velocity (plan
+        → merged median), review efficiency (passes-to-approve median), bottleneck-stage wall-time,
+        comment-severity mix.
       </div>
     </section>
   );

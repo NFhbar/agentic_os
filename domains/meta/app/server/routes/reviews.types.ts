@@ -151,6 +151,23 @@ export interface LinkedChange {
   prReadyAt: string | null;
 }
 
+// Frontmatter `config:` block as written by dev-pr-review at review-creation
+// time. Snapshot of the policy values active when the FIRST pass ran — does
+// not change across subsequent passes (passes use the body's "Pass config"
+// subsection for their own per-pass record). Null when the entry predates
+// the config-snapshot convention or the field is otherwise malformed.
+export interface ReviewConfigSnapshot {
+  primary_model: string;
+  comment_style: 'terse' | 'concise' | 'detailed' | string;
+  focus_areas: string[];
+  context_strategy: string;
+  // SHA256-of-first-12-hex of the custom_instructions text active at review
+  // time. Null when instructions were empty. Useful for "did anyone change
+  // the policy since this review ran?" — diff this against the current
+  // /api/pr-review/config response's custom_instructions_hash.
+  custom_instructions_hash: string | null;
+}
+
 // Full GET /api/reviews/:id response payload (under the `review` key).
 export interface ReviewDetail {
   id: string;
@@ -173,4 +190,8 @@ export interface ReviewDetail {
   passes: ReviewPass[];
   recentRuns: RecentRun[];
   linkedChange: LinkedChange | null;
+  // Config snapshot — what review-policy values were active at the time the
+  // review's first pass ran. Null when the entry doesn't carry a config: block
+  // (older entries, or entries written outside dev-pr-review).
+  config: ReviewConfigSnapshot | null;
 }

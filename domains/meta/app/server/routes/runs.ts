@@ -10,6 +10,8 @@
 import type { ChildProcess } from 'node:child_process';
 import { spawn } from 'node:child_process';
 import { createReadStream, existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
@@ -40,6 +42,7 @@ import { listRuns } from '../../../../../scripts/runs-db.mjs';
 import { markRunning } from '../../../../../scripts/runs-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { unlinkOutput } from '../../../../../scripts/runs-db.mjs';
+import { parseFrontmatter } from '../frontmatter.js';
 import { parseStreamJsonLine } from '../lib/stream-json.js';
 import { REPO_ROOT, safePath } from '../repo.js';
 import { onAutomationStepComplete, onChangeAutomationStepComplete } from './automation.js';
@@ -112,6 +115,54 @@ const sessions = new Map<string, RunSession>();
 export type { StartRunInput, StartRunResult } from './runs.types.js';
 import type { StartRunInput, StartRunResult } from './runs.types.js';
 
+// Resolve the effort level to pass to `claude -p`. Precedence:
+//   1. The skill's own `effort:` frontmatter field (per-skill opt-up/down)
+//   2. .claude/settings.local.json `effortLevel` (per-install override)
+//   3. .claude/settings.json `effortLevel` (team-tracked baseline)
+//   4. null → omit `--effort` (let Claude Code use its model-specific default)
+//
+// CRITICAL: `claude -p` does NOT read effortLevel from settings files on its
+// own — without an explicit `--effort` flag the subprocess falls back to
+// Claude Code's built-in default, which silently ignores the dashboard's
+// Settings → Effort dropdown. This function closes that gap so dispatched
+// skill runs honor the same effort settings as interactive sessions.
+const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+
+async function readEffortFromJson(path: string): Promise<string | null> {
+  try {
+    const text = await readFile(path, 'utf8');
+    const parsed = JSON.parse(text);
+    const v = parsed?.effortLevel;
+    return typeof v === 'string' && VALID_EFFORTS.has(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readEffortFromSkill(skillName: string): Promise<string | null> {
+  try {
+    const text = await readFile(
+      join(REPO_ROOT, '.claude', 'skills', skillName, 'SKILL.md'),
+      'utf8',
+    );
+    const { fm } = parseFrontmatter(text);
+    const v = fm.effort;
+    return typeof v === 'string' && VALID_EFFORTS.has(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function resolveEffortForRun(skillName: string | null): Promise<string | null> {
+  if (skillName) {
+    const fromSkill = await readEffortFromSkill(skillName);
+    if (fromSkill) return fromSkill;
+  }
+  const fromLocal = await readEffortFromJson(join(REPO_ROOT, '.claude', 'settings.local.json'));
+  if (fromLocal) return fromLocal;
+  return await readEffortFromJson(join(REPO_ROOT, '.claude', 'settings.json'));
+}
+
 export async function startRun(input: StartRunInput): Promise<StartRunResult> {
   const { prompt } = input;
   const promptAttribution = extractFromPrompt(prompt) as {
@@ -176,22 +227,25 @@ export async function startRun(input: StartRunInput): Promise<StartRunResult> {
   const evicted = evictBeyondCap(200) as Array<{ id: string; output_path: string }>;
   for (const ev of evicted) unlinkOutput(ev.output_path);
 
-  const child = spawn(
-    'claude',
-    [
-      '-p',
-      prompt,
-      '--permission-mode',
-      'bypassPermissions',
-      '--output-format',
-      'stream-json',
-      '--verbose',
-    ],
-    {
-      cwd: REPO_ROOT,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    },
-  );
+  const effort = await resolveEffortForRun(skill);
+  const args = [
+    '-p',
+    prompt,
+    '--permission-mode',
+    'bypassPermissions',
+    '--output-format',
+    'stream-json',
+    '--verbose',
+  ];
+  if (effort) args.push('--effort', effort);
+  if (effort) {
+    console.log(`runs: spawning ${skill ?? '(unknown skill)'} with --effort ${effort}`);
+  }
+
+  const child = spawn('claude', args, {
+    cwd: REPO_ROOT,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
 
   markRunning(id, child.pid ?? null);
 
@@ -334,10 +388,7 @@ function spawnRun(session: RunSession) {
       // distinguishable error string ("killed: wall-time cap exceeded") so
       // they can tell wall-time kills from natural failures or orphan-sweep
       // detections. See sweepWallTimeCap below + Task #398 / #418.
-      error:
-        state === 'failed'
-          ? (session.killedReason ?? (session.stderrAll || null))
-          : null,
+      error: state === 'failed' ? (session.killedReason ?? (session.stderrAll || null)) : null,
       cost_usd: session.costUsd,
       tokens_in: session.tokensIn,
       tokens_out: session.tokensOut,
@@ -379,23 +430,13 @@ function spawnRun(session: RunSession) {
     // tick the state machine forward (advance or pause per the gate rules).
     // Fire-and-forget — auto-tick is best-effort and must not block the
     // close handler's cleanup. Internal failures log to console only.
-    void onAutomationStepComplete(
-      session.project,
-      session.change_id,
-      session.skill,
-      exit,
-    );
+    void onAutomationStepComplete(session.project, session.change_id, session.skill, exit);
     // Phase 2: per-change automation hook. Runs alongside the project hook
     // above — they read from different frontmatter (project vs change), so
     // there's no conflict. The change hook only acts when the change's
     // automation.enabled is true AND last_run_id matches, so unrelated runs
     // are silent no-ops.
-    void onChangeAutomationStepComplete(
-      session.change_id,
-      session.skill,
-      exit,
-      session.id,
-    );
+    void onChangeAutomationStepComplete(session.change_id, session.skill, exit, session.id);
   });
 
   child.on('error', (err) => {

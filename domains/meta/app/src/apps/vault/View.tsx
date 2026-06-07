@@ -17,6 +17,7 @@ import { formatRelative } from '../../lib/time';
 import { useResizable } from '../../lib/useResizable';
 import { type Manifest, type ManifestEntry, fetchEntry, fetchManifest } from '../../lib/vault';
 import { Icons } from '../../shared';
+import { DecisionActions } from './DecisionActions';
 import '../../shared/styles.css';
 
 const EXPANDED_GROUPS_KEY = 'agentic-os/expanded-wiki-groups';
@@ -553,6 +554,19 @@ function WikiBrowser() {
                   <Icons.Trash size={11} /> Delete
                 </button>
               </div>
+              {selectedEntry && selectedEntry.type === 'decision' && (
+                <DecisionActions
+                  path={selected}
+                  content={content}
+                  onChanged={() => {
+                    // After Accept saved or Apply finished, re-fetch the entry
+                    // so frontmatter changes (status flip, etc.) refresh the
+                    // action surface. Mirrors how PR review entries re-fetch
+                    // after a comment-state mutation.
+                    fetchEntry(selected).then((r) => setContent(r.content));
+                  }}
+                />
+              )}
               <EditableMarkdown path={selected} content={content} onSaved={setContent} />
               {selectedEntry &&
                 (selectedEntry.type === 'change' || selectedEntry.type === 'pr-review') && (
@@ -803,10 +817,7 @@ function RecentActivityPanel({
   const count = events?.length ?? 0;
 
   return (
-    <div
-      className="card"
-      style={{ marginTop: 18, padding: 0, fontSize: 13 }}
-    >
+    <div className="card" style={{ marginTop: 18, padding: 0, fontSize: 13 }}>
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -855,11 +866,7 @@ function RecentActivityPanel({
                       alignItems: 'center',
                     }}
                   >
-                    <span
-                      className="mono"
-                      style={{ color: 'var(--muted)' }}
-                      title={e.ts}
-                    >
+                    <span className="mono" style={{ color: 'var(--muted)' }} title={e.ts}>
                       {formatRelative(e.ts)}
                     </span>
                     <span className="mono" style={{ color, fontWeight: 500 }}>

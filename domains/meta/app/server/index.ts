@@ -25,6 +25,7 @@ import { auth } from './auth.js';
 import { dispatchEvent } from './notifications/dispatcher.js';
 import { actionRoutes } from './routes/action.js';
 import { auditRoutes } from './routes/audit.js';
+import { auditsRoutes } from './routes/audits.js';
 import {
   automationRoutes,
   changeAutomationRoutes,
@@ -33,12 +34,14 @@ import {
 import { changesRoutes } from './routes/changes.js';
 import { commandsRoutes } from './routes/commands.js';
 import { curationRoutes } from './routes/curation.js';
+import { decisionsRoutes } from './routes/decisions.js';
 import { domainsRoutes } from './routes/domains.js';
 import { editRoutes } from './routes/edit.js';
 import { eventsDbRoutes } from './routes/events-db.js';
 import { eventsRoutes } from './routes/events.js';
 import { healthRoutes } from './routes/health.js';
 import { mcpsRoutes } from './routes/mcps.js';
+import { modelsRoutes } from './routes/models.js';
 import { notificationsRoutes } from './routes/notifications.js';
 import { prReviewConfigRoutes } from './routes/pr-review-config.js';
 import { prReviewMetricsRoutes } from './routes/pr-review-metrics.js';
@@ -49,7 +52,10 @@ import { reviewsRoutes } from './routes/reviews.js';
 import { routerLogRoutes } from './routes/router-log.js';
 import { runsRoutes } from './routes/runs.js';
 import { schedulesRoutes } from './routes/schedules.js';
+import { settingsRoutes } from './routes/settings.js';
 import { skillsRoutes } from './routes/skills.js';
+import { tuningSuggestionsRoutes } from './routes/tuning-suggestions.js';
+import { usageRoutes } from './routes/usage.js';
 import { vaultRoutes } from './routes/vault.js';
 
 // maxParamLength bumped from the find-my-way default of 100. Audit
@@ -76,6 +82,13 @@ await fastify.register(routerLogRoutes, { prefix: '/api/router-log' });
 await fastify.register(curationRoutes, { prefix: '/api/curation' });
 await fastify.register(schedulesRoutes, { prefix: '/api/schedules' });
 await fastify.register(auditRoutes, { prefix: '/api/audit' });
+// Lifecycle-audit entries (Overseer output) — distinct from /api/audit
+// (which is the OS-compliance audit). Plural namespace for the per-change
+// audits the meta-overseer-review skill produces.
+await fastify.register(auditsRoutes, { prefix: '/api/audits' });
+await fastify.register(tuningSuggestionsRoutes, { prefix: '/api/tuning-suggestions' });
+await fastify.register(modelsRoutes, { prefix: '/api/models' });
+await fastify.register(decisionsRoutes, { prefix: '/api/decisions' });
 await fastify.register(eventsRoutes, { prefix: '/api/events' });
 await fastify.register(eventsDbRoutes, { prefix: '/api/events-db' });
 await fastify.register(projectsRoutes, { prefix: '/api/projects' });
@@ -98,6 +111,8 @@ await fastify.register(actionRoutes, { prefix: '/api/action' });
 await fastify.register(runsRoutes, { prefix: '/api/runs' });
 await fastify.register(editRoutes, { prefix: '/api/edit' });
 await fastify.register(healthRoutes, { prefix: '/api/health' });
+await fastify.register(settingsRoutes, { prefix: '/api/settings' });
+await fastify.register(usageRoutes, { prefix: '/api/usage' });
 
 // Orphan sweep — any `runs` row stuck in state='running' from a previous
 // process gets reaped here so the dashboard never strands rows after a

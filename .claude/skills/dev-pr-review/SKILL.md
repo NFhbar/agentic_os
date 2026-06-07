@@ -145,6 +145,28 @@ The review is a **single-model, single-call** review: one prompt that asks the m
 
     Knowledge absence is **not an error** — first reviews on a freshly-added external repo may race the analyze skill. The review proceeds against diff + cache files, just without prose conventions to guide it.
 
+    **c. Load the import graph (if present).** Check the cache entry's frontmatter for `import_graph_path`. If set + the file exists, read it; otherwise skip this sub-step and treat `import_graph = null` (the IMPORT GRAPH block in step 11's prompt becomes "(unavailable)" and the model falls back to filename-only reasoning).
+
+    The import graph is a sidecar JSON produced by `dev-cache-pr-review-repo` at cache-pull time via `scripts/extract-imports.mjs`. Shape:
+
+    ```json
+    {
+      "files": {
+        "<rel-path>": {
+          "lang": "go|tsjs|py",
+          "imports": ["<rel-path>", ...],
+          "imported_by": ["<rel-path>", ...],
+          "tests": ["<rel-path>", ...]
+        }
+      },
+      "hubs": [{"file": "<rel-path>", "callers": <n>}, ...]
+    }
+    ```
+
+    From the diff (step 9), extract the set of `touched_files` (file paths after the `+++ b/...` markers, normalized to repo-relative). For each touched file, look it up in `import_graph.files` and capture its `imports` / `imported_by` / `tests` arrays. Also compute `touched_hubs = touched_files ∩ hubs` so the prompt can flag hub-file changes prominently.
+
+    Absence is **not an error** — graph extraction may have failed at cache time (unsupported language, etc.), or the cache may predate the import-graph feature. The review degrades gracefully to filename-only reasoning.
+
 11. **Run the review.** Compose a prompt to yourself (the model running this skill) with this structure. **The skeleton below is the contract; the knobs come from config.**
 
     ```
@@ -165,6 +187,20 @@ The review is a **single-model, single-call** review: one prompt that asks the m
     - Raw clone at <cache_path> (or "(unavailable — diff-only review)" if step 10a failed). Read tool works on any file under it. Do NOT edit anything there — read-only by contract.
     - Repo knowledge at <knowledge_path> (or "(none — generic-judgment review)" if absent). Read this FIRST, before forming opinions on style, conventions, error handling, or testing patterns. It describes how THIS REPO does things — review by those standards, not generic best practices.
     When a convention is documented in the knowledge entry, prefer the repo's convention over your defaults. When the knowledge entry is silent on a topic, fall back to general principles + what you see in the cache.
+
+    IMPORT GRAPH (touched files):
+    <for each touched file, render one block — or "(unavailable — no import graph for this cache)" if step 10c had nothing to load>
+        <touched-file-rel-path>
+          imports:     <comma-list of imports, or "(none)">
+          imported by: <comma-list of imported_by, or "(none — leaf / entry point)">
+          tests:       <comma-list of tests, or "(none — no co-located tests detected)">
+
+    HUBS IN THIS REPO (>3 callers, top 20):
+    <render each hub as one line:>
+        <hub-file-rel-path> (<callers> callers)<flag with " ← TOUCHED BY THIS PR" if file is in touched_hubs>
+    <if hubs list is empty, render "(none above threshold)">
+
+    Use the import graph as blast-radius context: when a touched file is imported by many others, review the changed behavior with extra care for backwards compatibility. When a touched file is itself a hub, treat that as a prompt to consider every downstream caller's assumptions. Tests adjacent to a touched file are the natural place to verify behavior — if the PR doesn't update those tests, flag it.
 
     FOCUS AREAS: <comma-joined focus_areas from config>
     COMMENT STYLE: <comment_style from config>
