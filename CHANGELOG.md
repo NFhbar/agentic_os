@@ -6,7 +6,11 @@ The canonical version is recorded at [`vault/wiki/_seed/meta/reference/os-versio
 
 ## [Unreleased]
 
-(no unreleased work)
+### Fixed
+
+- **`dev-pr-review` no longer wastes spend re-reviewing unchanged commits.** New step 8a pre-flight gate (mirrors `meta-overseer-review`'s 24h-debounce pattern, content-based instead of time-based): on continuation passes, compare the PR's current `head.sha` against the prior pass's `last_head_sha` and short-circuit with a no-op when they match. The short-circuit message includes a hint for the automation orchestrator to advance only after a new commit lands. Override via new `force: true` input when config/focus_notes/custom_instructions changed and a fresh pass against the same commit is genuinely desired. Closes the consumer side of the head_sha-drift waste pattern (audit `audit-mull-serve-http-json-query-api…` suggestion #0; documented $3.01 / 38% of pr-review spend wasted on one lifecycle alone via `pr-review-re-runs-against-unchanged-head-sha` recurrences)
+- **`last_head_sha:` field** added to `archetype-pr-review` — written by `dev-pr-review` step 12 on every pass write (both new and continuation). Powers the new debounce gate. Documented in `vault/wiki/_seed/meta/reference/archetype-pr-review.md`. Backwards-compatible: entries from prior versions fall back to body-scan for the last `## Pass N` block's recorded head SHA, then proceed if absent
+- **`dev-analyze-repo-for-review` head_sha writeback is now non-negotiable** (#444). Previously the cache-entry writeback in step 3 was conditional ("if drift detected") and easy for the model to skip when values happened to match — producing the `cache.head_sha drift` finding where the cache entry showed stale SHAs after analyze-repo fetched a newer HEAD. Prose hardened to require unconditional `head_sha` + `updated` writeback every run, with explicit anti-optimization wording (the model must NOT skip this even when the new value matches the existing one). Closes the producer side of the head_sha-drift loop
 
 ## [0.4.0] — 2026-06-07 — Settings app + effort propagation
 

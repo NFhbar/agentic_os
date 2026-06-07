@@ -96,9 +96,13 @@ The `based_on_commit` field on the knowledge entry lets the audit / dashboard de
    new_head_sha=$(git -C <local_path> rev-parse HEAD)
    ```
 
-   If the cache's stored `head_sha != new_head_sha`, the cache was stale relative to remote. **Edit the cache entry's frontmatter** to update `head_sha: <new_head_sha>` and `fetched_at: <now ISO>` — the cache entry is the canonical record of what's on disk, and the staleness gate in step 6 needs the up-to-date value to decide.
+   **MUST: write back the resolved head_sha to the cache entry — every time, unconditionally.** Open `vault/wiki/development/pr-review-repo-cache/<cache_id>.md` and surgically Edit the frontmatter:
+   - `head_sha: <new_head_sha>` (set to the just-resolved value, regardless of whether it matched what was there)
+   - `updated: <now ISO>` (bumps freshness so the dashboard reflects the check)
 
-   Use the resolved `new_head_sha` for the rest of this procedure as `cache.head_sha`. The audit's `repo-knowledge-stale` finding only clears when `based_on_commit == cache.head_sha == remote HEAD`; without this step, analyze can pin to an outdated SHA and the finding re-fires immediately.
+   This writeback is non-negotiable — skipping it (or doing it conditionally) is exactly the bug that produced the `cache.head_sha drift` finding. The cache entry is the canonical record of what's on disk; if analyze-repo fetches and resolves a new HEAD but doesn't write it back, downstream consumers (`dev-pr-review`'s repo-knowledge load, the dashboard's cache status display, the audit's `repo-knowledge-stale` detector) read stale values and either redo work or fire spurious "stale" findings. The model executing this step must NOT optimize this away as "no change" when the values happen to match — write it back every run.
+
+   Use the resolved `new_head_sha` for the rest of this procedure as `cache.head_sha`. The audit's `repo-knowledge-stale` finding only clears when `based_on_commit == cache.head_sha == remote HEAD`; without this writeback step, analyze can pin to an outdated SHA and the finding re-fires immediately.
 
    **Skip this step if `inputs.no_fetch == true`** — operators can opt out for air-gapped runs or when reviewing a specific historic commit. Default is to fetch.
 
