@@ -2,6 +2,7 @@
 name: meta-add-app
 description: Scaffold a new OS app — default is a dashboard module (a folder under domains/meta/app/src/apps/), standalone Vite+Fastify deployment available with --standalone for rare cases
 user-invocable: true
+recommended_effort: medium
 version: 2
 domain: meta
 tags: [scaffold, evolution, app]

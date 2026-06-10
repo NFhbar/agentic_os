@@ -27,7 +27,17 @@ interface SettingsLayer {
 interface SkillEffortRow {
   name: string;
   effort: EffortLevel | null;
+  recommended_effort: EffortLevel | null;
 }
+
+// Ordering for compare-with-recommendation logic. Higher index = higher effort.
+const EFFORT_ORDER: Record<EffortLevel, number> = {
+  low: 0,
+  medium: 1,
+  high: 2,
+  xhigh: 3,
+  max: 4,
+};
 
 interface SettingsResponse {
   project: SettingsLayer;
@@ -46,8 +56,8 @@ const EFFORT_DESCRIPTIONS: Record<EffortLevel, string> = {
   max: 'Highest available effort. Slow + expensive. Reserve for hardest synthesis tasks.',
 };
 
-// Rough cost multiplier vs `high`, for the per-skill table footer. Real ratio
-// depends on the task; these are conservative guidance values.
+// Rough cost multiplier vs `high`. Still used in the project-effort details
+// panel; per-skill table now shows the per-skill Recommended column instead.
 const EFFORT_COST_HINT: Record<EffortLevel, string> = {
   low: '~0.3×',
   medium: '~0.7×',
@@ -243,12 +253,19 @@ export function EffortPanel() {
               the project default · {inheritedCount} inherit
             </span>
           </div>
+          <ApplyAllRecommendationsButton
+            skills={skills}
+            projectDefault={effective_effort}
+            onChanged={refresh}
+          />
         </div>
         <div className="tiny subtle" style={{ padding: '10px 16px', fontSize: 11 }}>
-          Bump a skill above the project default for synthesis-heavy work (
-          <code className="mono">dev-write-change</code>,{' '}
-          <code className="mono">meta-overseer-review</code>), or drop it lower for mechanical
-          wrappers. Writes go to the team-tracked{' '}
+          By default every skill inherits the project-wide effort above. Use Override to opt a
+          specific skill up or down. The <strong>Recommended</strong> column shows guidance baked
+          into each skill (<code className="mono">recommended_effort:</code> frontmatter) — click
+          <strong> ↑ apply</strong> / <strong>↓ apply</strong> on any row to copy the recommendation
+          into the override, or use <strong>Apply recommendations</strong> above to batch all deltas
+          at once. Writes go to team-tracked{' '}
           <code className="mono">.claude/skills/&lt;name&gt;/SKILL.md</code> frontmatter — commit to
           share with your team, or <code className="mono">git checkout</code> to discard.
         </div>
@@ -258,7 +275,7 @@ export function EffortPanel() {
               <th>Skill</th>
               <th style={{ width: 130 }}>Effective effort</th>
               <th style={{ width: 200 }}>Override</th>
-              <th style={{ width: 110 }}>Cost vs default</th>
+              <th style={{ width: 160 }}>Recommended</th>
             </tr>
           </thead>
           <tbody>
@@ -274,6 +291,83 @@ export function EffortPanel() {
           </tbody>
         </table>
       </section>
+    </div>
+  );
+}
+
+// Bulk "Apply recommendations" — finds every skill whose recommended_effort
+// differs from its current effective effort and applies the recommendation.
+// Skips skills with no recommendation or with already-matching effective.
+// Sequential PUTs (not parallel) to avoid hammering the server and to make
+// any single failure easy to diagnose.
+function ApplyAllRecommendationsButton({
+  skills,
+  projectDefault,
+  onChanged,
+}: {
+  skills: SkillEffortRow[];
+  projectDefault: EffortLevel | null;
+  onChanged: () => void;
+}) {
+  const [applying, setApplying] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+
+  const candidates = skills.filter((s) => {
+    if (!s.recommended_effort) return false;
+    const effective = s.effort ?? projectDefault;
+    return s.recommended_effort !== effective;
+  });
+
+  async function applyAll() {
+    if (candidates.length === 0) return;
+    setApplying(true);
+    setToast(null);
+    let ok = 0;
+    let failed = 0;
+    for (const s of candidates) {
+      try {
+        const r = await fetch(`/api/settings/skills/${encodeURIComponent(s.name)}/effort`, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ effortLevel: s.recommended_effort }),
+        });
+        const j = (await r.json()) as { ok: boolean };
+        if (r.ok && j.ok) ok++;
+        else failed++;
+      } catch {
+        failed++;
+      }
+    }
+    setToast(
+      failed > 0
+        ? `Applied ${ok}/${candidates.length} — ${failed} failed`
+        : `Applied ${ok} recommendation${ok !== 1 ? 's' : ''}`,
+    );
+    setApplying(false);
+    onChanged();
+    setTimeout(() => setToast(null), 3000);
+  }
+
+  if (candidates.length === 0) {
+    return (
+      <span className="tiny subtle" style={{ fontSize: 11 }} title="No deltas to apply">
+        ✓ all match recommendations
+      </span>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      {toast && <span style={{ color: 'var(--accent-text)', fontSize: 11 }}>{toast}</span>}
+      <button
+        type="button"
+        className="btn btn-sm"
+        onClick={applyAll}
+        disabled={applying}
+        title={`Apply recommended_effort to ${candidates.length} skill${candidates.length !== 1 ? 's' : ''} where it differs from current effective. Writes to each skill's SKILL.md frontmatter.`}
+      >
+        {applying ? 'Applying…' : `Apply recommendations (${candidates.length})`}
+      </button>
     </div>
   );
 }
@@ -366,9 +460,75 @@ function SkillEffortRowEditor({
           <div style={{ color: 'var(--danger-text)', fontSize: 10, marginTop: 2 }}>✗ {error}</div>
         )}
       </td>
-      <td className="mono" style={{ fontSize: 12, color: 'var(--text-2)' }}>
-        {effective ? EFFORT_COST_HINT[effective] : '—'}
+      <td>
+        <RecommendedCell
+          recommended={skill.recommended_effort}
+          effective={effective}
+          saving={saving}
+          onApply={(lvl) => save(lvl)}
+        />
       </td>
     </tr>
+  );
+}
+
+// Renders the per-skill Recommended column cell. Four visual states:
+//   - no recommendation → muted "—"
+//   - recommendation matches effective → "<level> ✓" (subtle success color)
+//   - recommendation > effective → "<level> ↑ apply" button (bump up)
+//   - recommendation < effective → "<level> ↓ apply" button (drop down)
+// Clicking "apply" copies the recommendation into the skill's effort: override
+// via the same PUT endpoint the dropdown uses — no special API path.
+function RecommendedCell({
+  recommended,
+  effective,
+  saving,
+  onApply,
+}: {
+  recommended: EffortLevel | null;
+  effective: EffortLevel | null;
+  saving: boolean;
+  onApply: (lvl: EffortLevel) => void;
+}) {
+  if (!recommended) {
+    return (
+      <span className="tiny subtle" style={{ fontSize: 11, color: 'var(--text-3)' }}>
+        —
+      </span>
+    );
+  }
+  if (effective && recommended === effective) {
+    return (
+      <span style={{ fontSize: 12 }}>
+        <code className="mono">{recommended}</code>{' '}
+        <span style={{ color: 'var(--success-text, #4caf80)', marginLeft: 2 }}>✓</span>
+      </span>
+    );
+  }
+  const direction =
+    effective && EFFORT_ORDER[recommended] > EFFORT_ORDER[effective] ? 'up' : 'down';
+  const arrow = direction === 'up' ? '↑' : '↓';
+  const tooltip =
+    direction === 'up'
+      ? `Bump this skill from ${effective ?? '(unset)'} to ${recommended} (writes to SKILL.md frontmatter).`
+      : `Drop this skill from ${effective ?? '(unset)'} to ${recommended} (writes to SKILL.md frontmatter).`;
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+      <code className="mono">{recommended}</code>
+      <button
+        type="button"
+        className="btn btn-sm"
+        onClick={() => onApply(recommended)}
+        disabled={saving}
+        title={tooltip}
+        style={{
+          fontSize: 11,
+          padding: '2px 8px',
+          color: direction === 'up' ? 'var(--accent-text)' : 'var(--warning-text)',
+        }}
+      >
+        {arrow} apply
+      </button>
+    </span>
   );
 }

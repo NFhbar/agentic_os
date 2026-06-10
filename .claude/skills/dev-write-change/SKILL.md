@@ -2,6 +2,7 @@
 name: dev-write-change
 description: 'State-machine driven: produces a structured plan, gates on peer review, then executes (creates branch, edits files, runs tests). Reads change entry to determine which phase to run.'
 user-invocable: true
+recommended_effort: xhigh
 version: 1
 domain: development
 tags: [change, code, write, plan, execute]
@@ -429,6 +430,13 @@ For each new abstraction in the diff, verify:
 When the check surfaces an issue, fix it in this same address-comments cycle (loop back to step 6 for the additional edit, then re-check). The point is to catch boundary defects pre-commit, not punt them to the next PR-review pass.
 
 _Rationale: this check was added in response to the `fix-introduces-defect-at-boundary` pattern observed across 3 consecutive address-comments cycles in audit `audit-abi-decoding-via-codegen-typed-event-structs-and-per-event`. Each cycle's fix introduced a new abstraction whose boundary obligations were not satisfied — caught only by the next PR-review pass at $5/occurrence. See decision `decision-dev-write-change-after-applying-a-fix-in-the-address-comments-phase` in your local vault (per-install — these references are intentionally NOT wikilinks because the targets live in gitignored audit/decision paths)._
+
+6b. **New-test execution & defect-fold obligation.** When the edits in step 6 introduced a NEW test (not just a modification to an existing test) that targets a load-bearing path identified by a pr-review comment, verify the new test was actually exercised by the test run in step 6 — not merely compiled. Concretely:
+
+- Confirm the new test name appears in the test_command's stdout (or the framework's structured report). A test that compiles but isn't selected by the runner (wrong package, build-tag gated out, file outside the suite) would silently ship the gap the pr-review comment flagged.
+- If the new test fails or surfaces a defect, fold the necessary source fix into THIS address-comments cycle — either as additional edits in the same commit, or as a sibling commit in the same cycle before the writeback in step 8. Do NOT defer the defect to a separate change. The test was added to close the gap; shipping it as a known failure (or skipping it) reintroduces the gap.
+
+_Rationale: this obligation was added in response to the medium-confidence tuning suggestion in audit `audit-multi-contract-multi-chain-sources-list-in-config-per-source` — `TestRunIndex_MultiSourceErrgroupCoordinatesShutdownAndIsolatesCheckpoints` was added to address pass-1 finding #6 and surfaced a latent SQLITE_BUSY defect, fixed via `_pragma=busy_timeout(5000)` in the same cycle. The positive case shows that running an added test in-cycle reveals real defects; the negative case (test compiles but isn't actually run) would silently ship the gap. See decision `decision-dev-write-change-when-address-comments-adds-a-new-test-for-a` in your local vault (per-install — these references are intentionally NOT wikilinks because the targets live in gitignored audit/decision paths)._
 
 7. **Commit the follow-up** following [[standard-git-hygiene]] § 4. Subject convention:
    - `<type>(<scope>): address review comments — <short summary>` where `<short summary>` is a one-clause description (e.g. "fix copyright year, drop unused import").

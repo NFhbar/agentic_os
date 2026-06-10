@@ -2,6 +2,7 @@
 name: meta-add-skill-to-router-vocab
 description: Register an existing skill in OS.md's Intent vocabulary table so `/os <intent>` can route to it. Idempotent — skips when the skill is already listed. Resolves the audit finding `router-vocab-skill-uncovered` for skills that were added outside meta-add-skill (or had step 8 skipped).
 user-invocable: true
+recommended_effort: medium
 version: 1
 domain: meta
 tags: [scaffold, registration, router, audit-resolver, vault-only]

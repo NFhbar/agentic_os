@@ -2,6 +2,7 @@
 name: dev-analyze-repo-for-review
 description: 'Produce structured prose knowledge about a cached repo — overview, stack, structure, conventions, notable deps, docs digest. One Claude call against a representative file sample from the local cache; writes a repo-knowledge archetype entry that dev-pr-review consumes for repo-specific judgment.'
 user-invocable: true
+recommended_effort: xhigh
 version: 1
 domain: development
 tags: [analysis, repo, knowledge, review, indexing]

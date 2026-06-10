@@ -2,6 +2,7 @@
 name: meta-add-domain
 description: Scaffold a new domain with playbook + vault dirs + intent-vocab registration
 user-invocable: true
+recommended_effort: medium
 version: 1
 domain: meta
 tags: [scaffold, evolution]

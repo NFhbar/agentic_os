@@ -2,6 +2,7 @@
 name: meta-review-project-plan
 description: 'Peer-review a project plan produced by meta-research-project. Read-only: walks the plan + cited repos + project body, produces a structured verdict (approve | request-changes | reject) with concerns. Writes review to vault/output/<domain>/project-plans/.'
 user-invocable: true
+recommended_effort: xhigh
 version: 1
 domain: meta
 tags: [project, plan, review, peer-review, orchestration]

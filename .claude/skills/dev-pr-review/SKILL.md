@@ -2,6 +2,7 @@
 name: dev-pr-review
 description: 'Review a pull request — read the diff, produce categorized comments, write a structured pr-review archetype entry to the vault. Supports multi-pass review: re-running on the same PR appends a new pass.'
 user-invocable: true
+recommended_effort: xhigh
 version: 3
 domain: development
 tags: [review, pr, github, mcp, archetype, lifecycle]

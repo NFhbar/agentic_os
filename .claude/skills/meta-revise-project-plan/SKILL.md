@@ -2,6 +2,7 @@
 name: meta-revise-project-plan
 description: 'Folds findings from a meta-review-project-plan verdict back into the project plan in place. Rewrites the plan, bumps plan_revision, resets plan_status to reviewed-pending so the revised plan goes back through review. Does NOT touch plan_review_path / plan_reviewed_at — those describe the prior verdict.'
 user-invocable: true
+recommended_effort: xhigh
 version: 1
 domain: meta
 tags: [project, plan, revise, review, orchestration]

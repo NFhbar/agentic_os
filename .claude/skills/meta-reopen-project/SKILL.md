@@ -2,6 +2,7 @@
 name: meta-reopen-project
 description: "Reopen a previously-completed project — vault-only frontmatter flip from `status: completed` back to `status: active` (and lifecycle_stage to `in-progress`, clearing `completed_at`). Used when a post-Complete gap surfaces and the project needs to absorb additional work before re-closing."
 user-invocable: true
+recommended_effort: medium
 version: 1
 domain: meta
 tags: [project, lifecycle, vault-only]

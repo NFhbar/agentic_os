@@ -2,6 +2,7 @@
 name: meta-delete
 description: Delete a skill, domain, or wiki entry — removes files and cleans up cross-references (OS.md vocab, playbook listings, wikilinks).
 user-invocable: true
+recommended_effort: medium
 version: 1
 domain: meta
 tags: [evolution, delete, destructive]

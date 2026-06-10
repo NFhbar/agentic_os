@@ -2,6 +2,7 @@
 name: meta-apply-tuning-suggestion
 description: 'Phase 4 of the Overseer arc — converts an audit''s `tuning_suggestions[i]` into a concrete proposed edit to the target skill''s SKILL.md. Two modes: `propose` (default) writes a unified diff + rationale to vault/output/meta/tuning-proposals/ without modifying anything; `apply` requires a decision-entry that explicitly cites the audit + suggestion_index in its `implements_tuning_suggestions` block, then applies the edit. The decision-entry gate is the design discipline: skill changes are not auto-applied from suggestion text alone — they must pass through a human-authored decision artifact first.'
 user-invocable: true
+recommended_effort: xhigh
 version: 1
 domain: meta
 tags: [overseer, self-improvement, skill-tuning, distribution]

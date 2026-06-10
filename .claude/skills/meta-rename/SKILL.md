@@ -2,6 +2,7 @@
 name: meta-rename
 description: Rename a skill, domain, or wiki entry — moves files and updates all cross-references (OS.md vocab, playbook listings, wikilinks).
 user-invocable: true
+recommended_effort: medium
 version: 1
 domain: meta
 tags: [evolution, rename, destructive]

@@ -474,6 +474,33 @@ export default function Changes() {
     setAbandonReason('');
   }
 
+  // Dispatch meta-overseer-review to produce a lifecycle audit for this change.
+  // Equivalent to running `/os audit lifecycle <id>` from the CLI — but tracked
+  // in the runs drawer. The skill self-validates: rejects if the change isn't
+  // in terminal state, if the project hasn't opted in to auditing (unless
+  // force: true is passed), or if an audit already exists within the 24h
+  // debounce window. The rejection message surfaces in the run output;
+  // re-dispatch with force from the runs drawer if needed.
+  function invokeAudit(changeId: string) {
+    const prompt = [
+      `Run the meta-overseer-review skill to audit change "${changeId}".`,
+      'Read .claude/skills/meta-overseer-review/SKILL.md and follow its Procedure exactly.',
+      '',
+      'Inputs:',
+      `- change: ${JSON.stringify(changeId)}`,
+      '',
+      'IMPORTANT — headless dashboard-driven call:',
+      '- Do NOT use AskUserQuestion or any interactive prompt.',
+      "- Honor the skill's gates: terminal state required (status: merged or abandoned), project must have audit.enabled OR force: true.",
+      "- If the gate trips, exit with the skill's rejection message verbatim so the user can decide whether to re-run with force.",
+      '- On success, report the audit id + verdict + cost so the user can navigate to the Overseer audits tab.',
+    ].join('\n');
+    dispatchSkill(prompt, `Audit lifecycle: ${changeId}`, {
+      ...tagsForChange(changeId),
+      skill: 'meta-overseer-review',
+    });
+  }
+
   async function runAbandon(changeId: string, reason: string) {
     setAbandonTarget(null);
     try {
@@ -712,6 +739,7 @@ export default function Changes() {
               onCloseChange={() => invokeCloseChange(detail.change.id as string)}
               onCloseLocal={() => invokeCloseLocal(detail.change.id as string)}
               onAbandon={() => invokeAbandon(detail.change.id as string)}
+              onAudit={() => invokeAudit(detail.change.id as string)}
               dispatching={dispatching}
             />
           )}
@@ -826,6 +854,7 @@ function ChangeDetailPane({
   onCloseChange,
   onCloseLocal,
   onAbandon,
+  onAudit,
   dispatching,
 }: {
   detail: ChangeDetail;
@@ -856,6 +885,11 @@ function ChangeDetailPane({
   // Vault-only abandonment with mandatory reason. POSTs to /:id/abandon;
   // also patches the source research-report when derived_from_report is set.
   onAbandon: () => void;
+  // Dispatches meta-overseer-review for terminal-state changes (merged or
+  // abandoned). Surfaced as a button in the header next to Abandon. The skill
+  // self-validates the audit-opt-in gate + 24h debounce; rejections surface in
+  // the run drawer (re-dispatch with force from there if needed).
+  onAudit: () => void;
   dispatching: boolean;
 }) {
   const navigate = useNavigate();
@@ -1105,6 +1139,17 @@ function ChangeDetailPane({
               }}
             >
               <Icons.X size={11} /> Abandon
+            </button>
+          )}
+          {(c.status === 'merged' || c.status === 'abandoned') && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={onAudit}
+              disabled={dispatching}
+              title="Dispatch meta-overseer-review to produce a lifecycle audit (Correctness / Completeness / Efficiency rubric + tuning suggestions). Requires audit.enabled: true on the owning project (or force re-run from the drawer). Equivalent to `/os audit lifecycle <change-id>` from the CLI — tracked in the runs drawer."
+            >
+              <Icons.Eye size={11} /> Audit lifecycle
             </button>
           )}
         </div>
@@ -1752,24 +1797,53 @@ function AutomationTab({
         </div>
       )}
 
-      {/* Automation history — runs dispatched against this change, shown
-          only once the loop has completed. */}
-      {isComplete && <AutomationHistory changeId={changeId} />}
+      {/* Automation timeline — orchestrator decisions + dispatched runs in
+          chronological order. Always rendered (not just on complete) so the
+          narrative is visible mid-cycle too. Decisions live in events.db as
+          change-automation-* events; runs live in the runs table. The
+          timeline interleaves them by timestamp so post-mortem reading
+          works without bouncing between drawer and event log. Closes #429. */}
+      <AutomationHistory changeId={changeId} />
     </div>
   );
 }
 
+interface AutomationDecisionRow {
+  id: number;
+  ts: string;
+  action: string;
+  step: string | null;
+  run_id: string | null;
+  iteration_count: number | null;
+  reason: string | null;
+  marked_ready_for_human: boolean | null;
+}
+
+type TimelineEntry =
+  | { kind: 'run'; ts: string; key: string; run: RunRecord }
+  | { kind: 'decision'; ts: string; key: string; decision: AutomationDecisionRow };
+
 function AutomationHistory({ changeId }: { changeId: string }) {
   const navigate = useNavigate();
   const [runs, setRuns] = useState<RunRecord[] | null>(null);
+  const [decisions, setDecisions] = useState<AutomationDecisionRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    listRuns({ change_id: changeId, limit: 100 })
-      .then((j) => {
+    Promise.all([
+      listRuns({ change_id: changeId, limit: 100 }),
+      fetch(`/api/changes/${encodeURIComponent(changeId)}/automation/decisions`)
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`status ${r.status}`))))
+        .then((j: { ok: boolean; decisions: AutomationDecisionRow[]; error?: string }) => {
+          if (!j.ok) throw new Error(j.error ?? 'decisions endpoint failed');
+          return j.decisions;
+        }),
+    ])
+      .then(([runsJson, decisionsArr]) => {
         if (cancelled) return;
-        setRuns(j.runs);
+        setRuns(runsJson.runs);
+        setDecisions(decisionsArr);
       })
       .catch((e: unknown) => {
         if (cancelled) return;
@@ -1784,35 +1858,53 @@ function AutomationHistory({ changeId }: { changeId: string }) {
     return (
       <div className="card" style={{ padding: '14px 16px' }}>
         <span className="tiny" style={{ color: 'var(--error-text)' }}>
-          Run history unavailable: {error}
+          Timeline unavailable: {error}
         </span>
       </div>
     );
   }
-  if (runs === null) {
+  if (runs === null || decisions === null) {
     return (
       <div className="card" style={{ padding: '14px 16px' }}>
-        <span className="tiny subtle">Loading run history…</span>
+        <span className="tiny subtle">Loading automation timeline…</span>
       </div>
     );
   }
-  if (runs.length === 0) {
+  if (runs.length === 0 && decisions.length === 0) {
     return (
       <div className="card" style={{ padding: '14px 16px' }}>
-        <span className="tiny subtle">No runs recorded for this change.</span>
+        <span className="tiny subtle">
+          No automation activity yet. Once you enable automation on this change, decisions and runs
+          will appear here in time order.
+        </span>
       </div>
     );
   }
 
-  const sorted = [...runs].sort((a, b) =>
-    a.started_at < b.started_at ? 1 : a.started_at > b.started_at ? -1 : 0,
-  );
+  // Merge runs + decisions into a single timeline. Newest first matches the
+  // runs drawer's convention and surfaces the most-recent decision at the top
+  // (relevant for in-flight cycles). Each decision is associated with a
+  // run_id when one was dispatched — the row links to that run.
+  const merged: TimelineEntry[] = [
+    ...runs.map(
+      (r): TimelineEntry => ({ kind: 'run', ts: r.started_at, key: `r-${r.id}`, run: r }),
+    ),
+    ...decisions.map(
+      (d): TimelineEntry => ({ kind: 'decision', ts: d.ts, key: `d-${d.id}`, decision: d }),
+    ),
+  ].sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
 
   return (
     <div className="card" style={{ padding: '14px 16px' }}>
-      <h4 style={{ margin: '0 0 10px', fontSize: 13, fontWeight: 600 }}>
-        Automation timeline ({runs.length})
+      <h4 style={{ margin: '0 0 4px', fontSize: 13, fontWeight: 600 }}>
+        Automation timeline ({runs.length} run{runs.length !== 1 ? 's' : ''} · {decisions.length}{' '}
+        decision{decisions.length !== 1 ? 's' : ''})
       </h4>
+      <div className="tiny subtle" style={{ marginBottom: 10, fontSize: 11 }}>
+        Orchestrator decisions + dispatched runs in time order (newest first). Decisions are the
+        state-machine&apos;s narrative (advance / pause / complete); runs are the skill dispatches
+        each decision spawned. Click a run row to jump to its drawer entry.
+      </div>
       <ol
         style={{
           listStyle: 'none',
@@ -1826,11 +1918,20 @@ function AutomationHistory({ changeId }: { changeId: string }) {
           paddingLeft: 14,
         }}
       >
-        {sorted.map((r) => (
-          <li key={r.id}>
-            <AutomationRunRow run={r} onOpen={() => navigate(`/processes#${r.id}`)} />
-          </li>
-        ))}
+        {merged.map((entry) =>
+          entry.kind === 'run' ? (
+            <li key={entry.key}>
+              <AutomationRunRow
+                run={entry.run}
+                onOpen={() => navigate(`/processes#${entry.run.id}`)}
+              />
+            </li>
+          ) : (
+            <li key={entry.key}>
+              <AutomationDecisionRowView decision={entry.decision} />
+            </li>
+          ),
+        )}
       </ol>
     </div>
   );
@@ -1887,6 +1988,89 @@ function AutomationRunRow({ run, onOpen }: { run: RunRecord; onOpen: () => void 
       >
         logs
       </button>
+    </div>
+  );
+}
+
+// Renders one orchestrator decision row in the Automation timeline. Decisions
+// are emitted by automation.ts as `change-automation-<verb>` audit events;
+// this component picks an icon + label per verb and surfaces the structured
+// args (step, run_id, iteration_count, reason) as inline metadata. Visually
+// distinct from runs — leftward icon + muted prefix so the timeline reads
+// "what the orchestrator decided" vs "what a skill did".
+function AutomationDecisionRowView({ decision }: { decision: AutomationDecisionRow }) {
+  // Map the action verb to a human label + visual hint. Unknown actions fall
+  // through to the raw verb so newly-added orchestrator actions still render
+  // without requiring a UI update.
+  const { label, color } = (() => {
+    const verb = decision.action.replace(/^change-automation-/, '');
+    switch (verb) {
+      case 'enable':
+        return { label: 'enabled', color: 'var(--accent)' };
+      case 'disable':
+        return { label: 'disabled', color: 'var(--muted)' };
+      case 'pause':
+        return { label: 'paused', color: 'var(--warning-text, #e0a02a)' };
+      case 'resume':
+        return { label: 'resumed', color: 'var(--accent)' };
+      case 'reset':
+        return { label: 'reset', color: 'var(--muted)' };
+      case 'advance':
+        return { label: '→ advance', color: 'var(--accent)' };
+      case 'complete':
+        return { label: '✓ complete', color: 'var(--success-text, var(--accent))' };
+      default:
+        return { label: verb, color: 'var(--muted)' };
+    }
+  })();
+
+  return (
+    <div
+      style={{
+        padding: '4px 8px',
+        display: 'flex',
+        gap: 10,
+        alignItems: 'center',
+        fontSize: 12,
+        // Distinct background tint so decisions visually pop from runs
+        background: 'var(--bg-2, rgba(255,255,255,0.02))',
+        borderRadius: 3,
+      }}
+      title={`Orchestrator event: ${decision.action}`}
+    >
+      <span className="tiny subtle" style={{ minWidth: 84 }} title={decision.ts}>
+        {formatRelative(decision.ts)}
+      </span>
+      <span className="tiny" style={{ color, minWidth: 90, fontWeight: 500 }}>
+        {label}
+      </span>
+      {decision.step && (
+        <code className="mono" style={{ fontSize: 11 }}>
+          {decision.step}
+        </code>
+      )}
+      {decision.iteration_count != null && (
+        <span className="tiny subtle">iter {decision.iteration_count}</span>
+      )}
+      {decision.marked_ready_for_human === true && (
+        <span className="tiny" style={{ color: 'var(--success-text, var(--accent))' }}>
+          marked PR ready
+        </span>
+      )}
+      {decision.reason && (
+        <span className="tiny subtle" style={{ flex: 1 }}>
+          — {decision.reason}
+        </span>
+      )}
+      {decision.run_id && (
+        <code
+          className="mono tiny subtle"
+          style={{ marginLeft: 'auto', fontSize: 10.5 }}
+          title={`Dispatched run: ${decision.run_id}`}
+        >
+          {decision.run_id.slice(0, 12)}
+        </code>
+      )}
     </div>
   );
 }

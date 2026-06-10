@@ -177,7 +177,7 @@ export function recordEvent(payload = {}) {
 export function queryEvents(filter = {}) {
   const where = [];
   const params = {};
-  for (const key of ['kind', 'skill', 'project', 'change_id', 'report_id', 'model', 'domain']) {
+  for (const key of ['kind', 'action', 'skill', 'project', 'change_id', 'report_id', 'model', 'domain']) {
     if (filter[key] != null) {
       where.push(`${key} = @${key}`);
       params[key] = filter[key];

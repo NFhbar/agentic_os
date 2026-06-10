@@ -1,12 +1,12 @@
 // /api/tuning-suggestions — Phase 4 of the Overseer arc.
 //
-// Three endpoints that route a single tuning_suggestions[] entry out of an
-// audit into a user-actionable next step:
-//
-//   POST /api/tuning-suggestions/propose
-//        Dispatches meta-apply-tuning-suggestion in propose mode (SSE-streamed
-//        claude -p subprocess). On completion, reads back the resulting diff
-//        + rationale files and returns their content + paths.
+// Endpoints route a single tuning_suggestions[] entry out of an audit into a
+// user-actionable next step. The AI-dispatching paths (propose + apply) were
+// removed as part of #416 — both UI sites now go through the canonical
+// startRun()-based dispatch (PendingSuggestionsPanel and audit-detail's
+// TuningSuggestionActions both call useDispatch().startSkillRun directly),
+// which gives first-class runs-db rows + drawer rendering + cost capture.
+// This module is now scaffold-only:
 //
 //   POST /api/tuning-suggestions/promote
 //        Pure vault-scaffold: reads the audit + suggestion, writes a new
@@ -18,8 +18,12 @@
 //        Appends to dismissed-action-items.jsonl. Same pattern as audit
 //        finding dismissals; id format `tuning-suggestion:<audit_id>:<index>`.
 //
-// All three are dual-write to events.db via record-dashboard-action.mjs for
-// the audit trail.
+//   GET  /api/tuning-suggestions/pending
+//        Cross-audit roll-up of suggestions awaiting promote/dismiss (kept
+//        when proposed-but-not-promoted so the UI can show the badge).
+//
+// All write endpoints dual-write to events.db via record-dashboard-action.mjs
+// for the audit trail.
 
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -29,7 +33,6 @@ import type { FastifyPluginAsync } from 'fastify';
 import { parseFrontmatter } from '../frontmatter.js';
 import { REPO_ROOT } from '../repo.js';
 import { loadDecisionsByTuningRef, loadDismissals } from './audits.js';
-import { resolveEffortForRun } from './runs.js';
 
 const AUDITS_DIR = join(REPO_ROOT, 'vault', 'wiki', 'meta', 'lifecycle-audit');
 const DECISIONS_DIR = join(REPO_ROOT, 'vault', 'wiki', 'meta', 'decision');
@@ -131,181 +134,6 @@ async function recordEvent(args: {
 // ---------------------------------------------------------------------------
 
 export const tuningSuggestionsRoutes: FastifyPluginAsync = async (fastify) => {
-  // POST /api/tuning-suggestions/propose — dispatches the skill in propose
-  // mode via claude -p. SSE-streams stdout/stderr so the dashboard can show
-  // progress, then returns the diff + rationale paths + contents on close.
-  fastify.post<{
-    Body: { audit_id: string; suggestion_index: number };
-  }>('/propose', async (req, reply) => {
-    const { audit_id, suggestion_index } = req.body || {};
-    if (!audit_id || typeof suggestion_index !== 'number') {
-      reply.code(400);
-      return { ok: false, error: 'audit_id (string) and suggestion_index (number) are required' };
-    }
-    const audit = await loadAuditById(audit_id);
-    if (!audit) {
-      reply.code(404);
-      return { ok: false, error: `audit "${audit_id}" not found` };
-    }
-    const suggestions = Array.isArray(audit.fm.tuning_suggestions)
-      ? (audit.fm.tuning_suggestions as TuningSuggestion[])
-      : [];
-    if (suggestion_index < 0 || suggestion_index >= suggestions.length) {
-      reply.code(400);
-      return {
-        ok: false,
-        error: `audit "${audit_id}" has ${suggestions.length} suggestions; suggestion_index ${suggestion_index} is out of range`,
-      };
-    }
-
-    const startedMs = Date.now();
-    reply.raw.writeHead(200, {
-      'content-type': 'text/event-stream',
-      'cache-control': 'no-cache',
-      connection: 'keep-alive',
-    });
-
-    const prompt = `/os apply tuning suggestion audit=${audit_id} suggestion_index=${suggestion_index} mode=propose`;
-    const effort = await resolveEffortForRun('meta-apply-tuning-suggestion');
-    const args = ['-p', prompt, '--permission-mode', 'bypassPermissions'];
-    if (effort) args.push('--effort', effort);
-    if (effort) console.log(`tuning-suggestions/propose: --effort ${effort}`);
-    const child = spawn('claude', args, {
-      cwd: REPO_ROOT,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (c: Buffer) => {
-      const s = c.toString('utf8');
-      stdout += s;
-      reply.raw.write(`data: ${JSON.stringify({ chunk: s })}\n\n`);
-    });
-    child.stderr.on('data', (c: Buffer) => {
-      const s = c.toString('utf8');
-      stderr += s;
-      reply.raw.write(`data: ${JSON.stringify({ stderr: s })}\n\n`);
-    });
-    child.on('close', async (code) => {
-      const finishedMs = Date.now();
-      // Try to load the proposal artifacts the skill produced.
-      const diffPath = join(PROPOSALS_DIR, `${audit_id}-${suggestion_index}.diff`);
-      const rationalePath = join(PROPOSALS_DIR, `${audit_id}-${suggestion_index}.rationale.md`);
-      let diff: string | null = null;
-      let rationale: string | null = null;
-      try {
-        diff = await readFile(diffPath, 'utf8');
-      } catch {
-        /* skill may have produced no diff for non-skill targets */
-      }
-      try {
-        rationale = await readFile(rationalePath, 'utf8');
-      } catch {
-        /* missing rationale is a soft failure — surface stdout/stderr instead */
-      }
-      reply.raw.write(
-        `data: ${JSON.stringify({
-          done: true,
-          exit: code,
-          duration_ms: finishedMs - startedMs,
-          diff,
-          diff_path: diff
-            ? `vault/output/meta/tuning-proposals/${audit_id}-${suggestion_index}.diff`
-            : null,
-          rationale,
-          rationale_path: rationale
-            ? `vault/output/meta/tuning-proposals/${audit_id}-${suggestion_index}.rationale.md`
-            : null,
-          stdout_preview: stdout.length > 4096 ? `${stdout.slice(0, 4096)}\n…[truncated]` : stdout,
-          stderr: stderr.slice(0, 2048),
-        })}\n\n`,
-      );
-      reply.raw.end();
-    });
-  });
-
-  // POST /api/tuning-suggestions/apply — dispatches meta-apply-tuning-suggestion
-  // in `apply` mode via claude -p. Same SSE-streaming pattern as /propose, but
-  // gated on a decision entry that explicitly cites the audit + suggestion_index
-  // in its `implements_tuning_suggestions` block (the skill enforces this).
-  // The decision-entry gate is the design discipline: skill changes are not
-  // auto-applied from suggestion text alone.
-  fastify.post<{
-    Body: { audit_id: string; suggestion_index: number; decision_entry_path: string };
-  }>('/apply', async (req, reply) => {
-    const { audit_id, suggestion_index, decision_entry_path } = req.body || {};
-    if (!audit_id || typeof suggestion_index !== 'number' || !decision_entry_path) {
-      reply.code(400);
-      return {
-        ok: false,
-        error: 'audit_id, suggestion_index, and decision_entry_path are all required',
-      };
-    }
-    const audit = await loadAuditById(audit_id);
-    if (!audit) {
-      reply.code(404);
-      return { ok: false, error: `audit "${audit_id}" not found` };
-    }
-    const suggestions = Array.isArray(audit.fm.tuning_suggestions)
-      ? (audit.fm.tuning_suggestions as TuningSuggestion[])
-      : [];
-    if (suggestion_index < 0 || suggestion_index >= suggestions.length) {
-      reply.code(400);
-      return {
-        ok: false,
-        error: `audit "${audit_id}" has ${suggestions.length} suggestions; suggestion_index ${suggestion_index} is out of range`,
-      };
-    }
-
-    const startedMs = Date.now();
-    reply.raw.writeHead(200, {
-      'content-type': 'text/event-stream',
-      'cache-control': 'no-cache',
-      connection: 'keep-alive',
-    });
-
-    // The decision-entry-path is a vault-relative path. The skill validates
-    // its existence + frontmatter (type, status, implements_tuning_suggestions
-    // citation) before applying — so a malformed path or missing citation
-    // surfaces as a skill rejection, not a server 500.
-    const prompt = `/os apply tuning suggestion audit=${audit_id} suggestion_index=${suggestion_index} mode=apply decision_entry_path=${decision_entry_path}`;
-    const effort = await resolveEffortForRun('meta-apply-tuning-suggestion');
-    const args = ['-p', prompt, '--permission-mode', 'bypassPermissions'];
-    if (effort) args.push('--effort', effort);
-    if (effort) console.log(`tuning-suggestions/apply: --effort ${effort}`);
-    const child = spawn('claude', args, {
-      cwd: REPO_ROOT,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (c: Buffer) => {
-      const s = c.toString('utf8');
-      stdout += s;
-      reply.raw.write(`data: ${JSON.stringify({ chunk: s })}\n\n`);
-    });
-    child.stderr.on('data', (c: Buffer) => {
-      const s = c.toString('utf8');
-      stderr += s;
-      reply.raw.write(`data: ${JSON.stringify({ stderr: s })}\n\n`);
-    });
-    child.on('close', async (code) => {
-      const finishedMs = Date.now();
-      reply.raw.write(
-        `data: ${JSON.stringify({
-          done: true,
-          exit: code,
-          duration_ms: finishedMs - startedMs,
-          stdout_preview: stdout.length > 4096 ? `${stdout.slice(0, 4096)}\n…[truncated]` : stdout,
-          stderr: stderr.slice(0, 2048),
-        })}\n\n`,
-      );
-      reply.raw.end();
-    });
-  });
-
   // POST /api/tuning-suggestions/promote — vault scaffold of a decision entry
   // citing this suggestion. No AI spawn — pure write of frontmatter +
   // stubbed body the user fills in.
@@ -482,17 +310,21 @@ The skill validates the gate (this entry exists, type is decision, implements_tu
   });
 
   // GET /api/tuning-suggestions/pending — cross-audit roll-up of suggestions
-  // that haven't been actioned yet (no decision cites them, no proposal file
-  // exists, no dismissal recorded). Powers the Overseer Overview's "Pending
-  // suggestions" panel.
+  // that need further action (not yet promoted to a decision and not
+  // dismissed). Powers the Overseer Overview's "Pending suggestions" panel.
   //
-  // Filtering: a suggestion is included when ALL of these are true:
+  // Filtering: a suggestion is included when BOTH of these are true:
   //   - no dismissal entry for `tuning-suggestion:<audit>:<idx>` in
-  //     .claude/state/dismissed-action-items.jsonl
+  //     .claude/state/dismissed-action-items.jsonl  (terminal)
   //   - no decision-archetype entry's implements_tuning_suggestions cites
-  //     {audit_id, suggestion_index}
-  //   - no proposal file at vault/output/meta/tuning-proposals/<audit>-<idx>.diff
-  //     OR .rationale.md
+  //     {audit_id, suggestion_index}  (next action is Apply, not Promote)
+  //
+  // Proposed-but-not-promoted suggestions ARE kept in the list — the response
+  // surfaces `proposal_state` so the UI can render a "proposed" badge and
+  // emphasize "Promote" as the next action. This is the UX fix for the gap
+  // where a successful Propose run produced artifacts but the row vanished
+  // (or stayed unchanged) and the user couldn't tell whether to re-propose
+  // or move on to Promote.
   //
   // Sort: recurrence count desc (most-recurring first), then confidence
   // (high > medium > low), then audit recency desc. Recurrence count comes
@@ -526,6 +358,13 @@ The skill validates the gate (this entry exists, type is decision, implements_tu
       evidence_summary: string;
       target_change: string;
       recurrence_count: number;
+      // 'none' when no propose run has produced artifacts yet.
+      // 'diff' when a unified diff exists (real proposal — most common).
+      // 'rationale-only' when only the rationale.md exists (non-skill target,
+      // or a skill detected the target wasn't a SKILL.md and short-circuited).
+      proposal_state: 'none' | 'diff' | 'rationale-only';
+      proposal_diff_path: string | null;
+      proposal_rationale_path: string | null;
     }
 
     // First pass: collect every suggestion + its eligibility for the pending set.
@@ -553,15 +392,25 @@ The skill validates the gate (this entry exists, type is decision, implements_tu
         : [];
       for (let i = 0; i < suggestions.length; i++) {
         const s = suggestions[i];
-        // Filter: dismissed?
+        // Filter: dismissed? (terminal — user explicitly said no)
         if (dismissals.has(`tuning-suggestion:${auditId}:${i}`)) continue;
-        // Filter: promoted? (any decision cites this audit + index)
+        // Filter: promoted? (any decision cites this audit + index — once
+        // a decision exists, the next action is Apply via the Decisions panel,
+        // not Promote via this one)
         if ((decisionsByRef.get(`${auditId}::${i}`) ?? []).length > 0) continue;
-        // Filter: proposed? (diff or rationale file exists)
+        // NOT filtered when proposed — kept in the list so the UI can show
+        // "proposed" state + emphasize Promote as the next step. The original
+        // filter swallowed successful Propose runs, leaving users wondering
+        // whether their click did anything.
         const diffPath = join(PROPOSALS_DIR, `${auditId}-${i}.diff`);
         const rationalePath = join(PROPOSALS_DIR, `${auditId}-${i}.rationale.md`);
-        if (existsSync(diffPath) || existsSync(rationalePath)) continue;
-        // Eligible — include.
+        const diffExists = existsSync(diffPath);
+        const rationaleExists = existsSync(rationalePath);
+        const proposalState: 'none' | 'diff' | 'rationale-only' = diffExists
+          ? 'diff'
+          : rationaleExists
+            ? 'rationale-only'
+            : 'none';
         candidates.push({
           audit_id: auditId,
           audit_completed_at: completedAt,
@@ -572,6 +421,13 @@ The skill validates the gate (this entry exists, type is decision, implements_tu
           evidence_summary: String(s.evidence_summary ?? ''),
           target_change: String(s.target_change ?? ''),
           recurrence_count: 1, // filled in below
+          proposal_state: proposalState,
+          proposal_diff_path: diffExists
+            ? `vault/output/meta/tuning-proposals/${auditId}-${i}.diff`
+            : null,
+          proposal_rationale_path: rationaleExists
+            ? `vault/output/meta/tuning-proposals/${auditId}-${i}.rationale.md`
+            : null,
         });
       }
     }

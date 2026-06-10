@@ -2,6 +2,7 @@
 name: research-review
 description: 'Peer-review a research-report entry. Read-only: re-walks materials, parses the report, runs a structured checklist, writes a verdict (approve | request-changes | reject) and flips review_status. Mirrors meta-review-project-plan one altitude up the research lifecycle.'
 user-invocable: true
+recommended_effort: xhigh
 version: 1
 domain: research
 tags: [research, review, peer-review, lifecycle, report]

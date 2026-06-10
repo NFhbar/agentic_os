@@ -2,6 +2,7 @@
 name: meta-add-project
 description: Scaffold a project — an initiative with scope, lifecycle, and (optionally) a repo + reporting cadence
 user-invocable: true
+recommended_effort: medium
 version: 1
 domain: meta
 tags: [scaffold, evolution, project]

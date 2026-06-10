@@ -2,6 +2,7 @@
 name: dev-cache-pr-review-repo
 description: 'Maintain a read-only shallow clone of a GitHub repo for PR review context. Clones on first use, fetches+resets to origin/HEAD on subsequent runs, gates redundant pulls with a 5-minute staleness check. Writes a pr-review-repo-cache archetype entry tracking the cache state.'
 user-invocable: true
+recommended_effort: medium
 version: 1
 domain: development
 tags: [cache, repo, review, git, scaffolding]

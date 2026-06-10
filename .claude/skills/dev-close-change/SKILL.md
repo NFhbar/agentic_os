@@ -2,6 +2,7 @@
 name: dev-close-change
 description: 'Verify a PR is merged on GitHub and transition the linked change to status: merged. Writes merged_at + bumps updated. Idempotent stop when the PR is not yet merged or already closed.'
 user-invocable: true
+recommended_effort: medium
 version: 1
 domain: development
 tags: [change, lifecycle, close, github]

@@ -13,6 +13,8 @@ import type { Dirent } from 'node:fs';
 import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import type { FastifyPluginAsync } from 'fastify';
+// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
+import { queryEvents } from '../../../../../scripts/events-db.mjs';
 import { rewriteFrontmatter } from '../frontmatter-rewrite.js';
 import { parseFrontmatter } from '../frontmatter.js';
 import { REPO_ROOT } from '../repo.js';
@@ -1480,6 +1482,72 @@ export const changeAutomationRoutes: FastifyPluginAsync = async (fastify) => {
       reply.code(404);
     }
     return status;
+  });
+
+  // GET /api/changes/:id/automation/decisions — orchestrator decision log.
+  // Returns every change-automation-* event for this change in chronological
+  // order. Powers the Automation tab's timeline so the orchestrator's
+  // narrative (enable, advance to each step, pause, complete) is visible
+  // post-mortem, not just the dispatched runs themselves. Closes the
+  // observability gap in finding #429 — runs were visible in the drawer but
+  // the decisions that produced them were invisible once the cycle finished.
+  fastify.get<{ Params: { id: string } }>('/:id/automation/decisions', async (req) => {
+    const changeId = req.params.id;
+    // Pull the whole event stream for this change (small per-change). Filter
+    // to change-automation-* actions in JS — the SQL `action` filter is
+    // exact-match and there are ~6 distinct actions to enumerate.
+    const rows = (
+      queryEvents({ change_id: changeId, limit: 500 }) as Array<{
+        id: number;
+        ts: string;
+        action: string;
+        change_id: string | null;
+        raw: string | null;
+      }>
+    ).filter((r) => typeof r.action === 'string' && r.action.startsWith('change-automation-'));
+
+    interface AutomationDecisionRow {
+      id: number;
+      ts: string;
+      action: string;
+      step: string | null;
+      run_id: string | null;
+      iteration_count: number | null;
+      reason: string | null;
+      // Marked_ready_for_human on complete events. Surfaced so the UI can
+      // render a distinct icon when the loop marked the PR ready vs ended
+      // without that step.
+      marked_ready_for_human: boolean | null;
+    }
+
+    const decisions: AutomationDecisionRow[] = rows
+      .map((r) => {
+        let args: Record<string, unknown> = {};
+        try {
+          if (r.raw) {
+            const parsed = JSON.parse(r.raw);
+            // record-dashboard-action stores args at the top level OR under .args
+            // depending on the source; cover both shapes.
+            args = (parsed.args ?? parsed) as Record<string, unknown>;
+          }
+        } catch {
+          /* keep args empty on parse failure */
+        }
+        return {
+          id: r.id,
+          ts: r.ts,
+          action: r.action,
+          step: typeof args.step === 'string' ? args.step : null,
+          run_id: typeof args.run_id === 'string' ? args.run_id : null,
+          iteration_count: typeof args.iteration_count === 'number' ? args.iteration_count : null,
+          reason: typeof args.reason === 'string' ? args.reason : null,
+          marked_ready_for_human:
+            typeof args.marked_ready_for_human === 'boolean' ? args.marked_ready_for_human : null,
+        };
+      })
+      .sort((a, b) => a.ts.localeCompare(b.ts)); // chronological — earliest first
+
+    return { ok: true, decisions };
   });
 
   // POST /api/changes/:id/automation/enable — toggle automation on.

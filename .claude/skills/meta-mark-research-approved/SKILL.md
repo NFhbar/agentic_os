@@ -2,6 +2,7 @@
 name: meta-mark-research-approved
 description: "Override a research-report's review verdict — flip `review_status: request-changes` to `approved`. The user-facing escape hatch when the reviewer's verdict conflicts with the user's judgment. Vault-only frontmatter edit; no skill dispatch."
 user-invocable: true
+recommended_effort: medium
 version: 1
 domain: meta
 tags: [research, review-gate, override, vault-only]

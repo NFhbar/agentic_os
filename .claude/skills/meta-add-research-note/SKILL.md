@@ -2,6 +2,7 @@
 name: meta-add-research-note
 description: Append a mid-lifecycle guidance note to a research-report's `notes_log` array. The skills that consume notes (`research-review` / `-revise` / `-update`) read unconsidered notes at the start of each run and append `considered_by` entries as they fold them in.
 user-invocable: true
+recommended_effort: medium
 version: 1
 domain: meta
 tags: [research, notes, vault-only]

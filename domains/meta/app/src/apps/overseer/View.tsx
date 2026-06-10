@@ -20,7 +20,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { getJson, postJson, runStream } from '../../lib/api';
+import { getJson, postJson } from '../../lib/api';
+import { useDispatch } from '../../lib/dispatch';
 import { useNavigation } from '../../lib/navigation';
 import { formatRelative } from '../../lib/time';
 import { Icons } from '../../shared';
@@ -373,8 +374,25 @@ function EmptyState({
   mode: on-complete   # or: sampled (with sample_rate: N) | manual`}
           </pre>
           <div className="subtle" style={{ fontSize: 12, marginTop: 12 }}>
-            Or run a one-off audit manually:{' '}
-            <code className="mono">/os audit lifecycle &lt;change-id&gt;</code>.
+            Or run a one-off audit manually: open any merged or abandoned change in the{' '}
+            <button
+              type="button"
+              onClick={() => {
+                window.location.href = '/changes';
+              }}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--accent-text)',
+                cursor: 'pointer',
+                padding: 0,
+                font: 'inherit',
+              }}
+            >
+              Changes app
+            </button>{' '}
+            and click the <strong>Audit lifecycle</strong> button in its header. (Equivalent to{' '}
+            <code className="mono">/os audit lifecycle &lt;change-id&gt;</code> from the CLI.)
           </div>
         </>
       )}
@@ -1618,7 +1636,7 @@ interface TuningSuggestionActionsProps {
   onActionDone?: () => void;
 }
 
-type ActiveModal = null | 'propose' | 'promote' | 'dismiss';
+type ActiveModal = null | 'promote' | 'dismiss';
 
 function TuningSuggestionActions({
   auditId,
@@ -1628,6 +1646,10 @@ function TuningSuggestionActions({
   onActionDone,
 }: TuningSuggestionActionsProps) {
   const [active, setActive] = useState<ActiveModal>(null);
+  const [proposing, setProposing] = useState(false);
+  const [proposeToast, setProposeToast] = useState<string | null>(null);
+  const [proposeError, setProposeError] = useState<string | null>(null);
+  const { startSkillRun } = useDispatch();
   const showWeakEvidenceWarning = confidence === 'low' && recurrenceCount === 1;
 
   const closeAndRefresh = () => {
@@ -1635,11 +1657,44 @@ function TuningSuggestionActions({
     onActionDone?.();
   };
 
+  // Inline Propose dispatch — matches PendingSuggestionsPanel's pattern.
+  // Drops the bespoke modal-bound /api/tuning-suggestions/propose endpoint
+  // in favor of startSkillRun, which routes through the canonical runs.ts
+  // dispatch path: first-class runs-db row, drawer surfaces the stream, cost
+  // + duration captured uniformly, effort propagation via resolveEffortForRun.
+  // Closes #416 for this surface (the only remaining UI caller of /propose).
+  async function propose() {
+    if (proposing) return;
+    setProposing(true);
+    setProposeError(null);
+    setProposeToast(null);
+    try {
+      const prompt =
+        `/os apply tuning suggestion audit=${auditId} ` +
+        `suggestion_index=${suggestionIndex} mode=propose`;
+      const result = await startSkillRun(prompt, `Propose: ${auditId} #${suggestionIndex}`, {
+        skill: 'meta-apply-tuning-suggestion',
+      });
+      if ('error' in result && result.error) throw new Error(result.error);
+      if ('blocked' in result && result.blocked) throw new Error('Propose blocked');
+      if ('run_id' in result && result.run_id) {
+        setProposeToast(`Run ${result.run_id.slice(0, 10)}… — drawer open`);
+        // Refresh after a delay so the audit detail re-fetches and status
+        // badges flip from 'none' to 'diff' once the artifact lands.
+        setTimeout(() => onActionDone?.(), 4000);
+      }
+    } catch (e) {
+      setProposeError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setProposing(false);
+    }
+  }
+
   return (
     <>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-        <button type="button" className="btn btn-sm" onClick={() => setActive('propose')}>
-          Propose edit
+        <button type="button" className="btn btn-sm" onClick={propose} disabled={proposing}>
+          {proposing ? '…' : 'Propose edit'}
         </button>
         <button type="button" className="btn btn-sm" onClick={() => setActive('promote')}>
           Promote to decision
@@ -1647,6 +1702,12 @@ function TuningSuggestionActions({
         <button type="button" className="btn btn-sm" onClick={() => setActive('dismiss')}>
           Dismiss
         </button>
+        {proposeToast && (
+          <span style={{ color: 'var(--accent-text)', fontSize: 11 }}>✓ {proposeToast}</span>
+        )}
+        {proposeError && (
+          <span style={{ color: 'var(--danger-text)', fontSize: 11 }}>✗ {proposeError}</span>
+        )}
         {showWeakEvidenceWarning && (
           <span
             className="tiny"
@@ -1658,13 +1719,6 @@ function TuningSuggestionActions({
         )}
       </div>
 
-      {active === 'propose' && (
-        <ProposeModal
-          auditId={auditId}
-          suggestionIndex={suggestionIndex}
-          onClose={closeAndRefresh}
-        />
-      )}
       {active === 'promote' && (
         <PromoteModal
           auditId={auditId}
@@ -1851,205 +1905,6 @@ function ModalShell({
         )}
       </div>
     </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// Propose modal — streams the skill's output, shows resulting diff + rationale.
-
-interface ProposeResult {
-  done: true;
-  exit: number | null;
-  duration_ms: number;
-  diff: string | null;
-  diff_path: string | null;
-  rationale: string | null;
-  rationale_path: string | null;
-  stdout_preview: string;
-  stderr: string;
-}
-
-function ProposeModal({
-  auditId,
-  suggestionIndex,
-  onClose,
-}: {
-  auditId: string;
-  suggestionIndex: number;
-  onClose: () => void;
-}) {
-  const [streamLog, setStreamLog] = useState('');
-  const [result, setResult] = useState<ProposeResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [running, setRunning] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        for await (const chunk of runStream('/api/tuning-suggestions/propose', {
-          audit_id: auditId,
-          suggestion_index: suggestionIndex,
-        })) {
-          if (cancelled) break;
-          if (chunk.chunk) setStreamLog((s) => s + chunk.chunk);
-          if (chunk.stderr) setStreamLog((s) => s + chunk.stderr);
-          if (chunk.done) {
-            setResult(chunk as unknown as ProposeResult);
-            setRunning(false);
-          }
-        }
-      } catch (e) {
-        if (!cancelled) {
-          setError(e instanceof Error ? e.message : String(e));
-          setRunning(false);
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [auditId, suggestionIndex]);
-
-  const copyClaudePrompt = () => {
-    const prompt = `Apply the tuning suggestion the Overseer raised in audit ${auditId} at suggestion_index ${suggestionIndex}. The proposed diff is at vault/output/meta/tuning-proposals/${auditId}-${suggestionIndex}.diff. Read it, the rationale (.rationale.md sibling), and the source audit at vault/wiki/meta/lifecycle-audit/audit-${auditId.replace(/^audit-/, '')}.md. Either: (a) propose modifications to the diff and write back to the same path, or (b) scaffold a decision entry citing implements_tuning_suggestions: [{audit_id: "${auditId}", suggestion_index: ${suggestionIndex}}] under vault/wiki/meta/decision/.`;
-    navigator.clipboard?.writeText(prompt).then(
-      () => alert('Prompt copied to clipboard'),
-      () => alert('Copy failed — manually copy from the modal'),
-    );
-  };
-
-  return (
-    <ModalShell
-      title={`Propose edit — ${auditId} #${suggestionIndex}`}
-      onClose={onClose}
-      footer={
-        result ? (
-          <>
-            <button type="button" className="btn btn-sm" onClick={copyClaudePrompt}>
-              Copy Claude prompt
-            </button>
-            <button type="button" className="btn btn-sm" onClick={onClose}>
-              Close
-            </button>
-          </>
-        ) : (
-          <button type="button" className="btn btn-sm" onClick={onClose}>
-            Cancel
-          </button>
-        )
-      }
-    >
-      {running && (
-        <div className="subtle" style={{ marginBottom: 12 }}>
-          Running <code className="mono">meta-apply-tuning-suggestion</code> in propose mode. This
-          spawns a Claude session and typically takes 30-90 seconds.
-        </div>
-      )}
-      {error && (
-        <div
-          style={{
-            color: 'var(--danger-text)',
-            background: 'var(--danger-bg, rgba(250,80,80,0.1))',
-            padding: 8,
-            borderRadius: 4,
-            marginBottom: 12,
-          }}
-        >
-          {error}
-        </div>
-      )}
-      {streamLog && (
-        <details style={{ marginBottom: 12 }}>
-          <summary className="tiny subtle" style={{ cursor: 'pointer' }}>
-            stream log ({streamLog.length} chars)
-          </summary>
-          <pre
-            style={{
-              fontSize: 11,
-              padding: 8,
-              background: 'var(--bg-2)',
-              borderRadius: 4,
-              maxHeight: 200,
-              overflow: 'auto',
-              whiteSpace: 'pre-wrap',
-            }}
-          >
-            {streamLog}
-          </pre>
-        </details>
-      )}
-      {result && (
-        <>
-          {result.diff ? (
-            <>
-              <div className="tiny subtle" style={{ marginBottom: 4 }}>
-                <strong>Diff</strong> ({result.diff_path}):
-              </div>
-              <pre
-                style={{
-                  fontSize: 12,
-                  lineHeight: 1.5,
-                  padding: 10,
-                  background: 'var(--bg-2)',
-                  borderRadius: 4,
-                  marginBottom: 12,
-                  maxHeight: 300,
-                  overflow: 'auto',
-                  whiteSpace: 'pre',
-                }}
-              >
-                {result.diff}
-              </pre>
-            </>
-          ) : (
-            <div
-              className="subtle"
-              style={{
-                padding: 10,
-                background: 'var(--bg-2)',
-                borderRadius: 4,
-                marginBottom: 12,
-              }}
-            >
-              No diff produced. Suggestion may target a non-skill (orchestrator, observability,
-              etc.); route via "Promote to decision" instead.
-            </div>
-          )}
-          {result.rationale && (
-            <details>
-              <summary className="tiny subtle" style={{ cursor: 'pointer' }}>
-                rationale ({result.rationale_path})
-              </summary>
-              <pre
-                style={{
-                  fontSize: 11,
-                  lineHeight: 1.5,
-                  padding: 10,
-                  background: 'var(--bg-2)',
-                  borderRadius: 4,
-                  marginTop: 6,
-                  maxHeight: 200,
-                  overflow: 'auto',
-                  whiteSpace: 'pre-wrap',
-                }}
-              >
-                {result.rationale}
-              </pre>
-            </details>
-          )}
-          <div
-            className="tiny subtle"
-            style={{ marginTop: 12, padding: 8, borderTop: '1px solid var(--border)' }}
-          >
-            Next step: review the diff above. If it captures intent, use{' '}
-            <strong>Promote to decision</strong> on this suggestion (or "Copy Claude prompt" to
-            iterate in a new session). Decision-entry-then-apply is the load-bearing pattern; this
-            propose step is read-only.
-          </div>
-        </>
-      )}
-    </ModalShell>
   );
 }
 

@@ -2,6 +2,7 @@
 name: dev-pull-pr-comments
 description: 'Ingest external reviewers'' comments from a GitHub PR into the linked pr-review entry as a new pass. Closes the loop on the external-review flow — the OS can then treat external comments with the same accept/dismiss/re-implement flow as its own model-generated ones.'
 user-invocable: true
+recommended_effort: medium
 version: 1
 domain: development
 tags: [pr-review, github, ingest, external]

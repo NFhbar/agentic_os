@@ -2,6 +2,7 @@
 name: meta-add-mcp
 description: Add an MCP server to the OS. Two modes — `custom` scaffolds an OS-built server at mcps/<id>/ (manifest + server.mjs + package.json + .env); `hosted` registers a third-party hosted MCP (vendor-run endpoint) directly in .mcp.json. Both run sync-mcp-config.mjs.
 user-invocable: true
+recommended_effort: medium
 version: 2
 domain: meta
 tags: [scaffold, evolution, mcp, integration]
