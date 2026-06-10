@@ -2,6 +2,7 @@
 name: meta-add-note
 description: Scaffold a generic note entry — a domain- or project-scoped observation, lesson, or running log that doesn't fit decision / change / research archetypes. Vault-only — writes a single markdown file under vault/wiki/<domain>/note/.
 user-invocable: true
+recommended_effort: medium
 version: 1
 domain: meta
 tags: [scaffold, note, vault-only]

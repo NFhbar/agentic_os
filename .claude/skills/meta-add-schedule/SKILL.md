@@ -2,6 +2,7 @@
 name: meta-add-schedule
 description: Scaffold a scheduled runbook — wiki entry + cron schedule + prompt the OS fires when due
 user-invocable: true
+recommended_effort: medium
 version: 1
 domain: meta
 tags: [scaffold, evolution, scheduling]

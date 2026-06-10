@@ -2,6 +2,7 @@
 name: dev-revise-plan
 description: 'Revises an existing change plan to address findings from dev-review-change. Reads plan_path + review_path, rewrites the plan in place, bumps plan_revision. Preserves review_status — the original verdict still stands for the prior plan revision; user can manually re-run dev-review-change for a fresh verdict if desired.'
 user-invocable: true
+recommended_effort: xhigh
 version: 1
 domain: development
 tags: [change, plan, revise, review]

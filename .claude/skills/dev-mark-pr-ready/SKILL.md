@@ -2,6 +2,7 @@
 name: dev-mark-pr-ready
 description: 'Mark an OS-authored PR ready for human review/merge. Vault-only — flips pr_review_status to ready-for-human on the change entry and stamps pr_ready_at. No GitHub side-effects.'
 user-invocable: true
+recommended_effort: medium
 version: 1
 domain: development
 tags: [change, pr-review, lifecycle]

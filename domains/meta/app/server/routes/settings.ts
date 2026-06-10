@@ -45,7 +45,16 @@ interface SettingsLayer {
 
 interface SkillEffortRow {
   name: string;
+  // The skill's explicit `effort:` frontmatter value. null when the field is
+  // absent — the skill then inherits the project-wide effort. The dispatch
+  // resolver only sees this field; `recommended_effort` is UI-only metadata.
   effort: EffortLevel | null;
+  // Optional `recommended_effort:` frontmatter value — pure metadata for the
+  // dashboard's Settings UI to surface as a suggestion. Does NOT affect the
+  // dispatch path. When present and != current effective effort, the UI shows
+  // an "apply" action that copies this value into the skill's `effort:` field
+  // via the standard PUT /api/settings/skills/:skill/effort endpoint.
+  recommended_effort: EffortLevel | null;
 }
 
 interface SettingsResponse {
@@ -106,7 +115,10 @@ async function scanSkillEfforts(): Promise<SkillEffortRow[]> {
         const text = await readFile(path, 'utf8');
         const { fm } = parseFrontmatter(text);
         const effort = isEffortLevel(fm.effort) ? fm.effort : null;
-        rows.push({ name, effort });
+        const recommended_effort = isEffortLevel(fm.recommended_effort)
+          ? fm.recommended_effort
+          : null;
+        rows.push({ name, effort, recommended_effort });
       } catch {
         // Directory entries without SKILL.md are skipped silently —
         // some directories under skills/ aren't actual skills (placeholders,

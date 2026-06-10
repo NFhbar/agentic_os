@@ -2,6 +2,7 @@
 name: meta-overseer-review
 description: 'Audit a completed change lifecycle. Reads the change + plan + plan-review + every PR-review pass + events.db attribution; applies the 3-dimension rubric (correctness / completeness / efficiency) per skill that ran; emits a structured lifecycle-audit entry with scores, categorical tags, and concrete skill-tuning suggestions. The Overseer is how the OS observes itself — aggregated audits drive the self-improvement loop.'
 user-invocable: true
+recommended_effort: xhigh
 version: 1
 domain: meta
 tags: [audit, overseer, self-improvement, quality-measurement, lifecycle]

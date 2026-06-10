@@ -2,6 +2,7 @@
 name: meta-add-archetype
 description: Register a new wiki archetype with frontmatter contract + entry template + seed reference
 user-invocable: true
+recommended_effort: medium
 version: 1
 domain: meta
 tags: [scaffold, evolution, memory]

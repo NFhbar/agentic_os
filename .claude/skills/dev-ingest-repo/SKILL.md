@@ -2,6 +2,7 @@
 name: dev-ingest-repo
 description: Ingest a GitHub or local repository — clone it, analyze its structure, write an entity wiki entry so future skills can navigate and modify it
 user-invocable: true
+recommended_effort: medium
 version: 1
 domain: development
 tags: [ingestion, repo, entity, scaffolding]

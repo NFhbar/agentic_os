@@ -2,6 +2,7 @@
 name: meta-add-skill-to-playbook
 description: Register an existing skill in its domain's playbook Skills section. Idempotent — skips when the skill is already listed. Resolves the audit finding `playbook-skill-coverage` for skills that were added outside meta-add-skill (or had step 7 skipped).
 user-invocable: true
+recommended_effort: medium
 version: 1
 domain: meta
 tags: [scaffold, registration, audit-resolver, vault-only]

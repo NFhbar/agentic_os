@@ -2,6 +2,7 @@
 name: research-revise
 description: 'Revises an existing research-report to address findings from research-review. Reads review_path + current report body + re-walks materials, rewrites the report in place, bumps report_revision. Preserves review_status — the original verdict still describes the prior revision.'
 user-invocable: true
+recommended_effort: xhigh
 version: 1
 domain: research
 tags: [research, revise, review, lifecycle, report]

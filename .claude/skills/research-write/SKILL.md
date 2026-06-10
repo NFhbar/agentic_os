@@ -2,6 +2,7 @@
 name: research-write
 description: 'Author a research-report entry under a project. Reads materials from the drop zone + wikilinks + URLs, composes a structured report, writes it to vault/wiki/research/research-report/. First phase of the research-domain lifecycle (graduated from meta-research-project).'
 user-invocable: true
+recommended_effort: xhigh
 version: 1
 domain: research
 tags: [research, write, lifecycle, report]

@@ -2,6 +2,7 @@
 name: dev-review-change
 description: 'Peer-reviews a plan produced by dev-write-change. Read-only: walks the plan + repo + repo conventions, runs a structured checklist, writes a verdict (approve / request-changes / reject) plus concerns.'
 user-invocable: true
+recommended_effort: xhigh
 version: 1
 domain: development
 tags: [change, review, peer-review]

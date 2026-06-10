@@ -2,6 +2,7 @@
 name: meta-add-skill
 description: Scaffold a new skill in .claude/skills/ from template, register in domain playbook
 user-invocable: true
+recommended_effort: medium
 version: 1
 domain: meta
 tags: [scaffold, evolution]

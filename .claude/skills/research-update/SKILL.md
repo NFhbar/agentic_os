@@ -2,6 +2,7 @@
 name: research-update
 description: 'Delta-driven rewrite of a research-report when new materials land, a milestone fires, or a recommended change merges. Re-walks materials, rewrites the body, appends `## Update N`, mutates `recommended_changes` (preserves scaffolded/merged, abandons superseded, adds new proposals). May reset `review_status` when the update is substantive.'
 user-invocable: true
+recommended_effort: xhigh
 version: 1
 domain: research
 tags: [research, update, delta, lifecycle, report]

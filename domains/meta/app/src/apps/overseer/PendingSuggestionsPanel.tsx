@@ -31,6 +31,12 @@ interface PendingSuggestion {
   evidence_summary: string;
   target_change: string;
   recurrence_count: number;
+  // 'none' = no propose run has produced artifacts; clicking Propose is the next action.
+  // 'diff' = unified diff exists (real proposal); Promote is the next action.
+  // 'rationale-only' = only the rationale.md (non-skill target / skill short-circuited).
+  proposal_state: 'none' | 'diff' | 'rationale-only';
+  proposal_diff_path: string | null;
+  proposal_rationale_path: string | null;
 }
 
 function confidenceBadgeStyle(c: string): React.CSSProperties {
@@ -216,14 +222,11 @@ function PendingRow({
     setError(null);
     setToast(null);
     try {
-      const r = await postJson<{ ok: boolean; error?: string }>(
-        '/api/tuning-suggestions/dismiss',
-        {
-          audit_id: s.audit_id,
-          suggestion_index: s.suggestion_index,
-          rationale: dismissRationale || null,
-        },
-      );
+      const r = await postJson<{ ok: boolean; error?: string }>('/api/tuning-suggestions/dismiss', {
+        audit_id: s.audit_id,
+        suggestion_index: s.suggestion_index,
+        rationale: dismissRationale || null,
+      });
       if (!r.ok) throw new Error(r.error ?? 'dismiss failed');
       setDismissOpen(false);
       setDismissRationale('');
@@ -264,26 +267,55 @@ function PendingRow({
             {s.recurrence_count}×
           </span>
         )}
+        {s.proposal_state !== 'none' && (
+          <span
+            className="badge"
+            style={{
+              fontSize: 11,
+              background: 'var(--success-bg, rgba(80,200,120,0.12))',
+              color: 'var(--success-text, #4caf80)',
+              border: '1px solid var(--success-border, rgba(80,200,120,0.4))',
+            }}
+            title={
+              s.proposal_state === 'diff'
+                ? `Propose run completed — diff + rationale exist. Promote next to scaffold a decision entry.\n\n${s.proposal_diff_path}\n${s.proposal_rationale_path ?? ''}`
+                : `Propose run completed — rationale-only artifact (non-skill target). Promote to author the decision; no auto-diff will apply.\n\n${s.proposal_rationale_path ?? ''}`
+            }
+          >
+            ✓ proposed{s.proposal_state === 'rationale-only' ? ' (rationale only)' : ''}
+          </span>
+        )}
         <code className="mono" style={{ fontSize: 12, fontWeight: 500 }}>
           {s.skill}
         </code>
         <span style={{ flex: 1 }} />
-        <button type="button" className="btn btn-sm" onClick={propose} disabled={proposing}>
-          {proposing ? '…' : 'Propose'}
+        <button
+          type="button"
+          className="btn btn-sm"
+          onClick={propose}
+          disabled={proposing}
+          title={
+            s.proposal_state !== 'none'
+              ? 'Re-run Propose — overwrites the existing diff + rationale artifacts. Use when the audit gained more evidence (followups, score updates) or the prior proposal needs a fresh shot.'
+              : 'Run meta-apply-tuning-suggestion in propose mode — writes a unified diff + rationale to vault/output/meta/tuning-proposals/ without modifying anything.'
+          }
+        >
+          {proposing ? '…' : s.proposal_state !== 'none' ? 'Re-propose' : 'Propose'}
         </button>
         <button
           type="button"
           className="btn btn-sm btn-primary"
           onClick={promote}
           disabled={promoting}
+          title={
+            s.proposal_state !== 'none'
+              ? "Scaffold a decision-archetype entry citing this suggestion. The Apply gate fires from there — fill the decision's rationale prose, then Apply via the Decisions panel."
+              : 'Scaffold a decision-archetype entry. You can do this before or after Propose — but having proposal artifacts first gives you concrete material to evaluate.'
+          }
         >
           <Icons.Plus size={11} /> {promoting ? '…' : 'Promote'}
         </button>
-        <button
-          type="button"
-          className="btn btn-sm"
-          onClick={() => setDismissOpen((v) => !v)}
-        >
+        <button type="button" className="btn btn-sm" onClick={() => setDismissOpen((v) => !v)}>
           Dismiss
         </button>
       </div>
