@@ -90,7 +90,7 @@ export interface ProjectSummary {
   review_status_derived: string | null;
   // Server-computed linear stage for steppers/timelines — the collapse of
   // the (derived-or-frontmatter) plan_status × review_status pair via
-  // project-plan-status.ts planStageId. Rendering vocabulary only.
+  // lifecycle-state.ts planStageId. Rendering vocabulary only.
   plan_stage: string | null;
   plan_revision: number | null;
   review_path: string | null;

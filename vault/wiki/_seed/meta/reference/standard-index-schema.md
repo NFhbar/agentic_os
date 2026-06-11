@@ -45,6 +45,8 @@ last_verified: 2026-05-19
 }
 ```
 
+Beyond the identity fields shown, each entry carries ~35 scalar lifecycle/relationship lifts (change `status`/`pr_*`/`ci_*`, the `plan_*` + shared review-state cluster, research `report_*`, Overseer `audit_status`/`validation_result`, …). These are driven by the declarative `LIFTED_FIELDS` table in `.claude/hooks/rebuild-vault-index.mjs` — adding a manifest field is one `{name, type}` row there (`type: string | int`, with digit-string tolerance for pre-shared-parser entries), not a hand-written coercion. Absent fields lift as `null`. Server-side stage derivation over these fields lives in `domains/meta/app/server/lib/lifecycle-state.ts`.
+
 ## Consumers
 
 - **Dashboard Overview** — counts by archetype, domain, recent updates

@@ -54,6 +54,84 @@ function backlinksIn(body) {
   return [...body.matchAll(/\[\[([^\]]+)\]\]/g)].map((m) => m[1]);
 }
 
+// ---------------------------------------------------------------------------
+// Declarative frontmatter lifts (Finding 4.3). Adding a manifest field is ONE
+// row here — not a hand-written coercion in this hook plus a types edit plus
+// per-consumer plumbing. Identity fields with multi-source fallbacks (title,
+// tags, private, …) and computed fields (recommended_changes_count, snippet,
+// backlinks) stay hand-written in the entry builder below.
+//
+// Cluster notes (why each group is lifted):
+// - kind further classifies `type: entity` entries (repo, person, service…)
+//   so consumers can filter without parsing each .md file.
+// - project / repo / parent_change / change_id are structural relationships
+//   for graph queries; `backlinks` still captures body [[wikilinks]].
+// - status / review_status / pr_* / ci_* / merged_at: change-lifecycle fields
+//   for the brief, status reports, change triage, and pr-ci-monitor.
+// - plan_* + reviewed_at / review_path: the plan cluster written by
+//   dev-revise-plan (changes) and the project-orchestration skills; the
+//   review names follow standard-review-state.
+// - derived_from_report / recommendation_index: research attribution on
+//   scaffolded changes (step indicator, report backlink, drift audit).
+// - report_* / materials_path / last_data_ingest / update_count:
+//   research-report lifecycle for the Research view.
+// - audit_status / validation_result: Overseer-arc fields so scheduler
+//   preconditions can gate on them.
+const LIFTED_FIELDS = [
+  { name: 'kind', type: 'string' },
+  { name: 'project', type: 'string' },
+  { name: 'repo', type: 'string' },
+  { name: 'parent_change', type: 'string' },
+  { name: 'change_id', type: 'string' },
+  { name: 'status', type: 'string' },
+  { name: 'review_status', type: 'string' },
+  { name: 'pr_url', type: 'string' },
+  { name: 'ci_state', type: 'string' },
+  { name: 'ci_completed_at', type: 'string' },
+  { name: 'merged_at', type: 'string' },
+  { name: 'pr_review_status', type: 'string' },
+  { name: 'pr_review_path', type: 'string' },
+  { name: 'pr_review_passes', type: 'int' },
+  { name: 'pr_reviewed_at', type: 'string' },
+  { name: 'pr_ready_at', type: 'string' },
+  { name: 'plan_status', type: 'string' },
+  { name: 'plan_path', type: 'string' },
+  { name: 'reviewed_at', type: 'string' },
+  { name: 'review_path', type: 'string' },
+  { name: 'plan_revision', type: 'int' },
+  { name: 'plan_revised_at', type: 'string' },
+  { name: 'plan_revised_from_review', type: 'string' },
+  { name: 'derived_from_report', type: 'string' },
+  { name: 'recommendation_index', type: 'int' },
+  { name: 'report_generated_at', type: 'string' },
+  { name: 'report_revision', type: 'int' },
+  { name: 'report_revised_at', type: 'string' },
+  { name: 'report_revised_from_review', type: 'string' },
+  { name: 'materials_path', type: 'string' },
+  { name: 'last_data_ingest', type: 'string' },
+  { name: 'update_count', type: 'int' },
+  { name: 'audit_status', type: 'string' },
+  { name: 'validation_result', type: 'string' },
+];
+
+// `int` tolerates digit-strings for entries written before the shared
+// js-yaml parser (quoted numbers) — same coercion the hand-written lifts had.
+function liftValue(raw, type) {
+  if (type === 'string') return typeof raw === 'string' ? raw : null;
+  if (type === 'int') {
+    if (typeof raw === 'number' && Number.isInteger(raw)) return raw;
+    if (typeof raw === 'string' && /^\d+$/.test(raw)) return parseInt(raw, 10);
+    return null;
+  }
+  return null;
+}
+
+function liftFields(fm) {
+  const out = {};
+  for (const { name, type } of LIFTED_FIELDS) out[name] = liftValue(fm[name], type);
+  return out;
+}
+
 const records = walk(WIKI_DIR).map((p) => {
   const content = readFileSync(p, 'utf8');
   const { fm, body, parseError } = parseFrontmatter(content);
@@ -66,10 +144,6 @@ const records = walk(WIKI_DIR).map((p) => {
     path: relative(REPO_ROOT, p),
     id: fm.id ?? null,
     type: fm.type ?? null,
-    // For `type: entity` entries, `kind` further classifies (repo, person,
-    // service, etc.). Lifted into the manifest so consumers can filter to
-    // e.g. "all repo entities" without parsing each .md file's frontmatter.
-    kind: typeof fm.kind === 'string' ? fm.kind : null,
     domain: fm.domain ?? null,
     title: fm.title ?? fm.name ?? null,
     created: fm.created ?? null,
@@ -77,113 +151,8 @@ const records = walk(WIKI_DIR).map((p) => {
     tags: Array.isArray(fm.tags) ? fm.tags : [],
     source: fm.source ?? null,
     private: fm.private === true,
-    // Cross-archetype relationships lifted from frontmatter so consumers
-    // can do graph queries without re-parsing each entry. `backlinks` still
-    // captures body [[wikilinks]] separately — these typed fields are for
-    // structural relationships (owning project, owning repo, parent change).
-    project: typeof fm.project === 'string' ? fm.project : null,
-    repo: typeof fm.repo === 'string' ? fm.repo : null,
-    parent_change: typeof fm.parent_change === 'string' ? fm.parent_change : null,
-    // The owning change for pr-review entries — lifted here so events.db
-    // attribution can resolve review_id → change_id via the manifest without
-    // re-parsing the entry. Null for change entries (where the change_id
-    // would be itself / redundant) and for external PR reviews.
-    change_id: typeof fm.change_id === 'string' ? fm.change_id : null,
-    // Change-specific lifecycle fields. Surfaced on the manifest so the
-    // brief / status report / change-triage / pr-ci-monitor consumers
-    // don't have to load each .md file. Null for non-change entries.
-    status: typeof fm.status === 'string' ? fm.status : null,
-    review_status: typeof fm.review_status === 'string' ? fm.review_status : null,
-    pr_url: typeof fm.pr_url === 'string' ? fm.pr_url : null,
-    // CI lifecycle (managed by runbook-pr-ci-monitor)
-    ci_state: typeof fm.ci_state === 'string' ? fm.ci_state : null,
-    ci_completed_at: typeof fm.ci_completed_at === 'string' ? fm.ci_completed_at : null,
-    merged_at: typeof fm.merged_at === 'string' ? fm.merged_at : null,
-    // PR review summary (managed by dev-pr-review when invoked with a change input).
-    // The flat parser captures values as raw strings — coerce integer + boolean
-    // fields where appropriate. pr_review_passes is parsed via parseInt so a
-    // `pr_review_passes: 2` line lands as a number.
-    pr_review_status: typeof fm.pr_review_status === 'string' ? fm.pr_review_status : null,
-    pr_review_path: typeof fm.pr_review_path === 'string' ? fm.pr_review_path : null,
-    pr_review_passes:
-      typeof fm.pr_review_passes === 'number'
-        ? fm.pr_review_passes
-        : typeof fm.pr_review_passes === 'string' && /^\d+$/.test(fm.pr_review_passes)
-          ? parseInt(fm.pr_review_passes, 10)
-          : null,
-    pr_reviewed_at: typeof fm.pr_reviewed_at === 'string' ? fm.pr_reviewed_at : null,
-    pr_ready_at: typeof fm.pr_ready_at === 'string' ? fm.pr_ready_at : null,
-    // Plan-* fields cluster — written by dev-revise-plan (for change entries) and
-    // by the project-orchestration skills (research-write /
-    // meta-review-project-plan / meta-revise-project-plan / meta-scaffold-project-plan
-    // for project entries). Lifted flat onto every record so the dashboard's
-    // lifecycle stepper / Plan tab / projects list can render plan state without
-    // a second fetch. Null on entries that don't carry these fields.
-    plan_status: typeof fm.plan_status === 'string' ? fm.plan_status : null,
-    plan_path: typeof fm.plan_path === 'string' ? fm.plan_path : null,
-    // Shared review-state cluster names (standard-review-state) — projects
-    // migrated off plan_reviewed_at/plan_review_path; changes and research
-    // reports already used these names.
-    reviewed_at: typeof fm.reviewed_at === 'string' ? fm.reviewed_at : null,
-    review_path: typeof fm.review_path === 'string' ? fm.review_path : null,
-    plan_revision:
-      typeof fm.plan_revision === 'number'
-        ? fm.plan_revision
-        : typeof fm.plan_revision === 'string' && /^\d+$/.test(fm.plan_revision)
-          ? parseInt(fm.plan_revision, 10)
-          : null,
-    plan_revised_at: typeof fm.plan_revised_at === 'string' ? fm.plan_revised_at : null,
-    plan_revised_from_review:
-      typeof fm.plan_revised_from_review === 'string' ? fm.plan_revised_from_review : null,
-    // Research-attribution fields on scaffolded changes — written by
-    // research-scaffold-recommendations when it creates a change from a
-    // research-report's `recommended_changes[]` array. The dashboard reads
-    // these to (a) show the `[N+1/M] ` step indicator on the title, (b) link
-    // back to the source report, and (c) drive the
-    // research-recommended-changes-status-drift audit hook. Null on
-    // hand-scaffolded changes.
-    derived_from_report:
-      typeof fm.derived_from_report === 'string' ? fm.derived_from_report : null,
-    recommendation_index:
-      typeof fm.recommendation_index === 'number'
-        ? fm.recommendation_index
-        : typeof fm.recommendation_index === 'string' &&
-            /^\d+$/.test(fm.recommendation_index)
-          ? parseInt(fm.recommendation_index, 10)
-          : null,
-    // Research-report-specific lifecycle fields. Mirror the plan_* cluster
-    // above — written by research-write / research-review / research-revise
-    // (phase B) and read by the dashboard's Research view. Null on entries
-    // that don't carry these fields (i.e. everything that isn't a
-    // research-report).
-    report_generated_at:
-      typeof fm.report_generated_at === 'string' ? fm.report_generated_at : null,
-    report_revision:
-      typeof fm.report_revision === 'number'
-        ? fm.report_revision
-        : typeof fm.report_revision === 'string' && /^\d+$/.test(fm.report_revision)
-          ? parseInt(fm.report_revision, 10)
-          : null,
-    report_revised_at:
-      typeof fm.report_revised_at === 'string' ? fm.report_revised_at : null,
-    report_revised_from_review:
-      typeof fm.report_revised_from_review === 'string'
-        ? fm.report_revised_from_review
-        : null,
-    materials_path: typeof fm.materials_path === 'string' ? fm.materials_path : null,
-    last_data_ingest:
-      typeof fm.last_data_ingest === 'string' ? fm.last_data_ingest : null,
-    update_count:
-      typeof fm.update_count === 'number'
-        ? fm.update_count
-        : typeof fm.update_count === 'string' && /^\d+$/.test(fm.update_count)
-          ? parseInt(fm.update_count, 10)
-          : null,
-    // Overseer-arc lifecycle fields — lifted so scheduler preconditions can
-    // gate on them (the daily audit-followups runbook fires only when
-    // provisional audits or pending decision validations exist).
-    audit_status: typeof fm.audit_status === 'string' ? fm.audit_status : null,
-    validation_result: typeof fm.validation_result === 'string' ? fm.validation_result : null,
+    // Declarative scalar lifts — see LIFTED_FIELDS above.
+    ...liftFields(fm),
     // Only the count surfaces here (the full array stays in the entry).
     // Degrades to null when the field is absent or the entry's YAML failed
     // to parse. See archetype-research-report § "Frontmatter caveats".

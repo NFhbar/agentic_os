@@ -295,7 +295,7 @@ function toSummary(fm: any, filePath: string): ProjectSummary {
     plan_status: typeof fm.plan_status === 'string' ? fm.plan_status : null,
     review_status: typeof fm.review_status === 'string' ? fm.review_status : null,
     // Derived trio computed in the detail endpoint after research + changes
-    // are attached (see project-plan-status.ts).
+    // are attached (see ../lib/lifecycle-state.ts).
     plan_status_derived: null,
     review_status_derived: null,
     plan_stage: null,
@@ -544,28 +544,22 @@ function deriveLifecycleStage(
 // touch project frontmatter. This derivation bridges the gap so the Plan
 // lifecycle stepper reflects research-driven progress too.
 //
-// Mapping (pair form — see project-plan-status.ts for the full table):
+// Mapping (pair form — see ../lib/lifecycle-state.ts for the full table):
 //   no research-reports       → { null, null } (frontmatter pair takes over)
 //   draft                     → { in-research, pending }
 //   reviewed + pending review → { drafted, pending }
 //   reviewed + request-changes→ { drafted, request-changes }
 //   approved, no scaffolded   → { drafted, approved }
 //   approved, scaffolded recs → { scaffolded|active, approved }
-// Pure derivers — extracted to ./project-plan-status.ts so unit tests can
-// exercise the transitions without the I/O-heavy projects.ts transitive
-// graph. Re-imported here for existing call sites + re-exported for
-// type-export symmetry.
-import type { DerivedPlanState } from './project-plan-status.js';
+// Pure derivers live in ../lib/lifecycle-state.ts — the single lifecycle
+// derivation module (project / change / report) — so unit tests can exercise
+// the transitions without the I/O-heavy projects.ts transitive graph.
+import type { DerivedPlanState } from '../lib/lifecycle-state.js';
 import {
   derivePostApprovalStage,
   deriveProjectPlanState,
   planStageId,
-} from './project-plan-status.js';
-export {
-  deriveProjectPlanState,
-  derivePostApprovalStage,
-  planStageId,
-} from './project-plan-status.js';
+} from '../lib/lifecycle-state.js';
 
 // Lift of readChangeAutomation from changes.ts — kept local to avoid a
 // circular import. Same semantics: null when the `automation:` block is

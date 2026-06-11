@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import type { FastifyPluginAsync } from 'fastify';
 import { rewriteFrontmatter } from '../frontmatter-rewrite.js';
 import { parseFrontmatter } from '../frontmatter.js';
+import { deriveReportSteps } from '../lib/lifecycle-state.js';
 import { REPO_ROOT, safePath } from '../repo.js';
 import { type FileRef, loadFileRef } from './changes.js';
 import { startRun } from './runs.js';
@@ -199,13 +200,21 @@ function toSummary(fm: any, filePath: string): ResearchReportSummary {
     else if (r.status === 'merged') merged += 1;
     else if (r.status === 'abandoned') abandoned += 1;
   }
+  const status = typeof fm.status === 'string' ? fm.status : null;
+  const reviewStatus = typeof fm.review_status === 'string' ? fm.review_status : null;
+  const updateCount = typeof fm.update_count === 'number' ? fm.update_count : 0;
   return {
     id: typeof fm.id === 'string' ? fm.id : '(no-id)',
     path: relative(REPO_ROOT, filePath),
     title: typeof fm.title === 'string' ? fm.title : (fm.id ?? '(untitled)'),
     project: typeof fm.project === 'string' ? fm.project : null,
-    status: typeof fm.status === 'string' ? fm.status : null,
-    review_status: typeof fm.review_status === 'string' ? fm.review_status : null,
+    status,
+    review_status: reviewStatus,
+    step_statuses: deriveReportSteps({
+      status,
+      review_status: reviewStatus,
+      update_count: updateCount,
+    }),
     review_required: fm.review_required !== false,
     review_path: typeof fm.review_path === 'string' ? fm.review_path : null,
     reviewed_at: asISOString(fm.reviewed_at),
@@ -221,7 +230,7 @@ function toSummary(fm: any, filePath: string): ResearchReportSummary {
       typeof fm.report_revised_from_review === 'string' ? fm.report_revised_from_review : null,
     materials_path: typeof fm.materials_path === 'string' ? fm.materials_path : null,
     last_data_ingest: asISOString(fm.last_data_ingest),
-    update_count: typeof fm.update_count === 'number' ? fm.update_count : 0,
+    update_count: updateCount,
     recommended_changes_count: recs.length,
     recommended_changes_proposed: proposed,
     recommended_changes_scaffolded: scaffolded,

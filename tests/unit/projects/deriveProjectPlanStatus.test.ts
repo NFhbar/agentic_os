@@ -15,7 +15,7 @@ import {
   deriveProjectPlanState,
   derivePostApprovalStage,
   planStageId,
-} from '../../../domains/meta/app/server/routes/project-plan-status.js';
+} from '../../../domains/meta/app/server/lib/lifecycle-state.js';
 import type { OwnedChangeRef } from '../../../domains/meta/app/server/routes/projects.types.js';
 import type { ResearchReportSummary } from '../../../domains/meta/app/server/routes/research.types.js';
 

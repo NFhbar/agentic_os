@@ -1,7 +1,7 @@
 // Pure helpers for recognizing died-but-likely-succeeded run failures + the
 // entity-link target on those runs. Extracted from RunRow.tsx so unit tests
 // can exercise them without pulling React. Same separation pattern as
-// automation-state-machine.ts and project-plan-status.ts.
+// automation-state-machine.ts and lifecycle-state.ts.
 
 import type { RunRecord } from '../lib/runs';
 

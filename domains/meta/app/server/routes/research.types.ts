@@ -43,6 +43,17 @@ export type ResearchReviewStatus =
   | 'overridden'
   | 'not-required';
 
+// Server-computed stepper statuses (derived in lib/lifecycle-state.ts —
+// clients render, never re-derive; Finding 4.3).
+export type ReportStepStatus = 'done' | 'current' | 'pending';
+
+export interface ReportStepStatuses {
+  drafted: ReportStepStatus;
+  reviewed: ReportStepStatus;
+  approved: ReportStepStatus;
+  updated: ReportStepStatus;
+}
+
 export interface ResearchReportSummary {
   id: string;
   path: string;
@@ -50,6 +61,7 @@ export interface ResearchReportSummary {
   project: string | null;
   status: ResearchReportStatus | null;
   review_status: ResearchReviewStatus | null;
+  step_statuses: ReportStepStatuses;
   review_required: boolean;
   review_path: string | null;
   reviewed_at: string | null;

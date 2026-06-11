@@ -8,6 +8,13 @@ import { useNavigation } from '../../../lib/navigation';
 import { formatRelative } from '../../../lib/time';
 import { ActionBanner, Icons, Stepper, type StepperStep } from '../../../shared';
 import {
+  type EventCatalogEntry,
+  buildSubscriptionMap,
+  findEventForStep,
+  getEventCatalog,
+  listRules,
+} from '../../notifications/data';
+import {
   RReviewBadge,
   RStatusBadge,
   RunResearchUpdateModal,
@@ -16,13 +23,6 @@ import {
 } from '../components';
 import type { ResearchReportDetail, ResearchReportSummary, ResearchUiState } from '../data';
 import { stateFor } from '../data';
-import {
-  type EventCatalogEntry,
-  buildSubscriptionMap,
-  findEventForStep,
-  getEventCatalog,
-  listRules,
-} from '../../notifications/data';
 import {
   MaterialsTab,
   NotesTab,
@@ -34,7 +34,15 @@ import {
   UpdatesTab,
 } from './DetailTabs';
 
-type TabId = 'overview' | 'report' | 'recommended' | 'materials' | 'reviews' | 'updates' | 'notes' | 'replay';
+type TabId =
+  | 'overview'
+  | 'report'
+  | 'recommended'
+  | 'materials'
+  | 'reviews'
+  | 'updates'
+  | 'notes'
+  | 'replay';
 
 export interface DetailPageProps {
   detail: ResearchReportDetail;
@@ -467,19 +475,10 @@ function computeLifecycle(
   subscriptionMap: Map<string, string>,
   catalog: EventCatalogEntry[],
 ): StepperStep[] {
-  const drafted: StepperStep['status'] = 'done';
-  const reviewed: StepperStep['status'] = r.review_status
-    ? r.review_status === 'pending'
-      ? 'current'
-      : 'done'
-    : 'pending';
-  const approved: StepperStep['status'] =
-    r.review_status === 'approved' || r.status === 'approved'
-      ? 'done'
-      : reviewed === 'done'
-        ? 'current'
-        : 'pending';
-  const updated: StepperStep['status'] = r.update_count > 0 ? 'done' : 'pending';
+  // Step statuses are server-computed (lib/lifecycle-state.ts deriveReportSteps)
+  // — this function only decorates them with click/notify handlers. Deriving
+  // here from raw frontmatter was the Finding 4.3 dialect-drift pattern.
+  const { drafted, reviewed, approved, updated } = r.step_statuses;
 
   const decorate = (
     step: StepperStep & { id: 'drafted' | 'reviewed' | 'approved' | 'updated' },
@@ -498,9 +497,24 @@ function computeLifecycle(
   };
 
   return [
-    decorate({ id: 'drafted', label: 'Drafted', status: drafted, onClick: () => onClick('drafted') }),
-    decorate({ id: 'reviewed', label: 'Reviewed', status: reviewed, onClick: () => onClick('reviewed') }),
-    decorate({ id: 'approved', label: 'Approved', status: approved, onClick: () => onClick('approved') }),
+    decorate({
+      id: 'drafted',
+      label: 'Drafted',
+      status: drafted,
+      onClick: () => onClick('drafted'),
+    }),
+    decorate({
+      id: 'reviewed',
+      label: 'Reviewed',
+      status: reviewed,
+      onClick: () => onClick('reviewed'),
+    }),
+    decorate({
+      id: 'approved',
+      label: 'Approved',
+      status: approved,
+      onClick: () => onClick('approved'),
+    }),
     decorate({
       id: 'updated',
       label: 'Updated',

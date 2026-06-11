@@ -3561,7 +3561,7 @@ function StatCell({
 
 // Visual stepper showing project's position in the broader plan + run + close
 // lifecycle. Consumes the server-computed `plan_stage` (the linear collapse
-// of the plan_status × review_status pair — see project-plan-status.ts
+// of the plan_status × review_status pair — see lifecycle-state.ts
 // planStageId) plus project.status (active → completed). Falls back to
 // "planning" when no plan signal exists yet.
 function ProjectPhaseTimeline({ project }: { project: ProjectSummary }) {
@@ -4651,7 +4651,7 @@ function ProjectPlanTab({
         // Prefer the derived value when present — it reflects the actual
         // Server-computed linear stage — collapses the derived (research
         // flow) or frontmatter (legacy plan flow) plan_status × review_status
-        // pair. See project-plan-status.ts planStageId.
+        // pair. See lifecycle-state.ts planStageId.
         planStatus={project.plan_stage}
         planRevision={project.plan_revision}
         projectId={projectId}
