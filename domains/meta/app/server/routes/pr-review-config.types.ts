@@ -14,9 +14,13 @@ export type CommentStyle = 'terse' | 'concise' | 'detailed';
 export type ContextStrategy = 'full-diff' | 'symbol-graph' | 'semantic';
 
 // GET /api/pr-review/config response shape (under the `config` key).
+//
+// `primary_model` / `analyzer_model` are deliberately absent — model selection
+// moved to Settings → Model (project default + per-skill override) as of
+// 0.4.3. The dev-pr-review and dev-analyze-repo-for-review skills stamp the
+// actually-running model id into the produced entry's frontmatter from their
+// own runtime context; this config file no longer carries it.
 export interface PrReviewConfig {
-  primary_model: string;
-  analyzer_model: string;
   comment_style: CommentStyle;
   focus_areas: string[];
   context_strategy: ContextStrategy;
@@ -30,10 +34,9 @@ export interface PrReviewConfig {
 
 // PUT /api/pr-review/config request body. All fields are optional — clients
 // send only the dirty fields. Server validateUpdate rejects unknown fields
-// loud.
+// loud. Model fields are absent here too — clients can't write them via this
+// route; use /api/settings/model and /api/settings/skills/:skill/model.
 export interface PrReviewConfigUpdateBody {
-  primary_model?: string;
-  analyzer_model?: string;
   comment_style?: CommentStyle;
   focus_areas?: string[];
   context_strategy?: 'full-diff';

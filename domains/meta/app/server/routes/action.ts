@@ -10,7 +10,7 @@ import { extractFromPrompt } from '../../../../../scripts/extract-event-attribut
 import { extractSkill } from '../../../../../scripts/extract-event-attribution.mjs';
 import { parseStreamJsonLine } from '../lib/stream-json.js';
 import { REPO_ROOT } from '../repo.js';
-import { resolveEffortForRun } from './runs.js';
+import { resolveEffortForRun, resolveModelForRun } from './runs.js';
 
 const AUDIT_LOG = join(REPO_ROOT, 'vault', 'raw', 'dashboard-actions.jsonl');
 
@@ -43,7 +43,10 @@ export const actionRoutes: FastifyPluginAsync = async (fastify) => {
     // --permission-mode bypassPermissions: in -p (headless) mode there's
     // no interactive prompt for tool approvals. The dashboard has already
     // collected user confirmation (button click + form/typed-confirm).
-    const effort = await resolveEffortForRun(skill);
+    const [effort, cliModel] = await Promise.all([
+      resolveEffortForRun(skill),
+      resolveModelForRun(skill),
+    ]);
     const args = [
       '-p',
       prompt,
@@ -54,8 +57,12 @@ export const actionRoutes: FastifyPluginAsync = async (fastify) => {
       '--verbose',
     ];
     if (effort) args.push('--effort', effort);
-    if (effort)
-      console.log(`action: spawning ${skill ?? '(unknown skill)'} with --effort ${effort}`);
+    if (cliModel) args.push('--model', cliModel);
+    if (effort || cliModel) {
+      console.log(
+        `action: spawning ${skill ?? '(unknown skill)'}${effort ? ` --effort ${effort}` : ''}${cliModel ? ` --model ${cliModel}` : ''}`,
+      );
+    }
     const child = spawn('claude', args, {
       cwd: REPO_ROOT,
       stdio: ['ignore', 'pipe', 'pipe'],

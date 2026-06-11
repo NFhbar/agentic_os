@@ -67,9 +67,11 @@ function asStringArray(v: unknown): string[] {
 // keeps the API surface narrow and prevents callers from injecting arbitrary
 // frontmatter fields. context_strategy is editable but only accepts
 // 'full-diff' for now (other values are documented future work).
+// `primary_model` / `analyzer_model` were removed in 0.4.3 — model selection
+// moved to Settings → Model (project default + per-skill override). Any
+// client still sending them gets a 400; that's intentional so the contract
+// drift is loud rather than silent.
 const EDITABLE_FIELDS = new Set([
-  'primary_model',
-  'analyzer_model',
   'comment_style',
   'focus_areas',
   'context_strategy',
@@ -97,18 +99,6 @@ function validateUpdate(
       return { ok: false, error: `unknown or read-only field: ${key}` };
   }
 
-  if ('primary_model' in b) {
-    if (typeof b.primary_model !== 'string' || !b.primary_model.trim()) {
-      return { ok: false, error: 'primary_model must be a non-empty string' };
-    }
-    updates.primary_model = b.primary_model.trim();
-  }
-  if ('analyzer_model' in b) {
-    if (typeof b.analyzer_model !== 'string' || !b.analyzer_model.trim()) {
-      return { ok: false, error: 'analyzer_model must be a non-empty string' };
-    }
-    updates.analyzer_model = b.analyzer_model.trim();
-  }
   if ('comment_style' in b) {
     if (typeof b.comment_style !== 'string' || !COMMENT_STYLES.has(b.comment_style)) {
       return { ok: false, error: `comment_style must be one of ${[...COMMENT_STYLES].join(', ')}` };
@@ -170,8 +160,6 @@ export const prReviewConfigRoutes: FastifyPluginAsync = async (fastify) => {
     }
 
     const config: PrReviewConfig = {
-      primary_model: asString(fm.primary_model, 'claude-opus-4-7'),
-      analyzer_model: asString(fm.analyzer_model, asString(fm.primary_model, 'claude-opus-4-7')),
       comment_style:
         (asString(fm.comment_style, 'concise') as PrReviewConfig['comment_style']) ?? 'concise',
       focus_areas: asStringArray(fm.focus_areas),
@@ -264,11 +252,6 @@ export const prReviewConfigRoutes: FastifyPluginAsync = async (fastify) => {
     // Return the updated config so the frontend doesn't need a follow-up GET.
     const updatedFm = parseFrontmatter(newContent).fm;
     const config: PrReviewConfig = {
-      primary_model: asString(updatedFm.primary_model, 'claude-opus-4-7'),
-      analyzer_model: asString(
-        updatedFm.analyzer_model,
-        asString(updatedFm.primary_model, 'claude-opus-4-7'),
-      ),
       comment_style:
         (asString(updatedFm.comment_style, 'concise') as PrReviewConfig['comment_style']) ??
         'concise',

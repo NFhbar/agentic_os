@@ -54,7 +54,12 @@ const SESSIONS_DIR = join(
 // Per-million-token rates in USD. Update as pricing evolves. Models not listed
 // here get tokens captured but cost_usd null (we don't guess).
 const RATES = {
+  // Mythos-class — Anthropic's flagship tier above Opus (released 2026-06-09).
+  // Same pricing applies to Fable 5 (general release) and Mythos 5 (restricted).
+  'claude-fable-5': { input: 10.0, output: 50.0, cache_read: 1.0, cache_write_1h: 12.5 },
+  'claude-mythos-5': { input: 10.0, output: 50.0, cache_read: 1.0, cache_write_1h: 12.5 },
   // Opus 4.x family — high-cost / high-capability
+  'claude-opus-4-8': { input: 15.0, output: 75.0, cache_read: 1.5, cache_write_1h: 18.75 },
   'claude-opus-4-7': { input: 15.0, output: 75.0, cache_read: 1.5, cache_write_1h: 18.75 },
   'claude-opus-4-6': { input: 15.0, output: 75.0, cache_read: 1.5, cache_write_1h: 18.75 },
   'claude-opus-4-5': { input: 15.0, output: 75.0, cache_read: 1.5, cache_write_1h: 18.75 },

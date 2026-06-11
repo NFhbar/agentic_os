@@ -19,14 +19,14 @@ const SECTIONS: Array<{ id: SectionId; label: string; icon: React.ReactNode }> =
 
 // Subset of the config that's editable via PUT — matches the EDITABLE_FIELDS
 // set on the backend. Used as the shape of the local `editing` state.
+//
+// Model selection (primary_model / analyzer_model) is deliberately absent —
+// as of 0.4.3 model choice lives in Settings → Model (project default +
+// per-skill override). SectionModels here is now a read-only mirror of the
+// resolver's verdict.
 type EditableConfig = Pick<
   PrReviewConfig,
-  | 'primary_model'
-  | 'analyzer_model'
-  | 'comment_style'
-  | 'focus_areas'
-  | 'context_strategy'
-  | 'custom_instructions'
+  'comment_style' | 'focus_areas' | 'context_strategy' | 'custom_instructions'
 >;
 
 // All known focus areas — the six built-in categories plus any custom labels
@@ -44,8 +44,6 @@ const COMMENT_STYLES: PrReviewConfig['comment_style'][] = ['terse', 'concise', '
 
 function pickEditable(c: PrReviewConfig): EditableConfig {
   return {
-    primary_model: c.primary_model,
-    analyzer_model: c.analyzer_model,
     comment_style: c.comment_style,
     focus_areas: c.focus_areas,
     context_strategy: c.context_strategy,
@@ -76,12 +74,13 @@ export function Settings() {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  // Models registry loaded once on mount; the dropdowns in SectionModels
-  // consume it via props. Cached for the lifetime of this view — the
-  // registry is updated by editing scripts/models-registry.mjs which
-  // requires a server restart anyway.
-  const [models, setModels] = useState<ModelEntry[] | null>(null);
-  const [modelsError, setModelsError] = useState<string | null>(null);
+  // Resolver verdicts for the two skills the PR Review app drives. SectionModels
+  // displays these as read-only — actual model choice now lives in Settings →
+  // Model and is resolved by the dispatcher at `claude -p` spawn time. See
+  // /api/settings/skills/:skill/resolved in server/routes/settings.ts.
+  const [reviewerResolved, setReviewerResolved] = useState<ResolvedForSkill | null>(null);
+  const [analyzerResolved, setAnalyzerResolved] = useState<ResolvedForSkill | null>(null);
+  const [resolverError, setResolverError] = useState<string | null>(null);
 
   const loadConfig = useCallback(async () => {
     try {
@@ -100,20 +99,24 @@ export function Settings() {
     loadConfig();
   }, [loadConfig]);
 
-  // Load the models registry once. Failure is non-fatal — SectionModels
-  // renders a degraded read-only view with the saved value as plain text.
+  // Resolve the model that will actually run for each PR Review skill.
+  // Two parallel fetches; either failing degrades that skill's row to an
+  // error message but doesn't block the page.
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/models')
-      .then((r) => {
-        if (!r.ok) throw new Error(`status ${r.status}`);
-        return r.json() as Promise<{ models: ModelEntry[] }>;
-      })
-      .then((j) => {
-        if (!cancelled) setModels(j.models);
+    const load = async (skill: string): Promise<ResolvedForSkill> => {
+      const r = await fetch(`/api/settings/skills/${skill}/resolved`);
+      if (!r.ok) throw new Error(`status ${r.status}`);
+      return (await r.json()) as ResolvedForSkill;
+    };
+    Promise.all([load('dev-pr-review'), load('dev-analyze-repo-for-review')])
+      .then(([reviewer, analyzer]) => {
+        if (cancelled) return;
+        setReviewerResolved(reviewer);
+        setAnalyzerResolved(analyzer);
       })
       .catch((e) => {
-        if (!cancelled) setModelsError((e as Error).message);
+        if (!cancelled) setResolverError((e as Error).message);
       });
     return () => {
       cancelled = true;
@@ -210,10 +213,9 @@ export function Settings() {
           {config && editing && section === 'overview' && <SectionOverview config={config} />}
           {config && editing && section === 'models' && (
             <SectionModels
-              editing={editing}
-              update={update}
-              models={models}
-              modelsError={modelsError}
+              reviewer={reviewerResolved}
+              analyzer={analyzerResolved}
+              error={resolverError}
             />
           )}
           {config && editing && section === 'review' && (
@@ -375,11 +377,13 @@ function SectionOverview({ config }: { config: PrReviewConfig }) {
       <KvRow label="Source file" hint="Editing this file changes review behavior for new runs">
         <CodeChip>{config.source_path}</CodeChip>
       </KvRow>
-      <KvRow label="Review model" hint="Used by dev-pr-review for the analysis pass">
-        <CodeChip>{config.primary_model}</CodeChip>
-      </KvRow>
-      <KvRow label="Analyzer model" hint="Used by dev-analyze-repo-for-review for Stage 2 prose">
-        <CodeChip>{config.analyzer_model}</CodeChip>
+      <KvRow
+        label="Model selection"
+        hint="Now lives in Settings → Model — see the Models tab below for the resolved verdict per skill"
+      >
+        <span className="tiny" style={{ color: 'var(--muted)' }}>
+          Project default + per-skill override (Settings → Model)
+        </span>
       </KvRow>
       <KvRow label="Comment style">
         <CodeChip>{config.comment_style}</CodeChip>
@@ -410,186 +414,135 @@ function SectionOverview({ config }: { config: PrReviewConfig }) {
   );
 }
 
-// Model registry shape — mirrors scripts/models-registry.mjs. Inlined here
-// as a narrow client-side projection so the .tsx doesn't have to import a
-// .mjs across the dashboard build boundary.
-interface ModelEntry {
-  id: string;
-  family: 'opus' | 'sonnet' | 'haiku';
-  latest: boolean;
-  pricing: {
-    input: number;
-    output: number;
-    cache_read: number;
-    cache_write_1h: number;
+// Resolver response shape — mirrors GET /api/settings/skills/:skill/resolved
+// in server/routes/settings.ts. Surfaces both the winning value AND each
+// layer's contribution so the UI can show "this skill will run with model X
+// because of layer Y." Source path of truth lives at:
+//   - layers.skill   → .claude/skills/<skill>/SKILL.md frontmatter
+//   - layers.local   → .claude/settings.local.json
+//   - layers.project → .claude/settings.json
+type ResolverSource = 'skill' | 'local' | 'project' | 'cli-default';
+interface ResolvedForSkill {
+  skill: string;
+  effort: {
+    resolved: string | null;
+    source: ResolverSource;
+    layers: { skill: string | null; local: string | null; project: string | null };
   };
-  aliases?: string;
+  model: {
+    resolved: string | null;
+    source: ResolverSource;
+    layers: { skill: string | null; local: string | null; project: string | null };
+  };
 }
 
-// Picker that drives both primary_model and analyzer_model. Loads the
-// registry from /api/models once; renders a dropdown showing latest-of-family
-// by default with a "Show historical versions" toggle for older minor versions.
-function ModelPicker({
-  value,
-  onChange,
-  models,
-  showAll,
-}: {
-  value: string;
-  onChange: (id: string) => void;
-  models: ModelEntry[];
-  showAll: boolean;
-}) {
-  // Visible set = latest-of-family by default; full registry when showAll.
-  const visible = showAll ? models : models.filter((m) => m.latest);
-  // If the current value isn't in the visible set (e.g. user has a historical
-  // model saved + showAll is off), inject it so the dropdown stays consistent
-  // with the saved state instead of silently switching away from it.
-  const inVisible = visible.some((m) => m.id === value);
-  const options = inVisible
-    ? visible
-    : [...visible, models.find((m) => m.id === value) ?? null].filter(Boolean as unknown as (x: ModelEntry | null) => x is ModelEntry);
-
-  return (
-    <select
-      className="input mono"
-      style={{ width: 320, padding: '6px 10px', fontSize: 13 }}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-    >
-      {options.map((m) => {
-        // Per-Mtoken pricing summary — input/output in USD with one decimal.
-        const price = `$${m.pricing.input.toFixed(2)} / $${m.pricing.output.toFixed(2)} per M tok`;
-        const flag = m.latest ? '' : ' (older)';
-        return (
-          <option key={m.id} value={m.id}>
-            {m.id}{flag} — {m.family} — {price}
-          </option>
-        );
-      })}
-      {/* If value isn't in the registry at all (e.g. a model id added since
-          this OS install was last updated), surface it as a disabled fallback
-          so the user sees what they have without us silently rewriting their
-          config. */}
-      {!models.some((m) => m.id === value) && value && (
-        <option value={value} disabled>
-          {value} (not in registry — update scripts/models-registry.mjs)
-        </option>
-      )}
-    </select>
-  );
-}
-
+// Read-only mirror of Settings → Model's verdict. PR Review used to own its
+// own model dropdowns (config.primary_model / analyzer_model); as of 0.4.3
+// those moved to the centralized resolver. We surface the verdict here for
+// continuity — operators still want to see "which model is going to review my
+// next PR" without bouncing between apps.
 function SectionModels({
-  editing,
-  update,
-  models,
-  modelsError,
+  reviewer,
+  analyzer,
+  error,
 }: {
-  editing: EditableConfig;
-  update: <K extends keyof EditableConfig>(k: K, v: EditableConfig[K]) => void;
-  models: ModelEntry[] | null;
-  modelsError: string | null;
+  reviewer: ResolvedForSkill | null;
+  analyzer: ResolvedForSkill | null;
+  error: string | null;
 }) {
-  const [showAll, setShowAll] = useState(false);
-
-  if (modelsError) {
+  if (error) {
     return (
-      <SettingsCard title="Model picker unavailable" desc="Failed to load /api/models">
+      <SettingsCard
+        title="Resolver unavailable"
+        desc="Failed to load /api/settings/skills/.../resolved"
+      >
         <div className="tiny" style={{ color: 'var(--danger-text)' }}>
-          {modelsError} — saved values shown below as plain text. Refresh once the server is
-          available.
+          {error} — refresh once the server is available.
         </div>
-        <KvRow label="Review model">
-          <span className="mono tiny">{editing.primary_model || '(unset)'}</span>
-        </KvRow>
-        <KvRow label="Analyzer model">
-          <span className="mono tiny">{editing.analyzer_model || '(unset)'}</span>
-        </KvRow>
       </SettingsCard>
     );
   }
-
-  if (!models) {
+  if (!reviewer || !analyzer) {
     return (
-      <SettingsCard title="Loading models…" desc="Fetching the registry from /api/models">
-        <div className="tiny" style={{ color: 'var(--muted)' }}>Loading…</div>
+      <SettingsCard title="Loading…" desc="Resolving model selection for PR Review skills">
+        <div className="tiny" style={{ color: 'var(--muted)' }}>
+          Loading…
+        </div>
       </SettingsCard>
     );
   }
-
   return (
     <>
       <SettingsCard
-        title="Review model"
-        desc="The model dev-pr-review uses when analyzing a pull request diff and producing comments"
+        title="Where to change the model"
+        desc="Model selection is centralized — Settings → Model holds the project default and any per-skill override"
       >
-        <KvRow label="Model id">
-          <ModelPicker
-            value={editing.primary_model}
-            onChange={(id) => update('primary_model', id)}
-            models={models}
-            showAll={showAll}
-          />
-        </KvRow>
-        <KvRow label="Snapshotted" hint="Each pr-review entry records the model it ran under">
-          <span className="tiny">
-            stored in <code>config.primary_model</code>
-          </span>
-        </KvRow>
-      </SettingsCard>
-
-      <SettingsCard
-        title="Analyzer model"
-        desc="The model dev-analyze-repo-for-review uses to generate the Stage 2 prose knowledge doc (repo overview / conventions / deps)"
-      >
-        <KvRow label="Model id">
-          <ModelPicker
-            value={editing.analyzer_model}
-            onChange={(id) => update('analyzer_model', id)}
-            models={models}
-            showAll={showAll}
-          />
-        </KvRow>
-        <KvRow label="Trade-off" hint="Opus is richer; Haiku is ~3× faster + ~20× cheaper per token">
-          <span className="tiny">
-            For small repos, switching to{' '}
-            <code>{models.find((m) => m.family === 'haiku' && m.latest)?.id ?? 'claude-haiku-4-5'}</code>{' '}
-            gives noticeably snappier re-indexing at modest cost to overview depth.
-          </span>
-        </KvRow>
-        <KvRow
-          label="Dispatch caveat"
-          hint="Saved here today; Phase C wires this to the actual model dispatched"
-        >
-          <span className="tiny" style={{ color: 'var(--muted)' }}>
-            Saving persists the choice to the config file. The running model is still inherited from
-            the parent <code>claude -p</code> invocation until Phase C wires this to the actual
-            dispatch.
-          </span>
-        </KvRow>
-      </SettingsCard>
-
-      <SettingsCard title="Versions" desc="Toggle visibility of older minor versions in the dropdowns">
-        <KvRow label="Show historical versions">
-          <label
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13 }}
+        <KvRow label="Configure">
+          <a
+            href="/settings#model"
+            className="btn"
+            style={{ height: 32, padding: '0 14px', fontSize: 13 }}
           >
-            <input
-              type="checkbox"
-              checked={showAll}
-              onChange={(e) => setShowAll(e.target.checked)}
-            />
-            {showAll ? 'Showing all versions' : 'Latest of each family only'}
-          </label>
-        </KvRow>
-        <KvRow label="Registry" hint="Source of truth for the dropdown list + cost-per-token data">
-          <span className="tiny">
-            <code>scripts/models-registry.mjs</code> — update when new models release
-          </span>
+            Open Settings → Model
+          </a>
         </KvRow>
       </SettingsCard>
+
+      <ResolvedSkillCard
+        title="Review model (dev-pr-review)"
+        desc="The model dev-pr-review uses when analyzing a pull request diff and producing comments"
+        resolved={reviewer}
+      />
+
+      <ResolvedSkillCard
+        title="Analyzer model (dev-analyze-repo-for-review)"
+        desc="The model dev-analyze-repo-for-review uses for the Stage 2 prose knowledge doc"
+        resolved={analyzer}
+      />
     </>
+  );
+}
+
+function ResolvedSkillCard({
+  title,
+  desc,
+  resolved,
+}: {
+  title: string;
+  desc: string;
+  resolved: ResolvedForSkill;
+}) {
+  const sourceLabel: Record<ResolverSource, string> = {
+    skill: `per-skill override (.claude/skills/${resolved.skill}/SKILL.md)`,
+    local: 'local settings (.claude/settings.local.json)',
+    project: 'project default (.claude/settings.json)',
+    'cli-default': 'Claude Code default (no OS-side override set)',
+  };
+  return (
+    <SettingsCard title={title} desc={desc}>
+      <KvRow label="Resolved model">
+        {resolved.model.resolved ? (
+          <CodeChip>{resolved.model.resolved}</CodeChip>
+        ) : (
+          <span className="tiny" style={{ color: 'var(--muted)' }}>
+            (falls back to claude -p default)
+          </span>
+        )}
+      </KvRow>
+      <KvRow label="Source">
+        <span className="tiny">{sourceLabel[resolved.model.source]}</span>
+      </KvRow>
+      <KvRow
+        label="Layer breakdown"
+        hint="Per-skill override > local > project > Claude Code default"
+      >
+        <div className="tiny mono" style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <span>skill: {resolved.model.layers.skill ?? '—'}</span>
+          <span>local: {resolved.model.layers.local ?? '—'}</span>
+          <span>project: {resolved.model.layers.project ?? '—'}</span>
+        </div>
+      </KvRow>
+    </SettingsCard>
   );
 }
 

@@ -163,6 +163,52 @@ export async function resolveEffortForRun(skillName: string | null): Promise<str
   return await readEffortFromJson(join(REPO_ROOT, '.claude', 'settings.json'));
 }
 
+// Model resolution mirrors effort exactly. Precedence:
+//   1. Skill's own `model:` frontmatter field (per-skill explicit choice)
+//   2. .claude/settings.local.json `model` (per-install override)
+//   3. .claude/settings.json `model` (team-tracked baseline)
+//   4. null → omit `--model` (let `claude -p` use the user-global default
+//      from ~/.claude/settings.json, set via Claude Code's /model command)
+//
+// Same architectural rationale as resolveEffortForRun: `claude -p` reads
+// settings from disk, not from any parent context. The OS layers above the
+// user-global default let teams + installs + per-skill overrides take
+// precedence without modifying the user's personal Claude Code settings.
+async function readModelFromJson(path: string): Promise<string | null> {
+  try {
+    const text = await readFile(path, 'utf8');
+    const parsed = JSON.parse(text);
+    const v = parsed?.model;
+    return typeof v === 'string' && v.length > 0 ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readModelFromSkill(skillName: string): Promise<string | null> {
+  try {
+    const text = await readFile(
+      join(REPO_ROOT, '.claude', 'skills', skillName, 'SKILL.md'),
+      'utf8',
+    );
+    const { fm } = parseFrontmatter(text);
+    const v = fm.model;
+    return typeof v === 'string' && v.length > 0 ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function resolveModelForRun(skillName: string | null): Promise<string | null> {
+  if (skillName) {
+    const fromSkill = await readModelFromSkill(skillName);
+    if (fromSkill) return fromSkill;
+  }
+  const fromLocal = await readModelFromJson(join(REPO_ROOT, '.claude', 'settings.local.json'));
+  if (fromLocal) return fromLocal;
+  return await readModelFromJson(join(REPO_ROOT, '.claude', 'settings.json'));
+}
+
 export async function startRun(input: StartRunInput): Promise<StartRunResult> {
   const { prompt } = input;
   const promptAttribution = extractFromPrompt(prompt) as {
@@ -227,7 +273,10 @@ export async function startRun(input: StartRunInput): Promise<StartRunResult> {
   const evicted = evictBeyondCap(200) as Array<{ id: string; output_path: string }>;
   for (const ev of evicted) unlinkOutput(ev.output_path);
 
-  const effort = await resolveEffortForRun(skill);
+  const [effort, model] = await Promise.all([
+    resolveEffortForRun(skill),
+    resolveModelForRun(skill),
+  ]);
   const args = [
     '-p',
     prompt,
@@ -238,8 +287,11 @@ export async function startRun(input: StartRunInput): Promise<StartRunResult> {
     '--verbose',
   ];
   if (effort) args.push('--effort', effort);
-  if (effort) {
-    console.log(`runs: spawning ${skill ?? '(unknown skill)'} with --effort ${effort}`);
+  if (model) args.push('--model', model);
+  if (effort || model) {
+    console.log(
+      `runs: spawning ${skill ?? '(unknown skill)'}${effort ? ` --effort ${effort}` : ''}${model ? ` --model ${model}` : ''}`,
+    );
   }
 
   const child = spawn('claude', args, {

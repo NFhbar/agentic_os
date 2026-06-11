@@ -12,7 +12,7 @@ import { MODELS } from '../../../../../scripts/models-registry.mjs';
 
 interface ModelEntry {
   id: string;
-  family: 'opus' | 'sonnet' | 'haiku';
+  family: 'mythos' | 'opus' | 'sonnet' | 'haiku';
   latest: boolean;
   pricing: {
     input: number;
@@ -21,6 +21,9 @@ interface ModelEntry {
     cache_write_1h: number;
   };
   aliases?: string;
+  // Optional caveat surfaced in the Settings model dropdown (e.g. "restricted
+  // access — research partners only" for Mythos 5).
+  note?: string;
 }
 
 export const modelsRoutes: FastifyPluginAsync = async (fastify) => {

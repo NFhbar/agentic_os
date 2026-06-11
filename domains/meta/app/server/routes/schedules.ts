@@ -7,7 +7,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { extractSkill } from '../../../../../scripts/extract-event-attribution.mjs';
 import { parseFrontmatter } from '../frontmatter.js';
 import { REPO_ROOT } from '../repo.js';
-import { resolveEffortForRun } from './runs.js';
+import { resolveEffortForRun, resolveModelForRun } from './runs.js';
 import type { RunEntry, ScheduleSummary } from './schedules.types.js';
 
 // Re-export wire-shape types for backward-compat. New consumers should import
@@ -245,13 +245,18 @@ export const schedulesRoutes: FastifyPluginAsync = async (fastify) => {
     });
 
     const scheduledSkill = extractSkill(target.prompt) as string | null;
-    const effort = await resolveEffortForRun(scheduledSkill);
+    const [effort, model] = await Promise.all([
+      resolveEffortForRun(scheduledSkill),
+      resolveModelForRun(scheduledSkill),
+    ]);
     const args = ['-p', target.prompt, '--permission-mode', 'bypassPermissions'];
     if (effort) args.push('--effort', effort);
-    if (effort)
+    if (model) args.push('--model', model);
+    if (effort || model) {
       console.log(
-        `schedules: spawning ${scheduledSkill ?? '(unknown skill)'} with --effort ${effort}`,
+        `schedules: spawning ${scheduledSkill ?? '(unknown skill)'}${effort ? ` --effort ${effort}` : ''}${model ? ` --model ${model}` : ''}`,
       );
+    }
     const child = spawn('claude', args, {
       cwd: REPO_ROOT,
       stdio: ['ignore', 'pipe', 'pipe'],

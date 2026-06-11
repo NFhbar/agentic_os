@@ -1,15 +1,17 @@
-// Settings app — tab router. Two tabs: effort + usage. Internal navigation
-// via URL splat (parseRoute) so deep-link / back-forward work without local
-// state — same pattern as Overseer, Vault, PR Review.
+// Settings app — tab router. Three tabs: effort, model, usage. Internal
+// navigation via URL splat (parseRoute) so deep-link / back-forward work
+// without local state — same pattern as Overseer, Vault, PR Review.
 
 import { useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { EffortPanel } from './EffortPanel';
+import { ModelPanel } from './ModelPanel';
 import { UsagePanel } from './UsagePanel';
 
-type TabId = 'effort' | 'usage';
+type TabId = 'effort' | 'model' | 'usage';
 
 function parseTab(splat: string): TabId {
+  if (splat === 'model' || splat.startsWith('model/')) return 'model';
   if (splat === 'usage' || splat.startsWith('usage/')) return 'usage';
   return 'effort';
 }
@@ -49,7 +51,7 @@ export default function Settings() {
         </div>
         <span className="spacer" />
         {/* audit-ignore: app-design-stepper — tabs are independent surfaces
-            (Effort & cost vs Usage analytics), not a sequential workflow. */}
+            (Effort, Model, Usage analytics), not a sequential workflow. */}
         <div className="tabs" role="tablist" aria-label="Settings section">
           <button
             type="button"
@@ -58,7 +60,16 @@ export default function Settings() {
             className="tab"
             onClick={() => setTab('effort')}
           >
-            Effort &amp; cost
+            Effort
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'model'}
+            className="tab"
+            onClick={() => setTab('model')}
+          >
+            Model
           </button>
           <button
             type="button"
@@ -73,6 +84,7 @@ export default function Settings() {
       </header>
 
       {tab === 'effort' && <EffortPanel />}
+      {tab === 'model' && <ModelPanel />}
       {tab === 'usage' && <UsagePanel />}
     </div>
   );

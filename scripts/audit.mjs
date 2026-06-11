@@ -617,6 +617,9 @@ function checkWiki(domains, archetypes, knownTargets) {
             severity: 'info',
             path: relPath,
             message: `Active project hasn't been updated in ${Math.floor(ageDays)} days (counting both the project entry and any owned entries)`,
+            // `dedupe_key: ''` — path is unique per project; day-count in
+            // message drifts daily and would break dismissal match (#424).
+            dedupe_key: '',
             hint: `If still active, capture progress as an owned note. If stalled, set status: paused. If done, set status: completed.`,
           });
         }
@@ -767,6 +770,8 @@ function checkWiki(domains, archetypes, knownTargets) {
             severity: 'info',
             path: relPath,
             message: `last_verified is ${Math.floor(ageDays)} days old (>90)`,
+            // Path is unique per entry; day-count drifts daily (#424).
+            dedupe_key: '',
             hint: `Re-verify and bump last_verified, or accept as historical`,
           });
         }
@@ -1348,6 +1353,8 @@ function checkChangesPrFrozen() {
       severity: 'info',
       path: f.path,
       message: `Change "${f.id}" has CI passing but PR not merged for ${f.days} days`,
+      // Path is unique per change; day-count drifts daily (#424).
+      dedupe_key: '',
       hint: `Either merge the PR (then runbook-pr-ci-monitor will transition status→merged on next poll), abandon (status: abandoned), or push new commits if more work is needed.`,
     });
   }
@@ -1741,6 +1748,8 @@ function checkEventsDbFreshness() {
       severity: 'info',
       path: '.claude/state/events.db',
       message: `events.db hasn't been written to in ${Math.floor(ageDays)} days`,
+      // Single finding (events.db is global); day-count drifts daily (#424).
+      dedupe_key: '',
       hint: 'Either the OS isn\'t being used (quiet period — fine to ignore) OR the event-recording pipeline is broken. Check that scripts/record-dashboard-action.mjs is reachable from skills and that the scheduler is firing.',
     });
   }
@@ -2062,6 +2071,8 @@ function checkAutomationStuckRunning() {
       severity: 'warn',
       path: e.path,
       message: `Project "${e.id}" automation has been running for ${mins} minutes (>60) on step "${auto.state.current_step ?? '?'}" of change "${auto.state.current_change ?? '?'}"`,
+      // Path unique per project; minutes-count drifts every minute (#424).
+      dedupe_key: '',
       hint: 'Either the dispatched skill hung or the auto-tick path failed. Pause + investigate the current run in the Processes view, then Resume or Stop.',
     });
   }
@@ -2110,6 +2121,8 @@ function checkAutomationStalePaused() {
       severity: 'info',
       path: e.path,
       message: `Project "${e.id}" automation has been paused for ${days} days — reason: ${auto.state.paused_reason ?? 'unknown'}`,
+      // Path unique per project; day-count drifts daily (#424).
+      dedupe_key: '',
       hint: 'Resolve the pause condition and Resume, or Stop the automation if the project no longer needs auto-execution.',
     });
   }
@@ -2224,6 +2237,8 @@ function checkPlanApprovedButUnscaffolded() {
       severity: 'info',
       path: e.path,
       message: `Project "${e.id}" plan was approved ${days} days ago but never scaffolded`,
+      // Path unique per project; day-count drifts daily (#424).
+      dedupe_key: '',
       hint: 'Run /os scaffold project <id> to materialize the plan, or revise/abandon if scope shifted.',
     });
   }
@@ -2277,6 +2292,8 @@ function checkMaterialsOrphan() {
       severity: 'info',
       path: rel,
       message: `Materials directory belongs to a ${project.status} project (${days} days since last update)`,
+      // Path unique per materials dir; day-count drifts daily (#424).
+      dedupe_key: '',
       hint: 'Archive elsewhere or `rm -rf` the materials dir; the project is done with them.',
     });
   }
@@ -2361,6 +2378,8 @@ function checkResearchMaterialsStale() {
       severity: 'warn',
       path: entry.path,
       message: `Research report "${entry.id}" has new materials since last_data_ingest (${days}d ago) — drift may have accumulated`,
+      // Path unique per report; day-count drifts daily (#424).
+      dedupe_key: '',
       hint: `Run /os update research ${entry.id} to re-walk materials.`,
     });
   }
@@ -2466,6 +2485,9 @@ function checkResearchRecommendedChangesScaffoldedNotMerged() {
         severity: 'info',
         path: entry.path,
         message: `Report "${entry.id}" recommends change "${rec.id}" (scaffolded ${days}d ago) but the change is still ${ch.status}`,
+        // Multiple recs per report can each produce a finding — disambiguate
+        // by rec.id (stable). Day-count drifts daily (#424).
+        dedupe_key: rec.id,
         hint: `Check change ${rec.id}'s blockers, or revise the report if the recommendation is stale.`,
       });
     }
@@ -2764,6 +2786,8 @@ function checkNotificationRateLimitExceeded() {
         severity: 'info',
         path: `events.db:rule:${id}`,
         message: `Rule "${id}" hit its rate-limit cap ${count} time${count !== 1 ? 's' : ''} in the last 24h`,
+        // Path unique per rule; count drifts as hits accumulate (#424).
+        dedupe_key: '',
         hint: 'Tune cap_per_day on the rule OR ignore — caps biting is by design but worth knowing.',
       });
     }
@@ -2792,6 +2816,8 @@ function checkNotificationDeliveryFailed() {
         severity: 'warn',
         path: `events.db:rule:${id}`,
         message: `Rule "${id}" had ${count} delivery failure${count !== 1 ? 's' : ''} in the last 24h`,
+        // Path unique per rule; count + latest-desc drift (#424).
+        dedupe_key: '',
         hint: desc ? `Latest: ${desc.slice(0, 200)}` : 'Check the adapter config + channel availability.',
       });
     }
@@ -2884,6 +2910,8 @@ function checkNotesUnconsideredStale() {
       severity: 'info',
       path: rel,
       message: `${staleCount} unconsidered note${staleCount !== 1 ? 's' : ''} on research-report "${fm.id}" older than ${STALE_DAYS} days (oldest: ${oldestIso})`,
+      // Path unique per report; count + oldestIso drift (#424).
+      dedupe_key: '',
       hint: `Re-run /research-review or /research-revise on the report — unconsidered notes are read at the start of each run and get a considered_by entry appended when folded in.`,
     });
   }

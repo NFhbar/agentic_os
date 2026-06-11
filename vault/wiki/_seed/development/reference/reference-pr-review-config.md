@@ -10,9 +10,7 @@ private: false
 title: PR review configuration
 url: internal://config/pr-review
 kind: config
-last_verified: 2026-05-22
-primary_model: claude-opus-4-7
-analyzer_model: claude-opus-4-7
+last_verified: 2026-06-09
 comment_style: concise
 focus_areas: [logic, security, performance, style, tests, docs]
 context_strategy: full-diff
@@ -34,22 +32,15 @@ If you maintain a fork and never want upstream defaults to change yours: edit on
 
 ## Field reference
 
-### `primary_model`
+### Model selection — moved out of this file (0.4.3)
 
-The model id `dev-pr-review` uses for the review pass.
+The `primary_model` and `analyzer_model` fields were **removed** in 0.4.3. Model choice now lives in [[settings-app]] → Model:
 
-- Default: `claude-opus-4-7` (the OS's standard general-purpose model)
-- Snapshotted onto each pr-review entry's `config.primary_model`
+- Project-wide default: `.claude/settings.json` field `model`
+- Per-skill override: `model:` frontmatter on `.claude/skills/dev-pr-review/SKILL.md` (and `dev-analyze-repo-for-review/SKILL.md`)
+- Precedence: per-skill > local (`.claude/settings.local.json`) > project (`.claude/settings.json`) > Claude Code default
 
-### `analyzer_model`
-
-The model id `dev-analyze-repo-for-review` uses for the Stage 2 prose pass (repo overview / conventions / deps doc).
-
-- Default: `claude-opus-4-7` — same as `primary_model`, optimized for prose quality
-- Faster alternative: `claude-haiku-4-5` — roughly 3× faster, modestly less rich overview prose. Good fit for repos where the convention surface is small or the user wants snappier indexing.
-- Snapshotted onto each repo-knowledge entry's `analyzer_model` field
-
-Phase A note: the dashboard's Settings page reads this field as the **source of truth for documentation**, but the actually-dispatched model is still inherited from the parent `claude -p` invocation. Wiring this knob to a real model switch is Phase C work (see `archetype-pr-review-repo-cache` § note about model dispatch).
+The dispatcher resolves the model at `claude -p` spawn time and appends `--model <id>` to the subprocess args (see `domains/meta/app/server/routes/runs.ts:resolveModelForRun`). The running skill stamps its own runtime model id into the produced entry's `config.primary_model` / `analyzer_model` field — these become *records* of what ran, not *configuration* for what should run.
 
 ### `comment_style`
 

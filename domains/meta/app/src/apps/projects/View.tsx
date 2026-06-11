@@ -965,6 +965,7 @@ function ProjectDetailPane({
             />
           )}
 
+          <ApprovedResearchCard reports={detail.research_reports} onOpenEntry={onOpenEntry} />
           {detail.body && <ProjectDescriptionCard path={detail.project.path} body={detail.body} />}
 
           {detail.status_reports.length > 0 && (
@@ -4050,6 +4051,100 @@ function ProjectDescriptionCard({ path, body }: { path: string; body: string }) 
       <div style={{ padding: '12px 16px', fontSize: 13, lineHeight: 1.55 }}>
         <EditableMarkdown path={path} content={body} />
       </div>
+    </section>
+  );
+}
+
+// ApprovedResearchCard — renders a small card on Overview when the project
+// has at least one approved research-report. Closes #395: prior UX left the
+// "About this project" card as template placeholder text even after the
+// research-driven flow had produced an approved report; users had to find
+// it via the Research tab. This card surfaces approved research right above
+// the description so the project's actual shape is visible at a glance.
+//
+// Approach: NON-destructive. We don't auto-rewrite the project body (that
+// stays a human charter). Instead we add a sibling card pointing at the
+// approved report(s). Renders nothing when no report has been approved yet,
+// so empty / early-stage projects don't show clutter.
+function ApprovedResearchCard({
+  reports,
+  onOpenEntry,
+}: {
+  reports: ResearchReportRef[];
+  onOpenEntry: (id: string) => void;
+}) {
+  // Filter to reports that have actually been approved (the gate the user
+  // cares about). Sort by reviewed_at desc so the most recent approval
+  // surfaces first when a project has multiple approved reports.
+  const approved = reports
+    .filter((r) => r.review_status === 'approved')
+    .sort((a, b) => (b.reviewed_at ?? '').localeCompare(a.reviewed_at ?? ''));
+  if (approved.length === 0) return null;
+
+  return (
+    <section className="card" style={{ padding: 0 }}>
+      <div className="card-header">
+        <h4 style={{ margin: 0, fontSize: 13, fontWeight: 600 }}>
+          <span style={{ color: 'var(--success-text, var(--accent))', marginRight: 6 }}>✓</span>
+          Approved research{approved.length > 1 ? ` (${approved.length})` : ''}
+        </h4>
+      </div>
+      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+        {approved.map((r) => (
+          <li key={r.id} style={{ padding: '10px 16px', borderTop: '1px solid var(--border)' }}>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'baseline',
+                gap: 10,
+                flexWrap: 'wrap',
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => onOpenEntry(r.id)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  padding: 0,
+                  color: 'var(--accent-text)',
+                  cursor: 'pointer',
+                  fontSize: 13,
+                  fontWeight: 500,
+                  textAlign: 'left',
+                }}
+                title={`Open research-report ${r.id} in Vault`}
+              >
+                {r.title}
+              </button>
+              {r.report_revision != null && r.report_revision > 1 && (
+                <span className="tiny subtle">rev {r.report_revision}</span>
+              )}
+              <span className="spacer" />
+              {r.reviewed_at && (
+                <span className="tiny subtle" title={r.reviewed_at}>
+                  approved {formatRelative(r.reviewed_at)}
+                </span>
+              )}
+            </div>
+            {r.recommended_changes_count > 0 && (
+              <div className="tiny subtle" style={{ fontSize: 11, marginTop: 4 }}>
+                {r.recommended_changes_count} recommended change
+                {r.recommended_changes_count !== 1 ? 's' : ''}
+                {r.recommended_changes_scaffolded > 0
+                  ? ` · ${r.recommended_changes_scaffolded} scaffolded`
+                  : ''}
+                {r.recommended_changes_merged > 0
+                  ? ` · ${r.recommended_changes_merged} merged`
+                  : ''}
+                {r.recommended_changes_abandoned > 0
+                  ? ` · ${r.recommended_changes_abandoned} abandoned`
+                  : ''}
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }

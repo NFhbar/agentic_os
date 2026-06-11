@@ -246,6 +246,10 @@ interface AuditFinding {
   message: string;
   path?: string;
   hint?: string;
+  // Optional stable disambiguator used in the dismissal id when present.
+  // Drift-prone checks (messages with day counts, ages, etc.) set this so
+  // the id doesn't change run-to-run. See dismissalIdForAuditFinding.
+  dedupe_key?: string;
 }
 
 function runAudit(): AuditFinding[] {
@@ -348,8 +352,15 @@ function hash(s: string): string {
 // Compose the canonical dismissal id for an audit finding. Exported so
 // the audit route can stamp its findings with `dismissed: true` by joining
 // against `loadDismissedIds()` — keeps the id-shape in one place.
+//
+// Prefers `dedupe_key` when the finding provides one — that's the stable
+// disambiguator for drift-prone checks (where `message` interpolates day
+// counts / ages / counts and changes run-to-run, breaking dismissal match).
+// Falls back to hash(message) for backward compat — stable-message checks
+// don't need to set dedupe_key. Closes #424 (dismissal-id drift).
 export function dismissalIdForAuditFinding(f: AuditFinding): string {
-  return `audit:${f.id}:${f.path ?? ''}:${hash(f.message)}`;
+  const disambiguator = f.dedupe_key ?? f.message;
+  return `audit:${f.id}:${f.path ?? ''}:${hash(disambiguator)}`;
 }
 
 function auditItems(findings: AuditFinding[]): ActionItem[] {

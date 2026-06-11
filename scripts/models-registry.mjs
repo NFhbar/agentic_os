@@ -27,19 +27,45 @@
 /**
  * @typedef {Object} ModelEntry
  * @property {string} id                 canonical model id used by the Anthropic API
- * @property {'opus'|'sonnet'|'haiku'} family
+ * @property {'mythos'|'opus'|'sonnet'|'haiku'} family
  * @property {boolean} latest            true for the family's current default
  * @property {ModelPricing} pricing
  * @property {string} [aliases]          comma-separated id variants (dated suffixes, etc.)
+ * @property {string} [note]             optional caveat (access restrictions, preview status, etc.)
  */
 
 /** @type {ModelEntry[]} */
 export const MODELS = [
+  // Mythos-class — Anthropic's new flagship tier above Opus (released 2026-06-09).
+  // Cheaper per-token than Opus despite being more capable: extended autonomy,
+  // multi-million-token context, vision SOTA. Mythos 5 is the same model with
+  // safeguards relaxed for restricted research partners — leave it in the
+  // registry but flag the access caveat so dashboards don't recommend it
+  // accidentally. Source: anthropic.com/news/claude-fable-5-mythos-5.
+  {
+    id: 'claude-fable-5',
+    family: 'mythos',
+    latest: true,
+    pricing: { input: 10.0, output: 50.0, cache_read: 1.0, cache_write_1h: 12.5 },
+  },
+  {
+    id: 'claude-mythos-5',
+    family: 'mythos',
+    latest: false,
+    pricing: { input: 10.0, output: 50.0, cache_read: 1.0, cache_write_1h: 12.5 },
+    note: 'Restricted access — Project Glasswing partners and select biology researchers only',
+  },
   // Opus 4.x family — high-cost / high-capability
+  {
+    id: 'claude-opus-4-8',
+    family: 'opus',
+    latest: true,
+    pricing: { input: 15.0, output: 75.0, cache_read: 1.5, cache_write_1h: 18.75 },
+  },
   {
     id: 'claude-opus-4-7',
     family: 'opus',
-    latest: true,
+    latest: false,
     pricing: { input: 15.0, output: 75.0, cache_read: 1.5, cache_write_1h: 18.75 },
   },
   {
@@ -98,8 +124,8 @@ export function latestOfFamily(family) {
   return MODELS.find((m) => m.family === family && m.latest) ?? null;
 }
 
-// Convenience — just the three latest-of-family entries, in canonical
-// display order (Opus → Sonnet → Haiku).
-export const RECOMMENDED = ['opus', 'sonnet', 'haiku']
+// Convenience — just the latest-of-family entries, in canonical display
+// order (newest tier first: Mythos → Opus → Sonnet → Haiku).
+export const RECOMMENDED = ['mythos', 'opus', 'sonnet', 'haiku']
   .map((f) => latestOfFamily(f))
   .filter(Boolean);
