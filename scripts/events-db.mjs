@@ -113,7 +113,12 @@ export function recordEvent(payload = {}) {
 
     const row = {
       ts,
-      dedupe_key: computeDedupeKey({ ts, kind, action, raw: rawJson }),
+      // dedupe_basis: optional override for the content-addressed key. Lets a
+      // caller EXTEND what it stores in `raw` without changing identity —
+      // the session importer added tool/file digests to raw but keys on the
+      // legacy shape so historical rows still dedupe. Not a column; never
+      // persisted.
+      dedupe_key: computeDedupeKey({ ts, kind, action, raw: payload.dedupe_basis ?? rawJson }),
       kind,
       action,
       source: payload.source ?? null,

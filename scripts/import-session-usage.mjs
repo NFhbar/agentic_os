@@ -117,7 +117,7 @@ function isAssistantWithUsage(line) {
   return Boolean(line.message?.usage);
 }
 
-function importSession(sessionPath, { dryRun = false } = {}) {
+function collectBuckets(sessionPath) {
   const text = readFileSync(sessionPath, 'utf8');
   const sessionId = basename(sessionPath).replace(/\.jsonl$/, '');
   const lines = text.split('\n').filter(Boolean);
@@ -154,6 +154,11 @@ function importSession(sessionPath, { dryRun = false } = {}) {
         sessionId: line.sessionId || sessionId,
         tokens: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
         model: null,
+        // Workflow digest — the mining substrate. Tool-call mix + files
+        // touched per turn; consumed by scripts/mine-sessions.mjs to cluster
+        // recurring manual workflows into automation candidates.
+        tools: {},
+        files: new Set(),
       };
     } else if (isAssistantWithUsage(line)) {
       if (!current) continue; // orphan assistant message
@@ -164,9 +169,39 @@ function importSession(sessionPath, { dryRun = false } = {}) {
       current.tokens.cache_write += u.cache_creation_input_tokens || 0;
       current.model = line.message.model || current.model;
       current.endTs = line.timestamp;
+      const content = line.message?.content;
+      if (Array.isArray(content)) {
+        for (const part of content) {
+          if (part?.type !== 'tool_use') continue;
+          const name = part.name || '(unknown)';
+          current.tools[name] = (current.tools[name] || 0) + 1;
+          const fp = part.input?.file_path ?? part.input?.notebook_path;
+          if (typeof fp === 'string' && current.files.size < 25) {
+            current.files.add(fp.startsWith(REPO_ROOT) ? fp.slice(REPO_ROOT.length + 1) : fp);
+          }
+        }
+      }
     }
   }
   closeBucket();
+  return { sessionId, buckets };
+}
+
+// The legacy raw shape — keys dedupe (see dedupe_basis below) and is the
+// match basis for --backfill-digests against pre-digest rows.
+function legacyRawOf(b) {
+  return JSON.stringify({
+    sessionId: b.sessionId,
+    start: b.startTs,
+    end: b.endTs,
+    model: b.model,
+    tokens: b.tokens,
+  });
+}
+
+function importSession(sessionPath, { dryRun = false } = {}) {
+  const { buckets } = collectBuckets(sessionPath);
+  const sessionId = basename(sessionPath).replace(/\.jsonl$/, '');
 
   // Emit events
   let inserted = 0;
@@ -177,6 +212,10 @@ function importSession(sessionPath, { dryRun = false } = {}) {
     if (cost == null) costless++;
     const durationMs = (parseTs(b.endTs) ?? 0) - (parseTs(b.startTs) ?? 0);
     const isSlash = Boolean(b.slashSkill);
+    // The bucket-span identity (legacy raw shape) keys dedupe; the stored
+    // raw additionally carries the workflow digest. Splitting the two means
+    // digest-bearing re-imports still dedupe against pre-digest rows.
+    const dedupeBasis = legacyRawOf(b);
     const payload = {
       ts: b.startTs,
       kind: 'session',
@@ -195,13 +234,14 @@ function importSession(sessionPath, { dryRun = false } = {}) {
       description: trimPreview(b.userMessage.replace(/\s+/g, ' '), 200),
       prompt: trimPreview(b.userMessage, 4096),
       origin_log: `import:session:${b.sessionId}`,
-      // Include the bucket span in raw so dedupe is content-addressed across re-runs
+      dedupe_basis: dedupeBasis,
       raw: JSON.stringify({
         sessionId: b.sessionId,
         start: b.startTs,
         end: b.endTs,
         model: b.model,
         tokens: b.tokens,
+        digest: { tools: b.tools, files: [...b.files] },
       }),
     };
 
@@ -247,6 +287,7 @@ function parseArgs(argv) {
     session: null,
     recomputeCosts: false,
     backfillSkills: false,
+    backfillDigests: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -254,6 +295,7 @@ function parseArgs(argv) {
     else if (a === '--all') out.all = true;
     else if (a === '--recompute-costs') out.recomputeCosts = true;
     else if (a === '--backfill-skills') out.backfillSkills = true;
+    else if (a === '--backfill-digests') out.backfillDigests = true;
     else if (a === '--session') {
       out.session = argv[++i];
     }
@@ -350,6 +392,52 @@ async function backfillSlashAttribution() {
   );
 }
 
+// Re-parse every transcript and write the workflow digest into existing
+// rows' raw (matched via the legacy-shape dedupe key, so this is exact and
+// idempotent). Run once after the digest feature lands; new imports carry
+// digests natively.
+async function backfillDigests() {
+  const { DatabaseSync } = await import('node:sqlite');
+  const { createHash } = await import('node:crypto');
+  const dbPath = join(REPO_ROOT, '.claude', 'state', 'events.db');
+  if (!existsSync(dbPath)) {
+    console.error(`events.db not found at ${dbPath}`);
+    process.exit(1);
+  }
+  const db = new DatabaseSync(dbPath);
+  const update = db.prepare("UPDATE events SET raw = ? WHERE dedupe_key = ? AND kind = 'session'");
+  let updated = 0;
+  let missed = 0;
+  for (const s of listSessions()) {
+    const { buckets } = collectBuckets(s.path);
+    for (const b of buckets) {
+      const legacy = legacyRawOf(b);
+      const action = b.slashSkill ? 'slash-command' : 'interactive-turn';
+      const key = createHash('sha256')
+        .update(`${b.startTs}|session|${action}|${legacy}`)
+        .digest('hex');
+      const newRaw = JSON.stringify({
+        ...JSON.parse(legacy),
+        digest: { tools: b.tools, files: [...b.files] },
+      });
+      let r = update.run(newRaw, key);
+      if (r.changes === 0 && b.slashSkill) {
+        // Rows repaired by --backfill-skills kept their ORIGINAL dedupe key
+        // (computed with action=interactive-turn before the <command-message>
+        // matcher existed) — probe that key too.
+        const legacyKey = createHash('sha256')
+          .update(`${b.startTs}|session|interactive-turn|${legacy}`)
+          .digest('hex');
+        r = update.run(newRaw, legacyKey);
+      }
+      if (r.changes > 0) updated++;
+      else missed++;
+    }
+  }
+  db.close();
+  console.log(`backfilled digests — updated=${updated} unmatched=${missed}`);
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.recomputeCosts) {
@@ -358,6 +446,10 @@ async function main() {
   }
   if (args.backfillSkills) {
     await backfillSlashAttribution();
+    return;
+  }
+  if (args.backfillDigests) {
+    await backfillDigests();
     return;
   }
   let sessions;

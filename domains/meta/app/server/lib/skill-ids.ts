@@ -40,6 +40,7 @@ export const SKILL = {
   META_DELETE: 'meta-delete',
   META_EVOLVE: 'meta-evolve',
   META_MARK_RESEARCH_APPROVED: 'meta-mark-research-approved',
+  META_MINE_SESSIONS: 'meta-mine-sessions',
   META_OVERSEER_REVIEW: 'meta-overseer-review',
   META_RENAME: 'meta-rename',
   META_REOPEN_PROJECT: 'meta-reopen-project',
