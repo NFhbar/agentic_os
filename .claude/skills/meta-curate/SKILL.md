@@ -35,9 +35,15 @@ Promote unstructured content from `vault/raw/` into typed `vault/wiki/` entries 
    - Step-by-step procedure → `runbook`
    - Initiative with goals + status → `project`
    - Else → `note`
+
+   **Telemetry is NEVER promoted to wiki** (Finding 5.2; OS.md layer contract: "vault holds knowledge … events.db holds telemetry"). Scheduler/run output (`scheduled-runs.jsonl`, run journals, tick logs, CI-poll results) does not become a date-bucketed note — events.db and the raw JSONL already hold the data, and restating it adds token noise to search while telling future sessions nothing. When a telemetry source surfaces in the queue:
+   - If it reveals a DURABLE pattern (a recurring failure mode, an idiom worth naming, a design gap) → fold that observation into an existing pattern/retrospective note or the owning project's note — analysis, not event restatement, and never a date-bucketed id.
+   - Otherwise → drop it from the queue (step 6) without creating an entry; archive the raw file if asked.
+     The audit enforces this as `note-run-telemetry` (WARNs on `type: note` entries with a `.jsonl` source AND a date-bucketed id).
      c. Suggest a domain (use source path or content cues). If ambiguous, AskUserQuestion with 2-3 options.
      d. Suggest a slug (kebab-case derived from title or first heading)
      e. Present the proposed archetype, domain, slug, and title to the user via AskUserQuestion. Allow corrections.
+
 3. Read `_templates/wiki-entry/<archetype>.md.tmpl`.
 4. Render with substitutions:
    - `{{slug}}`, `{{domain}}`, `{{datetime}}`, `{{source}}` (the raw path), archetype-specific fields

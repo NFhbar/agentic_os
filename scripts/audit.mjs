@@ -474,6 +474,28 @@ function checkWiki(domains, archetypes, knownTargets) {
       }
     }
 
+    // Telemetry promoted to wiki (Finding 5.2). A note sourced from a .jsonl
+    // telemetry log AND carrying a date-bucketed id is an event restatement,
+    // not knowledge — events.db / vault/raw already hold the data. Both
+    // conditions required: analysis notes legitimately cite a .jsonl source
+    // (pr-ci-monitor-skip-pattern), and dated ids are fine when the content
+    // is a journal, not telemetry (os-iteration-*).
+    if (
+      fm.type === 'note' &&
+      typeof fm.source === 'string' &&
+      fm.source.endsWith('.jsonl') &&
+      typeof fm.id === 'string' &&
+      /\d{4}-\d{2}-\d{2}/.test(fm.id)
+    ) {
+      findings.push({
+        id: 'note-run-telemetry',
+        severity: 'warn',
+        path: relPath,
+        message: `Date-bucketed run-log note sourced from telemetry (${fm.source}) — telemetry stays out of the wiki (OS.md layer contract)`,
+        hint: `Fold durable observations into a pattern/retrospective note (no date-bucketed id) and delete this entry — the data of record lives in events.db + ${fm.source}. See meta-curate § telemetry rule.`,
+      });
+    }
+
     // id must match filename slug
     const filenameSlug = p.split('/').pop().replace(/\.md$/, '');
     if (fm.id && fm.id !== filenameSlug) {
