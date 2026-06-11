@@ -121,7 +121,11 @@ const records = walk(WIKI_DIR).map((p) => {
     // a second fetch. Null on entries that don't carry these fields.
     plan_status: typeof fm.plan_status === 'string' ? fm.plan_status : null,
     plan_path: typeof fm.plan_path === 'string' ? fm.plan_path : null,
-    plan_reviewed_at: typeof fm.plan_reviewed_at === 'string' ? fm.plan_reviewed_at : null,
+    // Shared review-state cluster names (standard-review-state) — projects
+    // migrated off plan_reviewed_at/plan_review_path; changes and research
+    // reports already used these names.
+    reviewed_at: typeof fm.reviewed_at === 'string' ? fm.reviewed_at : null,
+    review_path: typeof fm.review_path === 'string' ? fm.review_path : null,
     plan_revision:
       typeof fm.plan_revision === 'number'
         ? fm.plan_revision

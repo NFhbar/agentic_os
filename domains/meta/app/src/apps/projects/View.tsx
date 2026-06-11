@@ -3560,15 +3560,12 @@ function StatCell({
 }
 
 // Visual stepper showing project's position in the broader plan + run + close
-// lifecycle. Combines plan_status (research → reviewed-pending → approved →
-// scaffolded → active) and project.status (active → completed). Falls back to
-// "planning" when neither plan_status nor changes yet exist.
+// lifecycle. Consumes the server-computed `plan_stage` (the linear collapse
+// of the plan_status × review_status pair — see project-plan-status.ts
+// planStageId) plus project.status (active → completed). Falls back to
+// "planning" when no plan signal exists yet.
 function ProjectPhaseTimeline({ project }: { project: ProjectSummary }) {
-  // Prefer the derived value when present — research-driven projects never
-  // populate frontmatter `plan_status`, so without this fallback the
-  // timeline gets stuck at the leftmost stage. Same fix as the sibling
-  // ProjectPlanLifecycleStepper. See [[plan-lifecycle-derived-from-research-flow]].
-  const ps = project.plan_status_derived ?? project.plan_status;
+  const ps = project.plan_stage;
   const st = project.status;
   // Determine current phase index by walking the canonical order.
   const PHASES: Array<{ id: string; label: string; tooltip: string }> = [
@@ -3583,7 +3580,7 @@ function ProjectPhaseTimeline({ project }: { project: ProjectSummary }) {
       tooltip: 'research-write running — assembling materials + drafting the research report.',
     },
     {
-      id: 'reviewed-pending',
+      id: 'awaiting-review',
       label: 'Plan written',
       tooltip: 'Plan drafted, awaiting review (meta-review-project-plan).',
     },
@@ -3619,7 +3616,7 @@ function ProjectPhaseTimeline({ project }: { project: ProjectSummary }) {
   else if (ps === 'scaffolded') currentIdx = 5;
   else if (ps === 'approved') currentIdx = 4;
   else if (ps === 'request-changes') currentIdx = 3;
-  else if (ps === 'reviewed-pending') currentIdx = 2;
+  else if (ps === 'awaiting-review') currentIdx = 2;
   else if (ps === 'in-research') currentIdx = 1;
   else currentIdx = 0;
 
@@ -4652,10 +4649,10 @@ function ProjectPlanTab({
 
       <ProjectPlanLifecycleStepper
         // Prefer the derived value when present — it reflects the actual
-        // research-driven flow state (research-write → review → approve →
-        // scaffold-recommendations), which doesn't touch the frontmatter
-        // `plan_status` field. Falls back to frontmatter for legacy plan flow.
-        planStatus={project.plan_status_derived ?? project.plan_status}
+        // Server-computed linear stage — collapses the derived (research
+        // flow) or frontmatter (legacy plan flow) plan_status × review_status
+        // pair. See project-plan-status.ts planStageId.
+        planStatus={project.plan_stage}
         planRevision={project.plan_revision}
         projectId={projectId}
         projectStatus={project.status}
@@ -4681,12 +4678,12 @@ function ProjectPlanTab({
         />
       )}
 
-      {project.plan_review_path && (
+      {project.review_path && (
         <ProjectPlanReviewCard
-          reviewPath={project.plan_review_path}
+          reviewPath={project.review_path}
           planStatus={project.plan_status}
           planRevisedAt={project.plan_revised_at}
-          planReviewedAt={project.plan_reviewed_at}
+          planReviewedAt={project.reviewed_at}
           dispatching={dispatching}
           onApplyFindings={revisePlan}
           onReReview={reviewPlan}
@@ -4777,7 +4774,7 @@ function ProjectPlanStateBanner({
       );
       bg = 'var(--accent-soft)';
       break;
-    case 'reviewed-pending':
+    case 'awaiting-review':
       hint = (
         <>
           <strong>
@@ -4808,7 +4805,7 @@ function ProjectPlanStateBanner({
         label: 'Revise plan',
         onClick: onRevisePlan,
         tooltip:
-          'Runs meta-revise-project-plan: folds the review verdict back into the plan in place, bumps plan_revision, resets plan_status to reviewed-pending.',
+          'Runs meta-revise-project-plan: folds the review verdict back into the plan in place, bumps plan_revision, resets review_status to pending (the plan stays drafted).',
       };
       secondary = {
         label: 'Re-review',
@@ -4930,7 +4927,7 @@ interface PlanStage {
 const PLAN_STAGE_ORDER: ReadonlyArray<{ id: string; label: string }> = [
   { id: 'pending', label: 'pending' },
   { id: 'in-research', label: 'in-research' },
-  { id: 'reviewed-pending', label: 'reviewed-pending' },
+  { id: 'awaiting-review', label: 'awaiting-review' },
   { id: 'approved', label: 'approved' },
   { id: 'scaffolded', label: 'scaffolded' },
   { id: 'active', label: 'active' },
@@ -5138,8 +5135,8 @@ function ProjectPlanLifecycleStepper({
 
   const status = planStatus ?? 'pending';
   const currentIdx = PLAN_STAGE_ORDER.findIndex((s) => s.id === status);
-  // request-changes is a side branch from reviewed-pending — main strip
-  // shows pending+in-research as done and reviewed-pending as current.
+  // request-changes is a side branch from awaiting-review — main strip
+  // shows pending+in-research as done and awaiting-review as current.
   const isSideBranch = status === 'request-changes';
   // Terminal-project special-case: completed projects show every stage as
   // done. Without this, a completed project with `plan_status: active` would
@@ -5220,7 +5217,7 @@ function ProjectPlanLifecycleStepper({
             request-changes
           </span>
           <span>
-            Side branch from reviewed-pending. Revise the plan (or override) to return to the
+            Side branch from awaiting-review. Revise the plan (or override) to return to the
             mainline.
           </span>
         </div>
@@ -5395,7 +5392,7 @@ function ProjectPlanReviewCard({
   if (planStatus === 'request-changes') {
     verdictBadge = { label: 'request-changes', cls: 'badge warning' };
   } else if (
-    planStatus === 'reviewed-pending' ||
+    planStatus === 'awaiting-review' ||
     planStatus === 'approved' ||
     planStatus === 'scaffolded' ||
     planStatus === 'active'
@@ -5448,7 +5445,7 @@ function ProjectPlanReviewCard({
             className="btn btn-sm btn-primary"
             onClick={onApplyFindings}
             disabled={dispatching}
-            title="Runs meta-revise-project-plan: folds the review verdict into the plan, bumps plan_revision, resets plan_status to reviewed-pending."
+            title="Runs meta-revise-project-plan: folds the review verdict into the plan, bumps plan_revision, resets review_status to pending (the plan stays drafted)."
           >
             <Icons.Refresh size={11} /> Apply findings
           </button>

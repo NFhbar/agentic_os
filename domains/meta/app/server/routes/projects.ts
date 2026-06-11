@@ -293,15 +293,20 @@ function toSummary(fm: any, filePath: string): ProjectSummary {
     changes: null, // populated by the list endpoint after manifest read
     plan_path: typeof fm.plan_path === 'string' ? fm.plan_path : null,
     plan_status: typeof fm.plan_status === 'string' ? fm.plan_status : null,
-    plan_status_derived: null, // computed in the detail endpoint after research + changes are attached
+    review_status: typeof fm.review_status === 'string' ? fm.review_status : null,
+    // Derived trio computed in the detail endpoint after research + changes
+    // are attached (see project-plan-status.ts).
+    plan_status_derived: null,
+    review_status_derived: null,
+    plan_stage: null,
     plan_revision:
       typeof fm.plan_revision === 'number'
         ? fm.plan_revision
         : typeof fm.plan_revision === 'string' && /^\d+$/.test(fm.plan_revision)
           ? Number.parseInt(fm.plan_revision, 10)
           : null,
-    plan_review_path: typeof fm.plan_review_path === 'string' ? fm.plan_review_path : null,
-    plan_reviewed_at: asISOString(fm.plan_reviewed_at),
+    review_path: typeof fm.review_path === 'string' ? fm.review_path : null,
+    reviewed_at: asISOString(fm.reviewed_at),
     plan_revised_at: asISOString(fm.plan_revised_at),
     plan_revised_from_review:
       typeof fm.plan_revised_from_review === 'string' ? fm.plan_revised_from_review : null,
@@ -531,27 +536,36 @@ function deriveLifecycleStage(
   return frontmatterStage;
 }
 
-// Derive the project's plan lifecycle stage from the research-driven flow
-// when the legacy `plan_status` frontmatter is unset. The two flows are
-// parallel: meta-scaffold-project-plan writes `plan_status` directly;
+// Derive the project's plan state (plan_status × review_status pair) from
+// the research-driven flow when the frontmatter pair is unset. The two
+// flows are parallel: the meta-scaffold flow writes frontmatter directly;
 // research-write → review → approve → scaffold-recommendations updates the
 // research-report's status and the per-recommendation status, but does NOT
 // touch project frontmatter. This derivation bridges the gap so the Plan
 // lifecycle stepper reflects research-driven progress too.
 //
-// Mapping:
-//   no research-reports       → null (legacy plan_status takes over)
-//   draft                     → 'in-research'
-//   reviewed + pending review → 'reviewed-pending'
-//   reviewed + request-changes→ 'request-changes'
-//   approved, no scaffolded   → 'approved'
-//   approved, scaffolded recs → 'scaffolded' (or 'active' if any change in-flight)
+// Mapping (pair form — see project-plan-status.ts for the full table):
+//   no research-reports       → { null, null } (frontmatter pair takes over)
+//   draft                     → { in-research, pending }
+//   reviewed + pending review → { drafted, pending }
+//   reviewed + request-changes→ { drafted, request-changes }
+//   approved, no scaffolded   → { drafted, approved }
+//   approved, scaffolded recs → { scaffolded|active, approved }
 // Pure derivers — extracted to ./project-plan-status.ts so unit tests can
 // exercise the transitions without the I/O-heavy projects.ts transitive
 // graph. Re-imported here for existing call sites + re-exported for
 // type-export symmetry.
-import { derivePostApprovalStage, deriveProjectPlanStatus } from './project-plan-status.js';
-export { deriveProjectPlanStatus, derivePostApprovalStage } from './project-plan-status.js';
+import type { DerivedPlanState } from './project-plan-status.js';
+import {
+  derivePostApprovalStage,
+  deriveProjectPlanState,
+  planStageId,
+} from './project-plan-status.js';
+export {
+  deriveProjectPlanState,
+  derivePostApprovalStage,
+  planStageId,
+} from './project-plan-status.js';
 
 // Lift of readChangeAutomation from changes.ts — kept local to avoid a
 // circular import. Same semantics: null when the `automation:` block is
@@ -847,7 +861,19 @@ export const projectsRoutes: FastifyPluginAsync = async (fastify) => {
       project.lifecycle_stage,
       project.changes,
     );
-    project.plan_status_derived = deriveProjectPlanStatus(researchReports, ownedChanges);
+    const derivedPlan = deriveProjectPlanState(researchReports, ownedChanges);
+    project.plan_status_derived = derivedPlan.plan_status;
+    project.review_status_derived = derivedPlan.review_status;
+    // Final linear stage: derived pair when the research flow is active,
+    // else the frontmatter pair (legacy meta-scaffold flow).
+    project.plan_stage = planStageId(
+      derivedPlan.plan_status !== null
+        ? derivedPlan
+        : {
+            plan_status: (project.plan_status as DerivedPlanState['plan_status']) ?? null,
+            review_status: (project.review_status as DerivedPlanState['review_status']) ?? null,
+          },
+    );
     // Group each side by archetype for the UI.
     const groupByType = (refs: BacklinkRef[]): Record<string, BacklinkRef[]> => {
       const out: Record<string, BacklinkRef[]> = {};
@@ -1119,7 +1145,9 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary of 
   });
 
   // POST /api/projects/:id/plan/revise — dispatch `meta-revise-project-plan`.
-  // Refuses 409 when `plan_status` is not `request-changes`.
+  // Refuses 409 when the plan's `review_status` is not `request-changes`
+  // (shared review-state contract: the verdict lives in review_status,
+  // plan_status is lifecycle-only).
   fastify.post<{ Params: { id: string } }>('/:id/plan/revise', async (req, reply) => {
     const projectId = req.params.id;
     const found = await findProjectFrontmatter(projectId);
@@ -1128,7 +1156,7 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary of 
       return { ok: false, error: `project "${projectId}" not found` };
     }
     const project = toSummary(found.fm, found.path);
-    if (project.plan_status !== 'request-changes') {
+    if (project.review_status !== 'request-changes') {
       reply.code(409);
       return {
         ok: false,
@@ -1169,9 +1197,9 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary of 
   });
 
   // POST /api/projects/:id/plan/scaffold — dispatch `meta-scaffold-project-plan`
-  // with the curated items list. Refuses 409 when `plan_status` is not
-  // `approved`. Empty items array is allowed — the skill itself handles
-  // the idempotent stop.
+  // with the curated items list. Refuses 409 when the plan's `review_status`
+  // is not `approved` (shared review-state contract). Empty items array is
+  // allowed — the skill itself handles the idempotent stop.
   fastify.post<{
     Params: { id: string };
     Body: { items?: string[] };
@@ -1183,11 +1211,11 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary of 
       return { ok: false, error: `project "${projectId}" not found` };
     }
     const project = toSummary(found.fm, found.path);
-    if (project.plan_status !== 'approved') {
+    if (project.review_status !== 'approved' && project.review_status !== 'overridden') {
       reply.code(409);
       return {
         ok: false,
-        error: `plan_status must be 'approved' to scaffold — got '${project.plan_status ?? 'null'}'.`,
+        error: `review_status must be 'approved' (or 'overridden') to scaffold — got '${project.review_status ?? 'null'}'.`,
       };
     }
     const rawItems = req.body?.items;
@@ -1247,7 +1275,7 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary of 
     const project = toSummary(found.fm, found.path);
     const [plan, review] = await Promise.all([
       loadFileRef(project.plan_path),
-      loadFileRef(project.plan_review_path),
+      loadFileRef(project.review_path),
     ]);
     return { ok: true, plan, review } satisfies {
       ok: true;

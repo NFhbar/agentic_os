@@ -2226,7 +2226,10 @@ function checkPlanApprovedButUnscaffolded() {
   const now = Date.now();
   for (const e of manifest.entries ?? []) {
     if (e.type !== 'project') continue;
-    if (e.plan_status !== 'approved') continue;
+    // Shared review-state contract: the verdict lives in review_status;
+    // plan_status 'drafted' means the plan exists but nothing scaffolded.
+    if (e.review_status !== 'approved' && e.review_status !== 'overridden') continue;
+    if (e.plan_status !== 'drafted') continue;
     if (!e.updated) continue;
     const updatedMs = Date.parse(e.updated);
     if (Number.isNaN(updatedMs)) continue;
@@ -3394,6 +3397,66 @@ function checkDispatchSpawnSites() {
 }
 
 // ---------------------------------------------------------------------------
+// Review-state enum pins — the shared contract (standard-review-state).
+// One verdict vocabulary across change plans, research-reports, and project
+// plans; plan_status on projects is LIFECYCLE-only. Without these pins the
+// three pipelines drift back into private dialects (the pre-contract state:
+// projects spelled "awaiting review" as `reviewed-pending` while the other
+// two used `pending` — Fable review, Finding 4.2).
+// ---------------------------------------------------------------------------
+
+const REVIEW_STATUS_ENUM = new Set([
+  'pending',
+  'approved',
+  'request-changes',
+  'rejected',
+  'overridden',
+  'not-required',
+]);
+const PLAN_LIFECYCLE_ENUM = new Set([
+  'pending',
+  'in-research',
+  'drafted',
+  'scaffolded',
+  'active',
+]);
+
+function checkReviewStateEnums() {
+  const findings = [];
+  const manifestPath = join(REPO_ROOT, 'vault', '.index', 'manifest.json');
+  if (!existsSync(manifestPath)) return findings;
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  } catch {
+    return findings;
+  }
+  for (const e of manifest.entries ?? []) {
+    const reviewed = e.type === 'change' || e.type === 'research-report' || e.type === 'project';
+    if (!reviewed) continue;
+    if (e.review_status != null && !REVIEW_STATUS_ENUM.has(e.review_status)) {
+      findings.push({
+        id: 'review-status-enum',
+        severity: 'error',
+        path: e.path,
+        message: `review_status '${e.review_status}' is not in the shared enum (${[...REVIEW_STATUS_ENUM].join(' | ')})`,
+        hint: 'See standard-review-state — one verdict vocabulary across change / research-report / project.',
+      });
+    }
+    if (e.type === 'project' && e.plan_status != null && !PLAN_LIFECYCLE_ENUM.has(e.plan_status)) {
+      findings.push({
+        id: 'plan-status-enum',
+        severity: 'error',
+        path: e.path,
+        message: `plan_status '${e.plan_status}' is not lifecycle-only (${[...PLAN_LIFECYCLE_ENUM].join(' | ')})`,
+        hint: 'Review verdicts moved to review_status (standard-review-state); legacy values like reviewed-pending/request-changes/approved migrate to the pair form.',
+      });
+    }
+  }
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
 // Skill-id constants module — app TS names skills via the generated
 // server/lib/skill-ids.ts instead of raw string literals, so a rename or
 // deletion is a compile error rather than a silently-stale string (the
@@ -3554,6 +3617,7 @@ function main() {
   if (sections.logs) findings.push(...checkLogs());
   if (sections.dispatch) findings.push(...checkDispatchSpawnSites());
   if (sections.wiki) findings.push(...checkManifestFreshness());
+  if (sections.wiki) findings.push(...checkReviewStateEnums());
   // Event store schema drift — cheap, runs unconditionally.
   findings.push(...checkEventsDb());
   findings.push(...checkEventAttribution());

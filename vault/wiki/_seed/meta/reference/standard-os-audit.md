@@ -133,6 +133,13 @@ The skill-coverage checks deliberately stop at "Planned" sub-headings or subsequ
 | `log-jsonl-valid`            | warn     | Every line of `vault/raw/*.jsonl` parses as JSON (empty lines allowed)       | `standard-log-formats` |
 | `log-documented-in-standard` | warn     | Every `vault/raw/*.jsonl` filename is mentioned in `standard-log-formats.md` | `standard-log-formats` |
 
+### Review-state contract
+
+| id                   | severity | what it enforces                                                                                                                 | source standard         |
+| -------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| `review-status-enum` | error    | `review_status` on change / research-report / project entries is one of the shared 6-value enum                                  | `standard-review-state` |
+| `plan-status-enum`   | error    | Project `plan_status` is lifecycle-only (`pending\|in-research\|drafted\|scaffolded\|active`) — verdicts live in `review_status` | `standard-review-state` |
+
 ### Skill-id constants (app ↔ skill coupling)
 
 | id                        | severity | what it enforces                                                                                                                                                                                               | source standard          |

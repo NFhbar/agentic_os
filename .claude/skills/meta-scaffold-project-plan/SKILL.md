@@ -1,6 +1,6 @@
 ---
 name: meta-scaffold-project-plan
-description: 'Terminal phase of project orchestration. Gated on plan_status=approved. Auto-sorts inputs.items into canonical dispatch order (changes → schedules → reporting-cadence → touchpoints), then dispatches dev-add-change / meta-add-schedule / direct frontmatter edits to materialize the approved plan.'
+description: 'Terminal phase of project orchestration. Gated on review_status=approved. Auto-sorts inputs.items into canonical dispatch order (changes → schedules → reporting-cadence → touchpoints), then dispatches dev-add-change / meta-add-schedule / direct frontmatter edits to materialize the approved plan.'
 user-invocable: true
 version: 1
 domain: meta
@@ -10,7 +10,7 @@ inputs:
     type: string
     required: true
     pattern: '^[a-z0-9][a-z0-9-]*$'
-    description: 'Project id (slug). Must match an existing `type: project` entry with `plan_status: approved`.'
+    description: 'Project id (slug). Must match an existing `type: project` entry whose plan carries `review_status: approved` (or `overridden`).'
   items:
     type: array
     required: true
@@ -34,7 +34,7 @@ spawns: [dev-add-change, meta-add-schedule]
 
 Materialize an approved project plan into concrete OS artifacts — change entries, runbook entries (schedules), reporting-cadence frontmatter, and reporting-touchpoint markers. This is the **terminal phase** of the project-orchestration lifecycle: research → review → (revise+re-review)\* → approve → **scaffold**.
 
-The skill is **gated on `plan_status: approved`**. Any other state is rejected — the review verdict is load-bearing because scaffolding creates real wiki entries that downstream skills will pick up, and uncritically materializing an unreviewed plan defeats the entire orchestration loop.
+The skill is **gated on `review_status: approved` (or `overridden`)**, with `plan_status: drafted`. Any other state is rejected — the review verdict is load-bearing because scaffolding creates real wiki entries that downstream skills will pick up, and uncritically materializing an unreviewed plan defeats the entire orchestration loop.
 
 Per-item opt-in is the convention: `inputs.items` is an explicit list of plan-step ids. The user (or the dashboard's Plan tab confirm dialog) picks which steps to scaffold. Items not in the list are left for a future scaffold call.
 
@@ -46,7 +46,7 @@ Per-item opt-in is the convention: `inputs.items` is an explicit list of plan-st
 2. Locate the project entry at `vault/wiki/*/project/<project>.md`. Reject with `project "<id>" not found` if missing or `type != project`.
 3. Extract `domain` from project frontmatter.
 4. Verify `plan_path` is set AND the file exists. Reject with `no plan to scaffold — run /os research project <id> first` if not.
-5. Verify `plan_status == "approved"`. Reject any other state with: `cannot scaffold — plan_status is <state>, expected approved`.
+5. Verify `review_status` is `approved` or `overridden` (the plan lifecycle is `plan_status: drafted` at this point). Reject any other state with: `cannot scaffold — review_status is <state>, expected approved`.
 6. If `inputs.items` is an empty array: idempotent stop. Print `↻ No items selected — nothing to scaffold.` Do NOT mutate any frontmatter. Done.
 
 ### Step 2: Parse the plan into a step map
@@ -132,7 +132,7 @@ If ANY sub-dispatch in Step 5 fails mid-loop:
 
 1. **Stop dispatch immediately.** No further items processed.
 2. **Do NOT auto-rollback** the already-succeeded items — leaving them on disk is correct (the user can decide whether to keep or manually delete them; rolling back automatically risks deleting work that the user wanted).
-3. **Do NOT mutate `plan_status`** — leave it at `approved` so a retry remains valid.
+3. **Do NOT mutate `plan_status` or `review_status`** — leave them (`drafted` / `approved`) so a retry remains valid.
 4. Surface a structured per-item outcome block in the print summary, listing EVERY entry in the canonical dispatch order:
    ```
    ✓ change-1     → dev-add-change ok        (created vault/wiki/development/change/<slug>.md)
@@ -203,7 +203,7 @@ When the run was a partial-failure (Step 6), the same audit event runs (with the
 - `inputs.project` slug invalid → reject with the regex
 - Project not found / not `type: project` → reject with id
 - `plan_path` not set or file missing → instruct user to run `/os research project <id>` first
-- `plan_status != "approved"` → reject with the actual state
+- `review_status` not `approved` / `overridden` → reject with the actual state
 - `inputs.items` is empty → idempotent stop (no error)
 - Any id in `inputs.items` does not resolve to a step in the plan → hard reject before dispatch begins (lists unknown ids + known ids)
 - Sub-dispatch failure mid-loop → partial-failure path per Step 6 (stops immediately, leaves succeeded items on disk, `plan_status` stays at `approved`)
@@ -212,9 +212,9 @@ When the run was a partial-failure (Step 6), the same audit event runs (with the
 ## See also
 
 - [[standard-project-workflow]] — full plan-lifecycle state machine
-- [[archetype-project]] — project archetype + `plan_status` enum
+- [[archetype-project]] — project archetype + the `plan_status` lifecycle and shared `review_status` enums
 - [[research-write]] — produces the plan this skill materializes (formerly via the deleted `meta-research-project` alias)
-- [[meta-review-project-plan]] — the review gate that flips `plan_status: approved`
+- [[meta-review-project-plan]] — the review gate that flips `review_status: approved`
 - [[meta-revise-project-plan]] — the loop that re-runs when a revised plan needs re-review
 - [[dev-add-change]] — sub-scaffolder dispatched for each `change-*` item
 - [[meta-add-schedule]] — sub-scaffolder dispatched for each `schedule-*` item
