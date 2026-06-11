@@ -175,6 +175,11 @@ const records = walk(WIKI_DIR).map((p) => {
         : typeof fm.update_count === 'string' && /^\d+$/.test(fm.update_count)
           ? parseInt(fm.update_count, 10)
           : null,
+    // Overseer-arc lifecycle fields — lifted so scheduler preconditions can
+    // gate on them (the daily audit-followups runbook fires only when
+    // provisional audits or pending decision validations exist).
+    audit_status: typeof fm.audit_status === 'string' ? fm.audit_status : null,
+    validation_result: typeof fm.validation_result === 'string' ? fm.validation_result : null,
     // Only the count surfaces here (the full array stays in the entry).
     // Degrades to null when the field is absent or the entry's YAML failed
     // to parse. See archetype-research-report § "Frontmatter caveats".

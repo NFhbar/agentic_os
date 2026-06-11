@@ -192,7 +192,13 @@ export function discoverProjectStatuses() {
 //   field=set             field present + non-empty
 //   field=null            field unset/null/empty string
 //
+// ' || ' separates OR-groups: an entry matches when it satisfies ANY group
+// (each group is still AND-of-clauses). The match count is the size of the
+// UNION across groups. Added for the audit-followups runbook, which fires
+// when provisional audits OR pending decision validations exist.
+//
 // Example: 'type=change status=in-review pr_url=set ci_state=null|running'
+// Example: 'type=lifecycle-audit audit_status=provisional || type=decision validation_result=pending'
 // ---------------------------------------------------------------------------
 
 function parsePreconditionQuery(query) {
@@ -234,8 +240,16 @@ export function countManifestMatches(query) {
     return null; // manifest unavailable — caller decides whether to fire
   }
   const entries = manifest.entries ?? [];
-  const clauses = parsePreconditionQuery(query);
-  return entries.filter((e) => clauses.every((c) => clauseMatches(e, c))).length;
+  const groups = query
+    .split('||')
+    .map((g) => g.trim())
+    .filter(Boolean)
+    .map((g) => parsePreconditionQuery(g));
+  if (groups.length === 0) return 0;
+  // Union across OR-groups — an entry counts once even if multiple groups
+  // match it.
+  return entries.filter((e) => groups.some((clauses) => clauses.every((c) => clauseMatches(e, c))))
+    .length;
 }
 
 // ---------------------------------------------------------------------------
