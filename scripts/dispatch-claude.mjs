@@ -98,6 +98,90 @@ export async function resolveModelForRun(skillName) {
   return await readJsonKey(join(REPO_ROOT, '.claude', 'settings.json'), 'model');
 }
 
+// ---------------------------------------------------------------------------
+// Wall-time cap resolution — per-skill, derived from measured durations.
+//
+// The old uniform 25-minute cap was sized to an anecdote ("longest legitimate
+// run we've seen, ~15 min") while meta-curate runs averaged 41 minutes —
+// migrating long skills onto the watchdog path would have killed every
+// healthy run. Precedence:
+//   1. `wall_time_cap_minutes:` SKILL.md frontmatter (explicit per-skill)
+//   2. history-derived: 2 × p95 of the skill's successful durations in
+//      events.db (runs + dispatched events), when ≥5 samples exist
+//   3. floor: 25 minutes
+// Everything is clamped to a 240-minute ceiling — beyond that, a hung child
+// costs more than any legitimate run is worth.
+// ---------------------------------------------------------------------------
+
+export const WALL_CAP_FLOOR_MINUTES = 25;
+export const WALL_CAP_CEILING_MINUTES = 240;
+const WALL_CAP_HISTORY_MIN_SAMPLES = 5;
+
+// Pure derivation — unit-tested in tests/unit/dispatch/wall-cap.test.ts.
+export function deriveCapMs({ frontmatterMinutes, durationsMs }) {
+  if (Number.isFinite(frontmatterMinutes) && frontmatterMinutes > 0) {
+    return Math.min(frontmatterMinutes, WALL_CAP_CEILING_MINUTES) * 60_000;
+  }
+  const floor = WALL_CAP_FLOOR_MINUTES * 60_000;
+  if (!durationsMs || durationsMs.length < WALL_CAP_HISTORY_MIN_SAMPLES) return floor;
+  const sorted = [...durationsMs].sort((a, b) => a - b);
+  const p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
+  return Math.max(floor, Math.min(2 * p95, WALL_CAP_CEILING_MINUTES * 60_000));
+}
+
+// Successful durations only — failed/capped runs would bias the percentile.
+// Runs dispatched through startRun appear in BOTH halves (runs row + its
+// ai-prompt event); duplicating the whole distribution leaves percentiles
+// unchanged, so no dedup is attempted. node:sqlite is imported lazily so
+// this module stays loadable by vitest (its resolver can't handle
+// node:sqlite) and stays light for callers that never resolve caps.
+async function skillDurationsMs(skillName) {
+  try {
+    const { DatabaseSync } = await import('node:sqlite');
+    const db = new DatabaseSync(join(REPO_ROOT, '.claude', 'state', 'events.db'), {
+      readOnly: true,
+    });
+    try {
+      const rows = db
+        .prepare(
+          `SELECT duration_ms FROM runs
+            WHERE skill = ? AND duration_ms IS NOT NULL
+              AND state IN ('done','died-after-writeback')
+           UNION ALL
+           SELECT duration_ms FROM events
+            WHERE skill = ? AND duration_ms IS NOT NULL AND status = 'success'
+              AND kind IN ('dashboard','schedule')`,
+        )
+        .all(skillName, skillName);
+      return rows.map((r) => r.duration_ms);
+    } finally {
+      db.close();
+    }
+  } catch {
+    return [];
+  }
+}
+
+const _capCache = new Map(); // skill -> { capMs, at }
+const CAP_CACHE_TTL_MS = 10 * 60_000;
+
+export async function resolveWallTimeCapMs(skillName) {
+  const key = skillName ?? '';
+  const hit = _capCache.get(key);
+  if (hit && Date.now() - hit.at < CAP_CACHE_TTL_MS) return hit.capMs;
+  let frontmatterMinutes = null;
+  if (skillName) {
+    const v = await readSkillField(skillName, 'wall_time_cap_minutes');
+    const n = v != null ? Number.parseInt(v, 10) : Number.NaN;
+    if (Number.isFinite(n) && n > 0) frontmatterMinutes = n;
+  }
+  const durationsMs =
+    skillName && frontmatterMinutes == null ? await skillDurationsMs(skillName) : [];
+  const capMs = deriveCapMs({ frontmatterMinutes, durationsMs });
+  _capCache.set(key, { capMs, at: Date.now() });
+  return capMs;
+}
+
 // Build the full `claude` argv for a headless skill dispatch.
 export async function buildClaudeArgs(prompt, skillName) {
   const [effort, model] = await Promise.all([

@@ -28,6 +28,11 @@ interface SkillEffortRow {
   name: string;
   effort: EffortLevel | null;
   recommended_effort: EffortLevel | null;
+  // Wall-time cap: explicit frontmatter override (null = derived) and the
+  // effective cap the watchdog/supervisor enforce (frontmatter > 2×p95 of
+  // the skill's successful duration history > 25m floor).
+  wall_time_cap_minutes: number | null;
+  effective_wall_cap_minutes: number;
 }
 
 // Ordering for compare-with-recommendation logic. Higher index = higher effort.
@@ -276,6 +281,7 @@ export function EffortPanel() {
               <th style={{ width: 130 }}>Effective effort</th>
               <th style={{ width: 200 }}>Override</th>
               <th style={{ width: 160 }}>Recommended</th>
+              <th style={{ width: 130 }}>Wall cap</th>
             </tr>
           </thead>
           <tbody>
@@ -468,7 +474,75 @@ function SkillEffortRowEditor({
           onApply={(lvl) => save(lvl)}
         />
       </td>
+      <td>
+        <WallCapCell skill={skill} onSaved={onSaved} />
+      </td>
     </tr>
+  );
+}
+
+// Per-skill wall-time cap editor. Blank input = no override — the watchdog
+// derives the cap from the skill's measured duration history (2×p95, 25m
+// floor, 240m ceiling); the placeholder shows that derived value. A number
+// writes `wall_time_cap_minutes:` to the skill's SKILL.md frontmatter via
+// PUT /api/settings/skills/:skill/wall-cap (save on Enter or blur).
+function WallCapCell({ skill, onSaved }: { skill: SkillEffortRow; onSaved: () => void }) {
+  const [value, setValue] = useState<string>(
+    skill.wall_time_cap_minutes != null ? String(skill.wall_time_cap_minutes) : '',
+  );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  async function save() {
+    const trimmed = value.trim();
+    const next = trimmed === '' ? null : Number.parseInt(trimmed, 10);
+    if (next !== null && (!Number.isInteger(next) || next < 1)) {
+      setError('positive integer or blank');
+      return;
+    }
+    if (next === (skill.wall_time_cap_minutes ?? null)) return; // unchanged
+    setSaving(true);
+    setError(null);
+    try {
+      const r = await fetch(`/api/settings/skills/${encodeURIComponent(skill.name)}/wall-cap`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ wallCapMinutes: next }),
+      });
+      const j = (await r.json()) as { ok: boolean; error?: string };
+      if (!r.ok || !j.ok) throw new Error(j.error ?? `status ${r.status}`);
+      setSavedAt(Date.now());
+      onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+      <input
+        className="input mono"
+        type="number"
+        min={1}
+        value={value}
+        placeholder={`auto (${skill.effective_wall_cap_minutes}m)`}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+        }}
+        disabled={saving}
+        title={`Wall-time cap in minutes. Blank = derived from this skill's duration history (currently ${skill.effective_wall_cap_minutes}m). Writes to SKILL.md frontmatter.`}
+        style={{ height: 26, fontSize: 12, width: 90 }}
+      />
+      {savedAt && Date.now() - savedAt < 2000 && (
+        <span style={{ color: 'var(--accent-text)', fontSize: 10 }}>✓</span>
+      )}
+      {error && <span style={{ color: 'var(--danger-text)', fontSize: 10 }}>✗ {error}</span>}
+    </span>
   );
 }
 

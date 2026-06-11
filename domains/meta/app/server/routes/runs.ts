@@ -22,7 +22,7 @@ import { dirname } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
-import { spawnClaude } from '../../../../../scripts/dispatch-claude.mjs';
+import { resolveWallTimeCapMs, spawnClaude } from '../../../../../scripts/dispatch-claude.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { recordEvent } from '../../../../../scripts/events-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
@@ -57,6 +57,8 @@ import { setHooksFired } from '../../../../../scripts/runs-db.mjs';
 import { stderrPathFor } from '../../../../../scripts/runs-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { unlinkOutput } from '../../../../../scripts/runs-db.mjs';
+// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
+import { artifactFresh } from '../../../../../scripts/runs-finalize.mjs';
 import { parseStreamJsonLine } from '../lib/stream-json.js';
 import { safePath } from '../repo.js';
 import { onAutomationStepComplete, onChangeAutomationStepComplete } from './automation.js';
@@ -124,6 +126,9 @@ interface RunSession {
   follower: NodeJS.Timeout | null;
   // Guards double-finalization (exit + error events, watchdog races).
   finished: boolean;
+  // Per-skill wall-time cap (frontmatter > history-derived > 25m floor),
+  // resolved once at spawn time. See dispatch-claude.mjs resolveWallTimeCapMs.
+  wallCapMs: number;
 }
 
 const sessions = new Map<string, RunSession>();
@@ -145,7 +150,7 @@ import type { StartRunInput, StartRunResult } from './runs.types.js';
 // not part of the HTTP wire shape (callbacks don't serialize), which is why
 // these live here and not in runs.types.ts.
 export interface RunFinishedSummary {
-  state: 'done' | 'failed' | 'cancelled';
+  state: 'done' | 'failed' | 'cancelled' | 'died-after-writeback';
   exit_status: number | null;
   duration_ms: number;
   cost_usd: number | null;
@@ -237,6 +242,7 @@ export async function startRun(input: StartRunOptions): Promise<StartRunResult> 
   // it (pipes would EPIPE the child when the parent dies). Supervision of
   // children we can no longer see lives in scripts/runs-supervisor.mjs.
   const errPath = stderrPathFor(output_path) as string;
+  const wallCapMs = (await resolveWallTimeCapMs(skill)) as number;
   mkdirSync(dirname(output_path), { recursive: true });
   const outFd = openSync(output_path, 'a');
   const errFd = openSync(errPath, 'a');
@@ -289,6 +295,7 @@ export async function startRun(input: StartRunOptions): Promise<StartRunResult> 
     rawBuf: '',
     follower: null,
     finished: false,
+    wallCapMs,
   };
   sessions.set(id, session);
   superviseSession(session);
@@ -446,20 +453,38 @@ function finishAndRecord(session: RunSession, code: number | null) {
   const { id } = session;
   const durationMs = Date.now() - session.startedMs;
   const exit = typeof code === 'number' ? code : null;
-  const state: RunRow['state'] = session.cancelled
+  let state: RunRow['state'] = session.cancelled
     ? 'cancelled'
     : exit === 0 && !session.isError
       ? 'done'
       : 'failed';
+  // Watchdog-kill reason wins over stderr capture — gives operators a
+  // distinguishable error string ("killed: wall-time cap exceeded") so
+  // they can tell wall-time kills from natural failures or orphan-sweep
+  // detections. See sweepWallTimeCap below + Task #398 / #418.
+  let error: string | null =
+    state === 'failed' ? (session.killedReason ?? (session.stderrAll || null)) : null;
+  // Artifact verification before failing a cap-kill: a SIGTERM'd child that
+  // already wrote its linked entity is died-after-writeback, not failed —
+  // the same rule the finalizer applies to runs that die while the server
+  // is down (runs-finalize.mjs).
+  if (state === 'failed' && session.killedReason?.startsWith('killed:')) {
+    const fresh = artifactFresh({
+      change_id: session.change_id,
+      project: session.project,
+      started_at: session.ts,
+    }) as boolean;
+    if (fresh) {
+      state = 'died-after-writeback';
+      error = `${session.killedReason} — linked entity updated after start; work likely landed (verify it)`;
+    }
+  }
+  const ok = state === 'done' || state === 'died-after-writeback';
   finishRun(id, {
     state,
     exit_status: exit,
     duration_ms: session.claudeDurationMs ?? durationMs,
-    // Watchdog-kill reason wins over stderr capture — gives operators a
-    // distinguishable error string ("killed: wall-time cap exceeded") so
-    // they can tell wall-time kills from natural failures or orphan-sweep
-    // detections. See sweepWallTimeCap below + Task #398 / #418.
-    error: state === 'failed' ? (session.killedReason ?? (session.stderrAll || null)) : null,
+    error,
     cost_usd: session.costUsd,
     tokens_in: session.tokensIn,
     tokens_out: session.tokensOut,
@@ -491,7 +516,7 @@ function finishAndRecord(session: RunSession, code: number | null) {
     cost_usd: session.costUsd,
     duration_ms: session.claudeDurationMs ?? durationMs,
     exit_status: exit,
-    status: exit === 0 && !session.isError ? 'success' : 'error',
+    status: ok ? 'success' : 'error',
     prompt: session.prompt,
     stdout_preview: session.combinedText,
     stderr: session.stderrAll || null,
@@ -513,17 +538,20 @@ function finishAndRecord(session: RunSession, code: number | null) {
     }
   }
 
+  // died-after-writeback advances automation as a success (the linked
+  // entity was verifiably updated); the warning lives on the run row.
+  const effectiveExit = ok ? 0 : exit;
   // Phase 1.5: if this run was dispatched by an active project automation,
   // tick the state machine forward (advance or pause per the gate rules).
   // Fire-and-forget — auto-tick is best-effort and must not block the
   // close handler's cleanup. Internal failures log to console only.
-  void onAutomationStepComplete(session.project, session.change_id, session.skill, exit);
+  void onAutomationStepComplete(session.project, session.change_id, session.skill, effectiveExit);
   // Phase 2: per-change automation hook. Runs alongside the project hook
   // above — they read from different frontmatter (project vs change), so
   // there's no conflict. The change hook only acts when the change's
   // automation.enabled is true AND last_run_id matches, so unrelated runs
   // are silent no-ops.
-  void onChangeAutomationStepComplete(session.change_id, session.skill, exit, session.id);
+  void onChangeAutomationStepComplete(session.change_id, session.skill, effectiveExit, session.id);
 
   // Hooks fired in-process — the unhooked-runs poll (processUnhookedRuns)
   // skips this row. Supervisor-finalized rows take the poll path instead.
@@ -672,12 +700,14 @@ export async function processUnhookedRuns(): Promise<number> {
 // it as the run's `error` field, distinct from orphan-sweep's "PID not
 // alive" message.
 //
-// Cap default chosen empirically: 25 min covers the longest legitimate
-// run we've seen (~15 min address-comments on a complex change) plus
-// generous headroom. Per-skill override via SKILL.md frontmatter is
-// deferred — a uniform default is enough to bound the worst case.
+// Caps are per-skill since the Fable review: the old uniform 25-minute cap
+// sat below meta-curate's measured 41-minute average — migrating long
+// skills onto this watchdog would have killed every healthy run. Each
+// session resolves its cap at spawn time (SKILL.md `wall_time_cap_minutes:`
+// > 2×p95 of the skill's successful duration history > 25m floor — see
+// dispatch-claude.mjs resolveWallTimeCapMs) and cap-kills are artifact-
+// verified in finishAndRecord before being marked failed.
 
-const DEFAULT_WALL_TIME_CAP_MS = 25 * 60 * 1000; // 25 minutes
 const WALL_TIME_SWEEP_INTERVAL_MS = 30 * 1000; // tick every 30s
 const SIGKILL_ESCALATION_MS = 30 * 1000; // wait this long after SIGTERM
 
@@ -714,9 +744,9 @@ function sweepWallTimeCap(): void {
       continue;
     }
     const ageMs = now - session.startedMs;
-    if (ageMs <= DEFAULT_WALL_TIME_CAP_MS) continue;
+    if (ageMs <= session.wallCapMs) continue;
     // Cap exceeded — terminate.
-    const minutes = Math.floor(DEFAULT_WALL_TIME_CAP_MS / 60000);
+    const minutes = Math.floor(session.wallCapMs / 60000);
     session.killedReason = `killed: wall-time cap exceeded (${minutes}m)`;
     session.killedAt = now;
     try {

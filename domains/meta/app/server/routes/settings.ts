@@ -20,6 +20,10 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { FastifyPluginAsync } from 'fastify';
 // @ts-expect-error — .mjs import from JS module; type-checked via JSDoc
+import { WALL_CAP_CEILING_MINUTES } from '../../../../../scripts/dispatch-claude.mjs';
+// @ts-expect-error — .mjs import from JS module; type-checked via JSDoc
+import { resolveWallTimeCapMs } from '../../../../../scripts/dispatch-claude.mjs';
+// @ts-expect-error — .mjs import from JS module; type-checked via JSDoc
 import { MODELS } from '../../../../../scripts/models-registry.mjs';
 import { parseFrontmatter } from '../frontmatter.js';
 import { REPO_ROOT } from '../repo.js';
@@ -82,6 +86,11 @@ interface SkillConfigRow {
   // that the Settings → Model tab surfaces as ↑ apply / ↓ apply actions.
   model: string | null;
   recommended_model: string | null;
+  // Wall-time cap: explicit `wall_time_cap_minutes:` frontmatter (null =
+  // none) and the resolved effective cap the watchdog/supervisor will
+  // actually enforce (frontmatter > 2×p95 duration history > 25m floor).
+  wall_time_cap_minutes: number | null;
+  effective_wall_cap_minutes: number;
 }
 
 interface SettingsResponse {
@@ -180,7 +189,26 @@ async function scanSkillConfigs(): Promise<SkillConfigRow[]> {
           : null;
         const model = isValidModel(fm.model) ? fm.model : null;
         const recommended_model = isValidModel(fm.recommended_model) ? fm.recommended_model : null;
-        rows.push({ name, effort, recommended_effort, model, recommended_model });
+        const capRaw = fm.wall_time_cap_minutes;
+        const capNum =
+          typeof capRaw === 'number'
+            ? capRaw
+            : typeof capRaw === 'string' && /^\d+$/.test(capRaw)
+              ? Number.parseInt(capRaw, 10)
+              : null;
+        const wall_time_cap_minutes = capNum && capNum > 0 ? capNum : null;
+        const effective_wall_cap_minutes = Math.round(
+          ((await resolveWallTimeCapMs(name)) as number) / 60000,
+        );
+        rows.push({
+          name,
+          effort,
+          recommended_effort,
+          model,
+          recommended_model,
+          wall_time_cap_minutes,
+          effective_wall_cap_minutes,
+        });
       } catch {
         // Directory entries without SKILL.md are skipped silently —
         // some directories under skills/ aren't actual skills (placeholders,
@@ -346,6 +374,73 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
     }
     await writeFile(path, updated, 'utf8');
     return { ok: true, effortLevel: next };
+  });
+
+  // PUT /skills/:skill/wall-cap — surgically edit a single skill's SKILL.md
+  // `wall_time_cap_minutes:` field. Mirrors PUT /skills/:skill/effort: replace
+  // / insert / strip (null reverts to the history-derived default). The
+  // watchdog + supervisor resolve via dispatch-claude.mjs, so edits take
+  // effect on the next spawn / supervision pass (10-minute resolver cache).
+  fastify.put<{
+    Params: { skill: string };
+    Body: { wallCapMinutes: number | null };
+  }>('/skills/:skill/wall-cap', async (req, reply) => {
+    const { skill } = req.params;
+    const next = req.body?.wallCapMinutes ?? null;
+    if (
+      next !== null &&
+      (!Number.isInteger(next) || next < 1 || next > (WALL_CAP_CEILING_MINUTES as number))
+    ) {
+      return reply.code(400).send({
+        ok: false,
+        error: `wallCapMinutes must be an integer 1–${WALL_CAP_CEILING_MINUTES} or null`,
+      });
+    }
+    if (!/^[a-z][a-z0-9-]*$/.test(skill)) {
+      return reply.code(400).send({ ok: false, error: 'invalid skill name' });
+    }
+
+    const path = join(SKILLS_DIR, skill, 'SKILL.md');
+    let text: string;
+    try {
+      text = await readFile(path, 'utf8');
+    } catch {
+      return reply.code(404).send({ ok: false, error: `skill not found: ${skill}` });
+    }
+
+    const m = text.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+    if (!m) {
+      return reply.code(409).send({
+        ok: false,
+        error: `${skill}/SKILL.md has no parseable frontmatter`,
+      });
+    }
+    const { parseError } = parseFrontmatter(text);
+    if (parseError) {
+      return reply.code(409).send({
+        ok: false,
+        error: `${skill}/SKILL.md frontmatter has a parse error — refusing to edit: ${parseError}`,
+      });
+    }
+
+    let fmText = m[1];
+    const body = m[2];
+    const capLineRe = /^wall_time_cap_minutes:\s*\S+\s*$/m;
+
+    if (next === null) {
+      fmText = fmText.replace(/^wall_time_cap_minutes:\s*\S+\s*\n?/m, '').trimEnd();
+    } else if (capLineRe.test(fmText)) {
+      fmText = fmText.replace(capLineRe, `wall_time_cap_minutes: ${next}`);
+    } else {
+      fmText = `${fmText.trimEnd()}\nwall_time_cap_minutes: ${next}`;
+    }
+
+    const updated = `---\n${fmText}\n---\n${body}`;
+    if (updated === text) {
+      return { ok: true, wallCapMinutes: next, unchanged: true };
+    }
+    await writeFile(path, updated, 'utf8');
+    return { ok: true, wallCapMinutes: next };
   });
 
   // PUT /model — set the per-install model. Mirrors PUT /effort exactly.

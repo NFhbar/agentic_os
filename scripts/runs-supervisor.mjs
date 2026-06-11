@@ -8,10 +8,9 @@
 // run is always finalized from its journal evidence rather than blanket-
 // marked failed.
 
+import { resolveWallTimeCapMs } from './dispatch-claude.mjs';
 import { finalizeDeadRun } from './runs-finalize.mjs';
 import { finishRun, listActiveRuns, setRunError } from './runs-db.mjs';
-
-const DEFAULT_WALL_TIME_CAP_MS = 25 * 60 * 1000;
 
 function isPidAlive(pid) {
   if (!pid) return false;
@@ -50,11 +49,12 @@ export async function sweepDeadRuns(reason = 'PID not alive', mode = 'periodic')
   return swept;
 }
 
-// Full supervision pass: reap dead runs + enforce the wall-time cap on
-// living ones. SIGTERM on first breach (marker written to the row's error
-// column), SIGKILL escalation on the next pass if the process is still
-// alive. Returns counters for logging.
-export async function superviseRuns({ wallTimeCapMs = DEFAULT_WALL_TIME_CAP_MS } = {}) {
+// Full supervision pass: reap dead runs + enforce the per-skill wall-time
+// cap on living ones (frontmatter > history-derived > 25m floor — see
+// dispatch-claude.mjs resolveWallTimeCapMs). SIGTERM on first breach
+// (marker written to the row's error column), SIGKILL escalation on the
+// next pass if the process is still alive. Returns counters for logging.
+export async function superviseRuns() {
   const reaped = await sweepDeadRuns('supervisor: PID not alive', 'periodic');
   let terminated = 0;
   let escalated = 0;
@@ -63,7 +63,8 @@ export async function superviseRuns({ wallTimeCapMs = DEFAULT_WALL_TIME_CAP_MS }
     if (row.state !== 'running' || !row.pid || !isPidAlive(row.pid)) continue;
     const startedMs = row.started_at ? Date.parse(row.started_at) : NaN;
     if (!Number.isFinite(startedMs)) continue;
-    if (now - startedMs <= wallTimeCapMs) continue;
+    const capMs = await resolveWallTimeCapMs(row.skill ?? null);
+    if (now - startedMs <= capMs) continue;
     if (row.error?.startsWith('killed:')) {
       // Already SIGTERM'd on a prior pass — escalate.
       try {
@@ -74,7 +75,7 @@ export async function superviseRuns({ wallTimeCapMs = DEFAULT_WALL_TIME_CAP_MS }
       }
       continue;
     }
-    const minutes = Math.floor(wallTimeCapMs / 60000);
+    const minutes = Math.floor(capMs / 60000);
     setRunError(row.id, `killed: wall-time cap exceeded (${minutes}m)`);
     try {
       process.kill(row.pid, 'SIGTERM');

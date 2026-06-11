@@ -49,6 +49,18 @@ spawns: [<other-skill-name>, ...] # OS extension — optional
 
 `name`, `description`, `user-invocable`, and `version` are the fields Claude Code's harness recognizes. All others are OS conventions — the harness tolerates them as unknown keys but only OS tooling reads them.
 
+### Dispatch-tuning fields (optional)
+
+Read at `claude -p` spawn time by `scripts/dispatch-claude.mjs` (and surfaced in Settings → Effort & cost):
+
+| field                   | type    | effect                                                                                                                                                                                                                           |
+| ----------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `effort`                | enum    | `low\|medium\|high\|xhigh\|max` — per-skill override; beats `settings.local.json` / `settings.json` `effortLevel`                                                                                                                |
+| `model`                 | string  | Claude model id — per-skill override; same precedence chain as effort                                                                                                                                                            |
+| `wall_time_cap_minutes` | integer | Watchdog/supervisor kill threshold for this skill's runs. Absent → derived from history: max(25 min, 2 × p95 of the skill's successful durations), capped at 240 min. Cap-kills are artifact-verified before being marked failed |
+| `recommended_effort`    | enum    | UI-only guidance — never affects dispatch; Settings shows an "apply" action                                                                                                                                                      |
+| `recommended_model`     | string  | UI-only guidance — never affects dispatch                                                                                                                                                                                        |
+
 ## Body sections
 
 H2 headers, in this order. Sections may be empty (with TODO) but should not be omitted:
