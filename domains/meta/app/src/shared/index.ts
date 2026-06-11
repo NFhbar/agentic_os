@@ -29,6 +29,8 @@ export {
   sevIcon,
   sevLabel,
   hl,
+  useCollapsedFlag,
+  SectionToggleRow,
 } from './components';
 
 export type {

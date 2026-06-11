@@ -4,8 +4,8 @@ import { join, relative } from 'node:path';
 import type { FastifyPluginAsync } from 'fastify';
 import { REPO_ROOT, safePath } from '../repo.js';
 
-async function walkFiles(dir: string): Promise<string[]> {
-  const out: string[] = [];
+async function walkFiles(dir: string): Promise<Array<{ path: string; mtimeMs: number }>> {
+  const out: Array<{ path: string; mtimeMs: number }> = [];
   try {
     const entries = await readdir(dir, { withFileTypes: true });
     for (const e of entries) {
@@ -14,7 +14,12 @@ async function walkFiles(dir: string): Promise<string[]> {
       if (e.isDirectory()) {
         out.push(...(await walkFiles(p)));
       } else if (e.isFile()) {
-        out.push(p);
+        try {
+          const s = await stat(p);
+          out.push({ path: p, mtimeMs: s.mtimeMs });
+        } catch {
+          /* raced deletion — skip */
+        }
       }
     }
   } catch {
@@ -52,14 +57,16 @@ export const vaultRoutes: FastifyPluginAsync = async (fastify) => {
     }
   });
 
+  // Both file browsers list newest-first (mtime) — the response stays a
+  // plain path array so the client shape is unchanged.
   fastify.get('/raw', async () => {
     const dir = join(REPO_ROOT, 'vault', 'raw');
     const files = await walkFiles(dir);
     return {
       files: files
-        .map((p) => relative(REPO_ROOT, p))
-        .filter((p) => !p.endsWith('.gitkeep'))
-        .sort(),
+        .sort((a, b) => b.mtimeMs - a.mtimeMs)
+        .map((f) => relative(REPO_ROOT, f.path))
+        .filter((p) => !p.endsWith('.gitkeep')),
     };
   });
 
@@ -68,9 +75,9 @@ export const vaultRoutes: FastifyPluginAsync = async (fastify) => {
     const files = await walkFiles(dir);
     return {
       files: files
-        .map((p) => relative(REPO_ROOT, p))
-        .filter((p) => !p.endsWith('.gitkeep'))
-        .sort(),
+        .sort((a, b) => b.mtimeMs - a.mtimeMs)
+        .map((f) => relative(REPO_ROOT, f.path))
+        .filter((p) => !p.endsWith('.gitkeep')),
     };
   });
 
@@ -88,20 +95,15 @@ export const vaultRoutes: FastifyPluginAsync = async (fastify) => {
 
     const wikiDir = join(REPO_ROOT, 'vault', 'wiki');
     const files = await walkFiles(wikiDir);
-    const mdFiles = files.filter((p) => p.endsWith('.md'));
+    const mdFiles = files.filter((f) => f.path.endsWith('.md'));
 
     let newestMs = 0;
     const generatedMs = generated ? Date.parse(generated) : 0;
     let newerCount = 0;
 
-    for (const p of mdFiles) {
-      try {
-        const s = await stat(p);
-        if (s.mtimeMs > newestMs) newestMs = s.mtimeMs;
-        if (generatedMs > 0 && s.mtimeMs > generatedMs) newerCount += 1;
-      } catch {
-        /* skip */
-      }
+    for (const f of mdFiles) {
+      if (f.mtimeMs > newestMs) newestMs = f.mtimeMs;
+      if (generatedMs > 0 && f.mtimeMs > generatedMs) newerCount += 1;
     }
 
     return {

@@ -303,6 +303,12 @@ function WikiBrowser() {
       if (!inner.has(a)) inner.set(a, []);
       inner.get(a)?.push(entry);
     }
+    // Newest-first within each archetype group (manifest order is walk order).
+    for (const inner of byDomain.values()) {
+      for (const entries of inner.values()) {
+        entries.sort((a, b) => (b.updated ?? '').localeCompare(a.updated ?? ''));
+      }
+    }
     return byDomain;
   }, [filtered]);
 
