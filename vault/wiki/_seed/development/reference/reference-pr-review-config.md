@@ -34,13 +34,13 @@ If you maintain a fork and never want upstream defaults to change yours: edit on
 
 ### Model selection — moved out of this file (0.4.3)
 
-The `primary_model` and `analyzer_model` fields were **removed** in 0.4.3. Model choice now lives in [[settings-app]] → Model:
+The `primary_model` and `analyzer_model` fields were **removed** in 0.4.3. Model choice now lives in the Settings app (`/settings`) → Model:
 
 - Project-wide default: `.claude/settings.json` field `model`
 - Per-skill override: `model:` frontmatter on `.claude/skills/dev-pr-review/SKILL.md` (and `dev-analyze-repo-for-review/SKILL.md`)
 - Precedence: per-skill > local (`.claude/settings.local.json`) > project (`.claude/settings.json`) > Claude Code default
 
-The dispatcher resolves the model at `claude -p` spawn time and appends `--model <id>` to the subprocess args (see `domains/meta/app/server/routes/runs.ts:resolveModelForRun`). The running skill stamps its own runtime model id into the produced entry's `config.primary_model` / `analyzer_model` field — these become *records* of what ran, not *configuration* for what should run.
+The dispatcher resolves the model at `claude -p` spawn time and appends `--model <id>` to the subprocess args (see `domains/meta/app/server/routes/runs.ts:resolveModelForRun`). The running skill stamps its own runtime model id into the produced entry's `config.primary_model` / `analyzer_model` field — these become _records_ of what ran, not _configuration_ for what should run.
 
 ### `comment_style`
 
