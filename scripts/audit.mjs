@@ -894,6 +894,11 @@ function checkRouter() {
   // Collect skills referenced from the vocab table — used both for the
   // forward check below AND for the reverse check (vocab coverage).
   const skillsInVocab = new Set();
+  // phrase → set of skills it routes to. A phrase on two rows makes
+  // `/os <phrase>` ambiguous — the router's "prefer the most specific" rule
+  // has no answer for an exact tie, and the miss-rate metric can't see it
+  // (ambiguous hits aren't misses).
+  const phraseToSkills = new Map();
 
   while (i < lines.length && lines[i].trim().startsWith('|')) {
     const cells = lines[i].trim().split('|').slice(1, -1).map((c) => c.trim());
@@ -902,6 +907,11 @@ function checkRouter() {
       if (skillMatch) {
         const skill = skillMatch[1];
         skillsInVocab.add(skill);
+        for (const m of cells[0].matchAll(/`([^`]+)`/g)) {
+          const phrase = m[1];
+          if (!phraseToSkills.has(phrase)) phraseToSkills.set(phrase, new Set());
+          phraseToSkills.get(phrase).add(skill);
+        }
         if (!existsSync(join(skillsDir, skill, 'SKILL.md'))) {
           findings.push({
             id: 'router-vocab-skill-exists',
@@ -914,6 +924,18 @@ function checkRouter() {
       }
     }
     i++;
+  }
+
+  for (const [phrase, skills] of phraseToSkills) {
+    if (skills.size > 1) {
+      findings.push({
+        id: 'router-vocab-duplicate-phrase',
+        severity: 'error',
+        path: 'OS.md',
+        message: `Intent phrase "${phrase}" maps to ${skills.size} skills (${[...skills].join(', ')}) — /os dispatch is ambiguous`,
+        hint: 'Keep the phrase on exactly one row; make the other rows more specific',
+      });
+    }
   }
 
   // Reverse check: every user-invocable skill should appear in the vocab

@@ -118,12 +118,13 @@ The skill-coverage checks deliberately stop at "Planned" sub-headings or subsequ
 
 ### Router
 
-| id                             | severity | what it enforces                                                                                            | source standard |
-| ------------------------------ | -------- | ----------------------------------------------------------------------------------------------------------- | --------------- |
-| `router-os-md-missing`         | error    | `OS.md` exists at repo root                                                                                 | `OS.md`         |
-| `router-vocab-missing`         | warn     | `OS.md` has an "Intent vocabulary" section                                                                  | `OS.md`         |
-| `router-vocab-skill-exists`    | error    | Every vocab row maps to a skill that exists                                                                 | `OS.md`         |
-| `router-vocab-skill-uncovered` | warn     | Every `user-invocable: true` skill appears in OS.md's intent vocabulary (so `/os <intent>` can route to it) | `OS.md`         |
+| id                              | severity | what it enforces                                                                                                                                      | source standard |
+| ------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
+| `router-os-md-missing`          | error    | `OS.md` exists at repo root                                                                                                                           | `OS.md`         |
+| `router-vocab-missing`          | warn     | `OS.md` has an "Intent vocabulary" section                                                                                                            | `OS.md`         |
+| `router-vocab-skill-exists`     | error    | Every vocab row maps to a skill that exists                                                                                                           | `OS.md`         |
+| `router-vocab-skill-uncovered`  | warn     | Every `user-invocable: true` skill appears in OS.md's intent vocabulary (so `/os <intent>` can route to it)                                           | `OS.md`         |
+| `router-vocab-duplicate-phrase` | error    | No intent phrase appears on two vocabulary rows — an exact-tie phrase makes `/os <phrase>` dispatch ambiguous (and invisible to the miss-rate metric) | `OS.md`         |
 
 ### Logs
 
