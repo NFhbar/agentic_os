@@ -9,7 +9,8 @@ import type {
 } from '../../../server/routes/schedules.types';
 import { ActionRunner } from '../../components/ActionRunner';
 import { ScaffoldForm } from '../../components/ScaffoldForm';
-import { getJson } from '../../lib/api';
+import { getJson, postJson } from '../../lib/api';
+import { useDispatch, useRunTerminal } from '../../lib/dispatch';
 import { useNavigation } from '../../lib/navigation';
 import { type SkillSummary, fetchSkills, findSkill } from '../../lib/skills';
 import { formatLocal, formatRelative } from '../../lib/time';
@@ -24,11 +25,41 @@ type SchedulesData = SchedulesListResponse;
 export default function Schedules() {
   const nav = useNavigation();
   const [data, setData] = useState<SchedulesData | null>(null);
-  const [runTarget, setRunTarget] = useState<ScheduleSummary | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [addSkill, setAddSkill] = useState<SkillSummary | null>(null);
   const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const { setDrawerFilter, setDrawerOpen } = useDispatch();
+
+  // Manual fire — dispatches through the canonical runs path; output streams
+  // in the runs drawer instead of a bespoke SSE modal.
+  const runNow = useCallback(
+    async (s: ScheduleSummary) => {
+      setRunError(null);
+      try {
+        const res = await postJson<{ ok: boolean; run_id?: string; error?: string }>(
+          '/api/schedules/run-now',
+          { id: s.id },
+        );
+        if (!res.ok || !res.run_id) {
+          setRunError(res.error ?? 'run-now failed');
+          return;
+        }
+        if (s.id) setDrawerFilter({ skill: s.id });
+        setDrawerOpen(true);
+      } catch (e) {
+        setRunError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [setDrawerFilter, setDrawerOpen],
+  );
+
+  // Refresh the recent-runs list once a manual fire reaches a terminal state
+  // (the JSONL line is appended on run close, not at dispatch time).
+  useRunTerminal({}, (r) => {
+    if (r.skill && data?.schedules.some((s) => s.id === r.skill)) refresh();
+  });
 
   const refresh = useCallback(() => {
     getJson<SchedulesData>('/api/schedules')
@@ -165,7 +196,7 @@ export default function Schedules() {
                     <button
                       type="button"
                       className="btn btn-primary btn-sm"
-                      onClick={() => setRunTarget(s)}
+                      onClick={() => void runNow(s)}
                     >
                       <Icons.Play size={11} /> Run now
                     </button>
@@ -219,7 +250,7 @@ export default function Schedules() {
                                   : 'badge danger'
                             }
                             style={{ fontSize: 10.5 }}
-                            title={lastSkipped ? s.last_run.skip_reason ?? 'skipped' : undefined}
+                            title={lastSkipped ? (s.last_run.skip_reason ?? 'skipped') : undefined}
                           >
                             <span className="badge-dot" />
                             {lastSkipped
@@ -342,17 +373,10 @@ export default function Schedules() {
         </ul>
       )}
 
-      {runTarget && (
-        <ActionRunner
-          title={`Run ${runTarget.title} (manual)`}
-          prompt={runTarget.prompt}
-          endpoint="/api/schedules/run-now"
-          body={{ id: runTarget.id }}
-          onClose={() => {
-            setRunTarget(null);
-            refresh();
-          }}
-        />
+      {runError && (
+        <p className="tiny" style={{ color: 'var(--danger-text)' }}>
+          Run-now failed: {runError}
+        </p>
       )}
 
       {showAdd && addSkill && (

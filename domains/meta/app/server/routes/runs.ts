@@ -98,6 +98,7 @@ interface RunSession {
   // tick can escalate to SIGKILL if the process hasn't dropped. Independent
   // of `killedReason` (which is the user-facing message).
   killedAt: number | null;
+  onFinished: ((summary: RunFinishedSummary) => void) | null;
 }
 
 const sessions = new Map<string, RunSession>();
@@ -114,6 +115,25 @@ const sessions = new Map<string, RunSession>();
 // client). Re-exported above for backward-compat.
 export type { StartRunInput, StartRunResult } from './runs.types.js';
 import type { StartRunInput, StartRunResult } from './runs.types.js';
+
+// Terminal summary handed to StartRunOptions.onFinished. Server-internal —
+// not part of the HTTP wire shape (callbacks don't serialize), which is why
+// these live here and not in runs.types.ts.
+export interface RunFinishedSummary {
+  state: 'done' | 'failed' | 'cancelled';
+  exit_status: number | null;
+  duration_ms: number;
+  cost_usd: number | null;
+  model: string | null;
+  stdout_preview: string;
+  stderr: string | null;
+}
+
+// In-process callers (e.g. routes/schedules.ts run-now) may attach a
+// completion callback. HTTP callers can't — req.body is JSON.
+export interface StartRunOptions extends StartRunInput {
+  onFinished?: (summary: RunFinishedSummary) => void;
+}
 
 // Resolve the effort level to pass to `claude -p`. Precedence:
 //   1. The skill's own `effort:` frontmatter field (per-skill opt-up/down)
@@ -209,7 +229,7 @@ export async function resolveModelForRun(skillName: string | null): Promise<stri
   return await readModelFromJson(join(REPO_ROOT, '.claude', 'settings.json'));
 }
 
-export async function startRun(input: StartRunInput): Promise<StartRunResult> {
+export async function startRun(input: StartRunOptions): Promise<StartRunResult> {
   const { prompt } = input;
   const promptAttribution = extractFromPrompt(prompt) as {
     change_id: string | null;
@@ -326,6 +346,7 @@ export async function startRun(input: StartRunInput): Promise<StartRunResult> {
     stderrAll: '',
     killedReason: null,
     killedAt: null,
+    onFinished: input.onFinished ?? null,
   };
   sessions.set(id, session);
   spawnRun(session);
@@ -477,6 +498,22 @@ function spawnRun(session: RunSession) {
       stdout_preview: session.combinedText,
       stderr: session.stderrAll || null,
     });
+
+    if (session.onFinished) {
+      try {
+        session.onFinished({
+          state,
+          exit_status: exit,
+          duration_ms: session.claudeDurationMs ?? durationMs,
+          cost_usd: session.costUsd,
+          model: session.model,
+          stdout_preview: session.combinedText,
+          stderr: session.stderrAll || null,
+        });
+      } catch (e) {
+        console.error('runs: onFinished callback failed', e);
+      }
+    }
 
     // Phase 1.5: if this run was dispatched by an active project automation,
     // tick the state machine forward (advance or pause per the gate rules).
