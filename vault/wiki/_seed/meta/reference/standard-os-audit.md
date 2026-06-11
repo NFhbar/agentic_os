@@ -43,6 +43,7 @@ Standards documents drift apart from actual files as the OS grows. The audit mak
 | `--templates` | every archetype has BOTH a `_templates/wiki-entry/<name>.md.tmpl` and an `archetype-<name>.md` reference entry                                        |
 | `--router`    | every `OS.md` intent vocabulary row maps to an existing skill                                                                                         |
 | `--logs`      | every `vault/raw/*.jsonl` parses as one JSON object per line                                                                                          |
+| `--dispatch`  | every `claude` subprocess is spawned via `scripts/dispatch-claude.mjs` (the single effort/model resolution point)                                     |
 | (default)     | all sections                                                                                                                                          |
 
 ## Check registry
@@ -130,6 +131,12 @@ The skill-coverage checks deliberately stop at "Planned" sub-headings or subsequ
 | ---------------------------- | -------- | ---------------------------------------------------------------------------- | ---------------------- |
 | `log-jsonl-valid`            | warn     | Every line of `vault/raw/*.jsonl` parses as JSON (empty lines allowed)       | `standard-log-formats` |
 | `log-documented-in-standard` | warn     | Every `vault/raw/*.jsonl` filename is mentioned in `standard-log-formats.md` | `standard-log-formats` |
+
+### Dispatch
+
+| id                              | severity | what it enforces                                                                                                                                                                                           | source standard       |
+| ------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
+| `dispatch-spawn-outside-helper` | error    | No `spawn('claude', …)` outside `scripts/dispatch-claude.mjs`. Every other spawn site silently skips effort/model resolution — the drift class that left cron-fired runs unconfigured across two releases. | `dispatch-claude.mjs` |
 
 ### Manifest
 

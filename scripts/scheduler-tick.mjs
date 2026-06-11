@@ -14,7 +14,6 @@
 //
 // No npm dependencies — pure node built-ins so launchd can run it directly.
 
-import { spawn } from 'node:child_process';
 import {
   appendFileSync,
   existsSync,
@@ -25,7 +24,9 @@ import {
 } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnClaude } from './dispatch-claude.mjs';
 import { recordEvent } from './events-db.mjs';
+import { extractSkill } from './extract-event-attribution.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
@@ -277,27 +278,19 @@ function minuteFloor(date) {
 // Firing — spawn `claude -p`, capture stdout, log result.
 // ---------------------------------------------------------------------------
 
-function fireJob(schedule) {
+async function fireJob(schedule) {
+  const startedAt = new Date();
+  const startedMs = Date.now();
+  // Spawn via the shared dispatch helper (scripts/dispatch-claude.mjs) so
+  // cron-fired runs honor the same effort/model resolution as dashboard
+  // dispatches — Settings → Effort/Model + per-skill SKILL.md frontmatter.
+  // stream-json + verbose: each stdout line is a JSON event carrying
+  // model/tokens/cost metadata.
+  const scheduledSkill = extractSkill(schedule.prompt);
+  const { child } = await spawnClaude(schedule.prompt, scheduledSkill, {
+    logPrefix: 'scheduler',
+  });
   return new Promise((resolve) => {
-    const startedAt = new Date();
-    const startedMs = Date.now();
-    // stream-json + verbose: each stdout line is a JSON event. Same pattern
-    // as the dashboard's /api/action so scheduler-driven runs capture the
-    // same model/tokens/cost metadata as dashboard-driven runs.
-    const child = spawn(
-      'claude',
-      [
-        '-p',
-        schedule.prompt,
-        '--permission-mode',
-        'bypassPermissions',
-        '--output-format',
-        'stream-json',
-        '--verbose',
-      ],
-      { cwd: REPO_ROOT, stdio: ['ignore', 'pipe', 'pipe'] },
-    );
-
     let stdoutBuf = '';
     let stderrAll = '';
     let combinedText = ''; // accumulated assistant text — cleaner artifact than raw event stream

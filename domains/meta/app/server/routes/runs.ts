@@ -8,12 +8,11 @@
 // See vault/wiki/development/change/runs-as-process.md for the change context.
 
 import type { ChildProcess } from 'node:child_process';
-import { spawn } from 'node:child_process';
 import { createReadStream, existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';
+// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
+import { spawnClaude } from '../../../../../scripts/dispatch-claude.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { recordEvent } from '../../../../../scripts/events-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
@@ -42,9 +41,8 @@ import { listRuns } from '../../../../../scripts/runs-db.mjs';
 import { markRunning } from '../../../../../scripts/runs-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { unlinkOutput } from '../../../../../scripts/runs-db.mjs';
-import { parseFrontmatter } from '../frontmatter.js';
 import { parseStreamJsonLine } from '../lib/stream-json.js';
-import { REPO_ROOT, safePath } from '../repo.js';
+import { safePath } from '../repo.js';
 import { onAutomationStepComplete, onChangeAutomationStepComplete } from './automation.js';
 import type { RunRecord, RunTags } from './runs.types.js';
 
@@ -135,99 +133,10 @@ export interface StartRunOptions extends StartRunInput {
   onFinished?: (summary: RunFinishedSummary) => void;
 }
 
-// Resolve the effort level to pass to `claude -p`. Precedence:
-//   1. The skill's own `effort:` frontmatter field (per-skill opt-up/down)
-//   2. .claude/settings.local.json `effortLevel` (per-install override)
-//   3. .claude/settings.json `effortLevel` (team-tracked baseline)
-//   4. null → omit `--effort` (let Claude Code use its model-specific default)
-//
-// CRITICAL: `claude -p` does NOT read effortLevel from settings files on its
-// own — without an explicit `--effort` flag the subprocess falls back to
-// Claude Code's built-in default, which silently ignores the dashboard's
-// Settings → Effort dropdown. This function closes that gap so dispatched
-// skill runs honor the same effort settings as interactive sessions.
-const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
-
-async function readEffortFromJson(path: string): Promise<string | null> {
-  try {
-    const text = await readFile(path, 'utf8');
-    const parsed = JSON.parse(text);
-    const v = parsed?.effortLevel;
-    return typeof v === 'string' && VALID_EFFORTS.has(v) ? v : null;
-  } catch {
-    return null;
-  }
-}
-
-async function readEffortFromSkill(skillName: string): Promise<string | null> {
-  try {
-    const text = await readFile(
-      join(REPO_ROOT, '.claude', 'skills', skillName, 'SKILL.md'),
-      'utf8',
-    );
-    const { fm } = parseFrontmatter(text);
-    const v = fm.effort;
-    return typeof v === 'string' && VALID_EFFORTS.has(v) ? v : null;
-  } catch {
-    return null;
-  }
-}
-
-export async function resolveEffortForRun(skillName: string | null): Promise<string | null> {
-  if (skillName) {
-    const fromSkill = await readEffortFromSkill(skillName);
-    if (fromSkill) return fromSkill;
-  }
-  const fromLocal = await readEffortFromJson(join(REPO_ROOT, '.claude', 'settings.local.json'));
-  if (fromLocal) return fromLocal;
-  return await readEffortFromJson(join(REPO_ROOT, '.claude', 'settings.json'));
-}
-
-// Model resolution mirrors effort exactly. Precedence:
-//   1. Skill's own `model:` frontmatter field (per-skill explicit choice)
-//   2. .claude/settings.local.json `model` (per-install override)
-//   3. .claude/settings.json `model` (team-tracked baseline)
-//   4. null → omit `--model` (let `claude -p` use the user-global default
-//      from ~/.claude/settings.json, set via Claude Code's /model command)
-//
-// Same architectural rationale as resolveEffortForRun: `claude -p` reads
-// settings from disk, not from any parent context. The OS layers above the
-// user-global default let teams + installs + per-skill overrides take
-// precedence without modifying the user's personal Claude Code settings.
-async function readModelFromJson(path: string): Promise<string | null> {
-  try {
-    const text = await readFile(path, 'utf8');
-    const parsed = JSON.parse(text);
-    const v = parsed?.model;
-    return typeof v === 'string' && v.length > 0 ? v : null;
-  } catch {
-    return null;
-  }
-}
-
-async function readModelFromSkill(skillName: string): Promise<string | null> {
-  try {
-    const text = await readFile(
-      join(REPO_ROOT, '.claude', 'skills', skillName, 'SKILL.md'),
-      'utf8',
-    );
-    const { fm } = parseFrontmatter(text);
-    const v = fm.model;
-    return typeof v === 'string' && v.length > 0 ? v : null;
-  } catch {
-    return null;
-  }
-}
-
-export async function resolveModelForRun(skillName: string | null): Promise<string | null> {
-  if (skillName) {
-    const fromSkill = await readModelFromSkill(skillName);
-    if (fromSkill) return fromSkill;
-  }
-  const fromLocal = await readModelFromJson(join(REPO_ROOT, '.claude', 'settings.local.json'));
-  if (fromLocal) return fromLocal;
-  return await readModelFromJson(join(REPO_ROOT, '.claude', 'settings.json'));
-}
+// Effort/model resolution + arg assembly moved to scripts/dispatch-claude.mjs
+// — the single source for `claude` subprocess invocations (audit check:
+// dispatch-spawn-outside-helper). Same precedence chain as before: per-skill
+// SKILL.md frontmatter > settings.local.json > settings.json > CLI default.
 
 export async function startRun(input: StartRunOptions): Promise<StartRunResult> {
   const { prompt } = input;
@@ -293,31 +202,9 @@ export async function startRun(input: StartRunOptions): Promise<StartRunResult> 
   const evicted = evictBeyondCap(200) as Array<{ id: string; output_path: string }>;
   for (const ev of evicted) unlinkOutput(ev.output_path);
 
-  const [effort, model] = await Promise.all([
-    resolveEffortForRun(skill),
-    resolveModelForRun(skill),
-  ]);
-  const args = [
-    '-p',
-    prompt,
-    '--permission-mode',
-    'bypassPermissions',
-    '--output-format',
-    'stream-json',
-    '--verbose',
-  ];
-  if (effort) args.push('--effort', effort);
-  if (model) args.push('--model', model);
-  if (effort || model) {
-    console.log(
-      `runs: spawning ${skill ?? '(unknown skill)'}${effort ? ` --effort ${effort}` : ''}${model ? ` --model ${model}` : ''}`,
-    );
-  }
-
-  const child = spawn('claude', args, {
-    cwd: REPO_ROOT,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const { child } = (await spawnClaude(prompt, skill, { logPrefix: 'runs' })) as {
+    child: ChildProcess;
+  };
 
   markRunning(id, child.pid ?? null);
 

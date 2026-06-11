@@ -1,7 +1,8 @@
-import { spawn } from 'node:child_process';
 import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { FastifyPluginAsync } from 'fastify';
+// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
+import { spawnClaude } from '../../../../../scripts/dispatch-claude.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { recordEvent } from '../../../../../scripts/events-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
@@ -10,7 +11,6 @@ import { extractFromPrompt } from '../../../../../scripts/extract-event-attribut
 import { extractSkill } from '../../../../../scripts/extract-event-attribution.mjs';
 import { parseStreamJsonLine } from '../lib/stream-json.js';
 import { REPO_ROOT } from '../repo.js';
-import { resolveEffortForRun, resolveModelForRun } from './runs.js';
 
 const AUDIT_LOG = join(REPO_ROOT, 'vault', 'raw', 'dashboard-actions.jsonl');
 
@@ -43,30 +43,7 @@ export const actionRoutes: FastifyPluginAsync = async (fastify) => {
     // --permission-mode bypassPermissions: in -p (headless) mode there's
     // no interactive prompt for tool approvals. The dashboard has already
     // collected user confirmation (button click + form/typed-confirm).
-    const [effort, cliModel] = await Promise.all([
-      resolveEffortForRun(skill),
-      resolveModelForRun(skill),
-    ]);
-    const args = [
-      '-p',
-      prompt,
-      '--permission-mode',
-      'bypassPermissions',
-      '--output-format',
-      'stream-json',
-      '--verbose',
-    ];
-    if (effort) args.push('--effort', effort);
-    if (cliModel) args.push('--model', cliModel);
-    if (effort || cliModel) {
-      console.log(
-        `action: spawning ${skill ?? '(unknown skill)'}${effort ? ` --effort ${effort}` : ''}${cliModel ? ` --model ${cliModel}` : ''}`,
-      );
-    }
-    const child = spawn('claude', args, {
-      cwd: REPO_ROOT,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    const { child } = await spawnClaude(prompt, skill, { logPrefix: 'action' });
 
     let stdoutBuf = '';
     let stderrAll = '';
@@ -112,7 +89,7 @@ export const actionRoutes: FastifyPluginAsync = async (fastify) => {
       stderrAll += s;
       reply.raw.write(`data: ${JSON.stringify({ stderr: s })}\n\n`);
     });
-    child.on('close', async (code) => {
+    child.on('close', async (code: number | null) => {
       reply.raw.write(`data: ${JSON.stringify({ done: true, exit: code })}\n\n`);
       reply.raw.end();
 

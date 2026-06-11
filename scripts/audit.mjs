@@ -11,6 +11,7 @@
 //   node scripts/audit.mjs --templates     (archetypes/templates only)
 //   node scripts/audit.mjs --router        (OS.md vocab only)
 //   node scripts/audit.mjs --logs          (vault/raw/*.jsonl validity only)
+//   node scripts/audit.mjs --dispatch      (claude spawn-site discipline only)
 //
 // Exit code: 0 if no ERRORs, 1 if any ERROR-severity findings.
 // Pure node — no npm deps, runnable from a fresh clone.
@@ -3333,6 +3334,65 @@ function liveAuditCheckIds() {
 // Driver
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Dispatch — claude spawn-site discipline.
+// ---------------------------------------------------------------------------
+
+// Every `claude` subprocess must be spawned via scripts/dispatch-claude.mjs —
+// the single source for effort/model resolution. A spawn('claude', …)
+// anywhere else silently ignores Settings → Effort/Model; that drift class
+// left cron-fired runs unconfigured across two releases (Fable review
+// Finding 1.1) because nobody could reliably enumerate the spawn sites.
+const DISPATCH_HELPER_REL = 'scripts/dispatch-claude.mjs';
+
+function checkDispatchSpawnSites() {
+  const findings = [];
+  const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.git', 'repos']);
+  const CODE_EXT = /\.(mjs|cjs|js|ts|tsx)$/;
+  const spawnRe = /spawn\(\s*['"]claude['"]/;
+  const walkCodeFiles = (dir) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    const out = [];
+    for (const e of entries) {
+      if (SKIP_DIRS.has(e.name)) continue;
+      const p = join(dir, e.name);
+      if (e.isDirectory()) out.push(...walkCodeFiles(p));
+      else if (e.isFile() && CODE_EXT.test(e.name)) out.push(p);
+    }
+    return out;
+  };
+  // The helper itself spawns; this file's own message/hint strings name the
+  // pattern, so it would self-match without the exemption.
+  const ALLOWED = new Set([DISPATCH_HELPER_REL, 'scripts/audit.mjs']);
+  for (const root of ['scripts', 'domains', 'mcps', '.claude/hooks']) {
+    for (const p of walkCodeFiles(join(REPO_ROOT, root))) {
+      const rel = relative(REPO_ROOT, p);
+      if (ALLOWED.has(rel)) continue;
+      let content;
+      try {
+        content = readFileSync(p, 'utf8');
+      } catch {
+        continue;
+      }
+      if (spawnRe.test(content)) {
+        findings.push({
+          id: 'dispatch-spawn-outside-helper',
+          severity: 'error',
+          message: `spawn('claude', …) outside ${DISPATCH_HELPER_REL} — effort/model resolution will not apply to this subprocess`,
+          path: rel,
+          hint: `import { spawnClaude } (or buildClaudeArgs) from ${DISPATCH_HELPER_REL} so per-skill settings reach the subprocess`,
+        });
+      }
+    }
+  }
+  return findings;
+}
+
 function main() {
   const args = process.argv.slice(2);
   const json = args.includes('--json');
@@ -3343,6 +3403,7 @@ function main() {
     templates: args.length === 0 || args.includes('--all') || args.includes('--templates'),
     router: args.length === 0 || args.includes('--all') || args.includes('--router'),
     logs: args.length === 0 || args.includes('--all') || args.includes('--logs'),
+    dispatch: args.length === 0 || args.includes('--all') || args.includes('--dispatch'),
   };
   // If only --json was passed, run all
   if (args.length === 1 && args[0] === '--json') {
@@ -3377,6 +3438,7 @@ function main() {
   if (sections.templates) findings.push(...checkTemplates(archetypes));
   if (sections.router) findings.push(...checkRouter());
   if (sections.logs) findings.push(...checkLogs());
+  if (sections.dispatch) findings.push(...checkDispatchSpawnSites());
   if (sections.wiki) findings.push(...checkManifestFreshness());
   // Event store schema drift — cheap, runs unconditionally.
   findings.push(...checkEventsDb());
