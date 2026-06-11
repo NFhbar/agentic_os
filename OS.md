@@ -85,6 +85,7 @@ Direct invocation (`/dev-pr-review`, `/meta-dashboard`) is a power-user escape h
 | `audit followups`, `update audit signals`, `sweep audits`, `forward-look audits`           | `meta-audit-followups`              |
 | `mine sessions`, `automation candidates`, `session mining`, `mine transcripts`             | `meta-mine-sessions`                |
 | `apply tuning suggestion`, `propose skill edit`, `materialize tuning suggestion`           | `meta-apply-tuning-suggestion`      |
+| `eval skill edit`, `replay eval`, `eval tuning proposal`, `skill edit regression check`    | `meta-eval-skill-edit`              |
 | `scaffold research recommendations`, `scaffold research changes`, `materialize research`   | `research-scaffold-recommendations` |
 | `review project plan`, `review plan`, `peer review project plan`                           | `meta-review-project-plan`          |
 | `revise project plan`, `apply project review findings`, `fold review into project plan`    | `meta-revise-project-plan`          |

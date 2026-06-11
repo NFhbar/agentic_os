@@ -183,10 +183,10 @@ export async function resolveWallTimeCapMs(skillName) {
 }
 
 // Build the full `claude` argv for a headless skill dispatch.
-export async function buildClaudeArgs(prompt, skillName) {
+export async function buildClaudeArgs(prompt, skillName, { model: modelOverride = null } = {}) {
   const [effort, model] = await Promise.all([
     resolveEffortForRun(skillName ?? null),
-    resolveModelForRun(skillName ?? null),
+    modelOverride ? Promise.resolve(modelOverride) : resolveModelForRun(skillName ?? null),
   ]);
   const args = [
     '-p',
@@ -212,11 +212,13 @@ export async function buildClaudeArgs(prompt, skillName) {
 export async function spawnClaude(
   prompt,
   skillName,
-  { logPrefix = 'dispatch', stdio = ['ignore', 'pipe', 'pipe'], detached = false } = {},
+  { logPrefix = 'dispatch', stdio = ['ignore', 'pipe', 'pipe'], detached = false, model: modelOverride = null } = {},
 ) {
-  const { args, effort, model } = await buildClaudeArgs(prompt, skillName);
+  const { args, effort, model } = await buildClaudeArgs(prompt, skillName, { model: modelOverride });
   if (effort || model) {
-    console.log(
+    // stderr: callers like eval-skill-edit's replay subcommand print JSON
+    // on stdout; the dispatch log must not corrupt it.
+    console.error(
       `${logPrefix}: spawning ${skillName ?? '(unknown skill)'}${effort ? ` --effort ${effort}` : ''}${model ? ` --model ${model}` : ''}`,
     );
   }

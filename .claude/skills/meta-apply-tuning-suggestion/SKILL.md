@@ -116,6 +116,7 @@ The design discipline is deliberate: **suggestion text is not enough authorizati
      - `"Modify procedure step N"` → find the numbered step, propose a replacement or addition
    - Synthesize the concrete text addition/modification that captures the suggestion's intent. Be faithful to the suggestion's wording — the human review is what catches misinterpretations.
    - Produce a unified diff (standard `diff -u` format) showing the change.
+   - When the target skill is `dev-pr-review` (the v1 replay-eval scope), the diff is eligible for an offline regression check BEFORE the decision gate: [[meta-eval-skill-edit]] replays historical passes with the edited skill and judges better/same/worse. Surface this in the step-10 report's `next:` line — a decision entry that cites an eval verdict is strictly stronger evidence than suggestion text alone.
 
 6a. **For `propose` mode with a non-skill target, scaffold a change instead of a diff.** TypeScript/script/route edits are not applied by this skill — they get a change entry so the implementation flows through the full lifecycle (plan → review → execute), which IS the review gate for code. Steps:
 
@@ -189,7 +190,7 @@ Skip this step gracefully if the decision entry is unreadable or has no frontmat
       confidence: <confidence>
       diff:       vault/output/meta/tuning-proposals/<audit>-<i>.diff
       rationale:  vault/output/meta/tuning-proposals/<audit>-<i>.rationale.md
-      next:       review the diff; if it captures intent, scaffold a decision via /os promote tuning suggestion (or the dashboard's "Promote to decision" button), then re-run with mode=apply + decision_entry_path
+      next:       review the diff; for dev-pr-review targets, replay-eval it first — /os eval skill edit proposal_diff=<diff-path> (meta-eval-skill-edit) — then if it captures intent, scaffold a decision via /os promote tuning suggestion (or the dashboard's "Promote to decision" button) citing the eval report, then re-run with mode=apply + decision_entry_path
     ```
 
     Propose mode, non-skill target:

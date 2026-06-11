@@ -83,6 +83,7 @@ export function extractResultEvent(rawPath) {
       tokensCacheRead: usage.cache_read_input_tokens ?? null,
       tokensCacheWrite: usage.cache_creation_input_tokens ?? null,
       model,
+      resultText: typeof evt.result === 'string' ? evt.result : null,
     };
   }
   return null;

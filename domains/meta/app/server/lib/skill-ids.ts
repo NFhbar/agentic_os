@@ -38,6 +38,7 @@ export const SKILL = {
   META_CURATE: 'meta-curate',
   META_DASHBOARD: 'meta-dashboard',
   META_DELETE: 'meta-delete',
+  META_EVAL_SKILL_EDIT: 'meta-eval-skill-edit',
   META_EVOLVE: 'meta-evolve',
   META_MARK_RESEARCH_APPROVED: 'meta-mark-research-approved',
   META_MINE_SESSIONS: 'meta-mine-sessions',
