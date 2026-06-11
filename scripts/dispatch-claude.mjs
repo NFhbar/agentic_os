@@ -119,7 +119,17 @@ export async function buildClaudeArgs(prompt, skillName) {
 }
 
 // Spawn the subprocess — the ONLY spawn('claude', …) in the repo.
-export async function spawnClaude(prompt, skillName, { logPrefix = 'dispatch' } = {}) {
+//
+// opts.stdio / opts.detached exist for the durable-runs path: the canonical
+// runs route redirects stdout/stderr to journal files and detaches, so the
+// child survives a server restart (pipes would EPIPE the child when the
+// parent dies). Defaults preserve the attached-pipe behavior for the legacy
+// action route and the scheduler (migrate path-by-path).
+export async function spawnClaude(
+  prompt,
+  skillName,
+  { logPrefix = 'dispatch', stdio = ['ignore', 'pipe', 'pipe'], detached = false } = {},
+) {
   const { args, effort, model } = await buildClaudeArgs(prompt, skillName);
   if (effort || model) {
     console.log(
@@ -128,7 +138,8 @@ export async function spawnClaude(prompt, skillName, { logPrefix = 'dispatch' } 
   }
   const child = spawn('claude', args, {
     cwd: REPO_ROOT,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio,
+    detached,
   });
   return { child, args, effort, model };
 }

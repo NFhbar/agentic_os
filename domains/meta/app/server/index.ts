@@ -6,7 +6,7 @@ import { setAfterInsertHook } from '../../../../scripts/events-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { getEventsAfterId, getMaxEventId } from '../../../../scripts/events-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
-import { sweepOrphanedRuns } from '../../../../scripts/runs-db.mjs';
+import { sweepDeadRuns } from '../../../../scripts/runs-supervisor.mjs';
 import { loadAppEnv } from './load-env.js';
 
 // Load app .env BEFORE importing routes — some route modules read process.env
@@ -50,7 +50,7 @@ import { reposRoutes } from './routes/repos.js';
 import { researchRoutes } from './routes/research.js';
 import { reviewsRoutes } from './routes/reviews.js';
 import { routerLogRoutes } from './routes/router-log.js';
-import { runsRoutes } from './routes/runs.js';
+import { processUnhookedRuns, runsRoutes } from './routes/runs.js';
 import { schedulesRoutes } from './routes/schedules.js';
 import { settingsRoutes } from './routes/settings.js';
 import { skillsRoutes } from './routes/skills.js';
@@ -114,37 +114,47 @@ await fastify.register(healthRoutes, { prefix: '/api/health' });
 await fastify.register(settingsRoutes, { prefix: '/api/settings' });
 await fastify.register(usageRoutes, { prefix: '/api/usage' });
 
-// Orphan sweep — any `runs` row stuck in state='running' from a previous
-// process gets reaped here so the dashboard never strands rows after a
-// server restart. Boot mode also reaps queued-without-PID rows (the prior
-// process died before spawning the child).
+// Dead-run sweep — since durable-runs, children are detached and survive a
+// server restart, so boot no longer blanket-fails running rows: the sweep
+// only finalizes rows whose PID is actually dead, via runs-finalize.mjs
+// (result-event recovery + artifact verification → done /
+// died-after-writeback / failed). Note 'periodic' mode at boot too — a
+// running row with a live PID is now a healthy adopted run, and queued
+// rows from a prior process get failed by the supervisor's next pass if
+// they never spawn.
 try {
-  const swept = sweepOrphanedRuns('server restart', 'boot');
-  if (swept > 0) console.log(`runs: reaped ${swept} orphaned run(s) from prior process`);
+  const swept = await sweepDeadRuns('server restart: PID not alive', 'periodic');
+  if (swept > 0) console.log(`runs: finalized ${swept} dead run(s) from prior process`);
 } catch (e) {
-  console.error('runs orphan sweep failed', e);
+  console.error('runs dead-run sweep failed', e);
 }
 
-// Periodic orphan sweep — catches the in-flight orphan pattern where the
-// child process dies without firing its `close` handler (observed on long
-// EXECUTE runs: JSONL goes silent, the child keeps writing files for a few
-// minutes, then dies; the run row stays state='running' forever). Every
-// 5 min we re-check live runs' PIDs and mark dead ones as failed. Only
-// touches rows with PID set + PID dead (queued/mid-spawn rows are left
-// alone to avoid racing the legitimate spawn).
+// Periodic dead-run sweep — catches the silent-kill pattern where the child
+// dies without firing its exit handler. The scheduler tick's supervisor
+// covers this too (and wall-caps); this in-server sweep is the fallback for
+// installs without the LaunchAgent.
 const ORPHAN_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 const orphanSweepTimer = setInterval(() => {
-  try {
-    const swept = sweepOrphanedRuns('orphan-sweep: PID not alive', 'periodic');
-    if (swept > 0) {
-      console.log(`runs: reaped ${swept} orphaned run(s) (periodic sweep)`);
-    }
-  } catch (e) {
-    console.error('periodic orphan sweep failed', e);
-  }
+  void sweepDeadRuns('orphan-sweep: PID not alive', 'periodic')
+    .then((swept: number) => {
+      if (swept > 0) console.log(`runs: finalized ${swept} dead run(s) (periodic sweep)`);
+    })
+    .catch((e: unknown) => console.error('periodic dead-run sweep failed', e));
 }, ORPHAN_SWEEP_INTERVAL_MS);
 // Don't let the sweep timer keep the process alive on shutdown.
 orphanSweepTimer.unref();
+
+// Post-terminal hook poll — fires events.db recording + automation
+// advancement for runs finalized outside this process (supervisor reaps
+// during a server outage). Idempotent via runs.hooks_fired_at. Without
+// this, a run that died while the server was down would leave its change
+// automation parked forever.
+processUnhookedRuns().catch((e) => console.error('unhooked-runs startup poll failed', e));
+const UNHOOKED_POLL_INTERVAL_MS = 60 * 1000;
+const unhookedTimer = setInterval(() => {
+  void processUnhookedRuns().catch((e) => console.error('unhooked-runs poll failed', e));
+}, UNHOOKED_POLL_INTERVAL_MS);
+unhookedTimer.unref();
 
 // Project automation merge watcher (Phase 1.5+1). The orchestrator parks
 // at the `merge` step after dev-pr-review approves because the actual PR

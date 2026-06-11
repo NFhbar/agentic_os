@@ -49,6 +49,7 @@ function stateDotClass(state: RunRecord['state']): string {
     case 'queued':
       return 'dot running';
     case 'done':
+    case 'died-after-writeback':
       return 'dot done';
     case 'failed':
       return 'dot failed';
@@ -143,6 +144,16 @@ export function RunRow({ run, onCancel, compact, defaultExpanded = false }: Prop
           )}
           {run.state === 'done' && run.exit_status != null && (
             <span className="run-row-exit ok">exit {run.exit_status}</span>
+          )}
+          {run.state === 'died-after-writeback' && (
+            <span
+              className="run-row-exit ok"
+              title={
+                orphan?.hint ?? run.error ?? 'Work landed; the subprocess died without reporting.'
+              }
+            >
+              ⚠ landed
+            </span>
           )}
           {run.state === 'failed' && (
             <span

@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnClaude } from './dispatch-claude.mjs';
 import { recordEvent } from './events-db.mjs';
 import { extractSkill } from './extract-event-attribution.mjs';
+import { superviseRuns } from './runs-supervisor.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
@@ -488,6 +489,22 @@ async function main() {
   const nowMinute = minuteFloor(now);
   const state = loadState();
   state.runs ??= {};
+
+  // Run supervision — liveness + wall-cap for detached `claude` children
+  // (see scripts/runs-supervisor.mjs). Lives in the tick because launchd
+  // keeps firing when the dashboard server is down; this is what makes runs
+  // durable rather than children of a dev server. Runs every tick, before
+  // the due-schedule early return.
+  try {
+    const sup = await superviseRuns();
+    if (sup.reaped || sup.terminated || sup.escalated) {
+      console.error(
+        `supervisor: reaped=${sup.reaped} wall-cap-terminated=${sup.terminated} escalated=${sup.escalated}`,
+      );
+    }
+  } catch (e) {
+    console.error(`supervisor error: ${e.message}`);
+  }
 
   // Project-scoped runbooks fire only when the named project's status is
   // "active". Skip silently otherwise — pausing a project pauses its work.

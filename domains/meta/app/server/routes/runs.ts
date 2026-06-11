@@ -8,7 +8,17 @@
 // See vault/wiki/development/change/runs-as-process.md for the change context.
 
 import type { ChildProcess } from 'node:child_process';
-import { createReadStream, existsSync } from 'node:fs';
+import {
+  closeSync,
+  createReadStream,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  statSync,
+} from 'node:fs';
+import { dirname } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
@@ -21,8 +31,6 @@ import { extractFromPrompt } from '../../../../../scripts/extract-event-attribut
 import { extractSkill } from '../../../../../scripts/extract-event-attribution.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { appendChunk } from '../../../../../scripts/runs-db.mjs';
-// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
-import { bytesWritten } from '../../../../../scripts/runs-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { countRuns } from '../../../../../scripts/runs-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
@@ -38,7 +46,15 @@ import { getRun } from '../../../../../scripts/runs-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { listRuns } from '../../../../../scripts/runs-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
+import { listUnhookedTerminalRuns } from '../../../../../scripts/runs-db.mjs';
+// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
+import { markCancelRequested } from '../../../../../scripts/runs-db.mjs';
+// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { markRunning } from '../../../../../scripts/runs-db.mjs';
+// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
+import { setHooksFired } from '../../../../../scripts/runs-db.mjs';
+// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
+import { stderrPathFor } from '../../../../../scripts/runs-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { unlinkOutput } from '../../../../../scripts/runs-db.mjs';
 import { parseStreamJsonLine } from '../lib/stream-json.js';
@@ -97,6 +113,17 @@ interface RunSession {
   // of `killedReason` (which is the user-facing message).
   killedAt: number | null;
   onFinished: ((summary: RunFinishedSummary) => void) | null;
+  // Journal follower state. The child writes raw stream-json straight to
+  // outputPath (and stderr to stderrPath); the server FOLLOWS the files
+  // rather than holding pipes, so the child survives a server death.
+  outputPath: string;
+  stderrPath: string;
+  rawOffset: number;
+  errOffset: number;
+  rawBuf: string;
+  follower: NodeJS.Timeout | null;
+  // Guards double-finalization (exit + error events, watchdog races).
+  finished: boolean;
 }
 
 const sessions = new Map<string, RunSession>();
@@ -176,7 +203,10 @@ export async function startRun(input: StartRunOptions): Promise<StartRunResult> 
   const id =
     'r_' +
     (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  const rel = `.claude/state/runs/${id}.jsonl`;
+  // Raw journal — the child's stdout is redirected here at spawn time (see
+  // below); readers parse stream-json on read. Stays complete even if this
+  // server process dies mid-run.
+  const rel = `.claude/state/runs/${id}.raw.jsonl`;
   const output_path = safePath(rel);
   const ts = new Date().toISOString();
   const startedMs = Date.now();
@@ -202,9 +232,27 @@ export async function startRun(input: StartRunOptions): Promise<StartRunResult> 
   const evicted = evictBeyondCap(200) as Array<{ id: string; output_path: string }>;
   for (const ev of evicted) unlinkOutput(ev.output_path);
 
-  const { child } = (await spawnClaude(prompt, skill, { logPrefix: 'runs' })) as {
-    child: ChildProcess;
-  };
+  // Detached + file-redirected stdio: the child is its own process-group
+  // leader writing straight to disk, so a dashboard restart no longer kills
+  // it (pipes would EPIPE the child when the parent dies). Supervision of
+  // children we can no longer see lives in scripts/runs-supervisor.mjs.
+  const errPath = stderrPathFor(output_path) as string;
+  mkdirSync(dirname(output_path), { recursive: true });
+  const outFd = openSync(output_path, 'a');
+  const errFd = openSync(errPath, 'a');
+  let child: ChildProcess;
+  try {
+    ({ child } = (await spawnClaude(prompt, skill, {
+      logPrefix: 'runs',
+      stdio: ['ignore', outFd, errFd],
+      detached: true,
+    })) as { child: ChildProcess });
+  } finally {
+    // Parent's fd copies — the child holds its own descriptors.
+    closeSync(outFd);
+    closeSync(errFd);
+  }
+  child.unref();
 
   markRunning(id, child.pid ?? null);
 
@@ -234,9 +282,16 @@ export async function startRun(input: StartRunOptions): Promise<StartRunResult> 
     killedReason: null,
     killedAt: null,
     onFinished: input.onFinished ?? null,
+    outputPath: output_path,
+    stderrPath: errPath,
+    rawOffset: 0,
+    errOffset: 0,
+    rawBuf: '',
+    follower: null,
+    finished: false,
   };
   sessions.set(id, session);
-  spawnRun(session);
+  superviseSession(session);
 
   return { ok: true, run_id: id };
 }
@@ -273,6 +328,29 @@ function toActionChunk(line: JsonlLine): Record<string, unknown> | null {
   return null;
 }
 
+// One journal line → zero or more legacy JsonlLine frames. Handles both
+// eras: new runs hold raw stream-json straight from the child; legacy runs
+// (pre durable-runs) hold pre-parsed {kind,...} frames. The done marker
+// finishRun appends, the cancel note, and spawn-error notes are legacy
+// frames in both eras.
+function lineToJsonlFrames(rawLine: string): JsonlLine[] {
+  let obj: unknown;
+  try {
+    obj = JSON.parse(rawLine);
+  } catch {
+    return [{ kind: 'stdout', data: `${rawLine}\n` }];
+  }
+  const rec = obj as Record<string, unknown>;
+  if (typeof rec.kind === 'string') return [rec as JsonlLine];
+  const frames: JsonlLine[] = [];
+  for (const p of parseStreamJsonLine(rawLine)) {
+    if (p.kind === 'assistant-text' || p.kind === 'raw') {
+      frames.push({ kind: 'stdout', data: p.text });
+    }
+  }
+  return frames;
+}
+
 function broadcast(session: RunSession, frame: Record<string, unknown>) {
   for (const sub of session.subscribers) sseSend(sub, frame);
 }
@@ -289,136 +367,189 @@ function closeSubscribers(session: RunSession, lastFrame?: Record<string, unknow
   session.subscribers.clear();
 }
 
-function spawnRun(session: RunSession) {
-  const { child, id } = session;
-  let stdoutBuf = '';
+// ---------------------------------------------------------------------------
+// Journal following — the live half of the durable-runs design.
+//
+// The child writes raw stream-json to session.outputPath and stderr to
+// session.stderrPath; while this server is alive we FOLLOW the files to
+// drive SSE fan-out + capture the result event. If the server dies, the
+// files keep growing and scripts/runs-supervisor.mjs finalizes the row from
+// them — nothing is lost with the process.
+// ---------------------------------------------------------------------------
 
-  child.stdout?.on('data', (chunk: Buffer) => {
-    stdoutBuf += chunk.toString('utf8');
-    let nl = stdoutBuf.indexOf('\n');
+const FOLLOW_INTERVAL_MS = 300;
+
+function readNewText(path: string, offset: number): { text: string; nextOffset: number } {
+  let size = 0;
+  try {
+    size = statSync(path).size;
+  } catch {
+    return { text: '', nextOffset: offset };
+  }
+  if (size <= offset) return { text: '', nextOffset: offset };
+  const fd = openSync(path, 'r');
+  try {
+    const buf = Buffer.alloc(size - offset);
+    readSync(fd, buf, 0, buf.length, offset);
+    return { text: buf.toString('utf8'), nextOffset: size };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function consumeJournalLine(session: RunSession, line: string) {
+  for (const p of parseStreamJsonLine(line)) {
+    if (p.kind === 'assistant-text' || p.kind === 'raw') {
+      session.combinedText += p.text;
+      broadcast(session, { chunk: p.text });
+    } else if (p.kind === 'result') {
+      session.model = p.model;
+      session.tokensIn = p.tokensIn;
+      session.tokensOut = p.tokensOut;
+      session.tokensCacheRead = p.tokensCacheRead;
+      session.tokensCacheWrite = p.tokensCacheWrite;
+      session.costUsd = p.costUsd;
+      session.claudeDurationMs = p.claudeDurationMs;
+      session.isError = p.isError;
+    }
+  }
+}
+
+function followTick(session: RunSession) {
+  const out = readNewText(session.outputPath, session.rawOffset);
+  if (out.text) {
+    session.rawOffset = out.nextOffset;
+    session.rawBuf += out.text;
+    let nl = session.rawBuf.indexOf('\n');
     while (nl >= 0) {
-      const line = stdoutBuf.slice(0, nl);
-      stdoutBuf = stdoutBuf.slice(nl + 1);
-      nl = stdoutBuf.indexOf('\n');
-      if (!line) continue;
-      const parsed = parseStreamJsonLine(line);
-      for (const p of parsed) {
-        if (p.kind === 'assistant-text') {
-          session.combinedText += p.text;
-          appendChunk(id, 'stdout', p.text);
-          broadcast(session, { chunk: p.text });
-        } else if (p.kind === 'raw') {
-          session.combinedText += p.text;
-          appendChunk(id, 'stdout', p.text);
-          broadcast(session, { chunk: p.text });
-        } else if (p.kind === 'result') {
-          session.model = p.model;
-          session.tokensIn = p.tokensIn;
-          session.tokensOut = p.tokensOut;
-          session.tokensCacheRead = p.tokensCacheRead;
-          session.tokensCacheWrite = p.tokensCacheWrite;
-          session.costUsd = p.costUsd;
-          session.claudeDurationMs = p.claudeDurationMs;
-          session.isError = p.isError;
-        }
-      }
+      const line = session.rawBuf.slice(0, nl);
+      session.rawBuf = session.rawBuf.slice(nl + 1);
+      nl = session.rawBuf.indexOf('\n');
+      if (line) consumeJournalLine(session, line);
     }
+  }
+  const err = readNewText(session.stderrPath, session.errOffset);
+  if (err.text) {
+    session.errOffset = err.nextOffset;
+    session.stderrAll += err.text;
+    broadcast(session, { stderr: err.text });
+  }
+}
+
+function finishAndRecord(session: RunSession, code: number | null) {
+  if (session.finished) return;
+  session.finished = true;
+  if (session.follower) {
+    clearInterval(session.follower);
+    session.follower = null;
+  }
+  const { id } = session;
+  const durationMs = Date.now() - session.startedMs;
+  const exit = typeof code === 'number' ? code : null;
+  const state: RunRow['state'] = session.cancelled
+    ? 'cancelled'
+    : exit === 0 && !session.isError
+      ? 'done'
+      : 'failed';
+  finishRun(id, {
+    state,
+    exit_status: exit,
+    duration_ms: session.claudeDurationMs ?? durationMs,
+    // Watchdog-kill reason wins over stderr capture — gives operators a
+    // distinguishable error string ("killed: wall-time cap exceeded") so
+    // they can tell wall-time kills from natural failures or orphan-sweep
+    // detections. See sweepWallTimeCap below + Task #398 / #418.
+    error: state === 'failed' ? (session.killedReason ?? (session.stderrAll || null)) : null,
+    cost_usd: session.costUsd,
+    tokens_in: session.tokensIn,
+    tokens_out: session.tokensOut,
+    tokens_cache_hit: session.tokensCacheRead,
+    tokens_cache_write: session.tokensCacheWrite,
+    model: session.model,
   });
 
-  child.stderr?.on('data', (chunk: Buffer) => {
-    const s = chunk.toString('utf8');
-    session.stderrAll += s;
-    appendChunk(id, 'stderr', s);
-    broadcast(session, { stderr: s });
+  closeSubscribers(session, { done: true, exit });
+  sessions.delete(id);
+
+  // Preserve the Insights view's existing observability surface — same
+  // event shape as /api/action wrote.
+  recordEvent({
+    ts: session.ts,
+    kind: 'dashboard',
+    action: 'ai-prompt',
+    source: 'dashboard',
+    skill: session.skill,
+    change_id: session.change_id,
+    project: session.project,
+    report_id: session.report_id,
+    domain: session.domain,
+    model: session.model,
+    tokens_in: session.tokensIn,
+    tokens_out: session.tokensOut,
+    tokens_cache_hit: session.tokensCacheRead,
+    tokens_cache_write: session.tokensCacheWrite,
+    cost_usd: session.costUsd,
+    duration_ms: session.claudeDurationMs ?? durationMs,
+    exit_status: exit,
+    status: exit === 0 && !session.isError ? 'success' : 'error',
+    prompt: session.prompt,
+    stdout_preview: session.combinedText,
+    stderr: session.stderrAll || null,
   });
 
-  child.on('close', (code) => {
-    const durationMs = Date.now() - session.startedMs;
-    const exit = typeof code === 'number' ? code : null;
-    const state: RunRow['state'] = session.cancelled
-      ? 'cancelled'
-      : exit === 0 && !session.isError
-        ? 'done'
-        : 'failed';
-    finishRun(id, {
-      state,
-      exit_status: exit,
-      duration_ms: session.claudeDurationMs ?? durationMs,
-      // Watchdog-kill reason wins over stderr capture — gives operators a
-      // distinguishable error string ("killed: wall-time cap exceeded") so
-      // they can tell wall-time kills from natural failures or orphan-sweep
-      // detections. See sweepWallTimeCap below + Task #398 / #418.
-      error: state === 'failed' ? (session.killedReason ?? (session.stderrAll || null)) : null,
-      cost_usd: session.costUsd,
-      tokens_in: session.tokensIn,
-      tokens_out: session.tokensOut,
-      tokens_cache_hit: session.tokensCacheRead,
-      tokens_cache_write: session.tokensCacheWrite,
-      model: session.model,
-    });
-
-    closeSubscribers(session, { done: true, exit });
-    sessions.delete(id);
-
-    // Preserve the Insights view's existing observability surface — same
-    // event shape as /api/action wrote.
-    recordEvent({
-      ts: session.ts,
-      kind: 'dashboard',
-      action: 'ai-prompt',
-      source: 'dashboard',
-      skill: session.skill,
-      change_id: session.change_id,
-      project: session.project,
-      report_id: session.report_id,
-      domain: session.domain,
-      model: session.model,
-      tokens_in: session.tokensIn,
-      tokens_out: session.tokensOut,
-      tokens_cache_hit: session.tokensCacheRead,
-      tokens_cache_write: session.tokensCacheWrite,
-      cost_usd: session.costUsd,
-      duration_ms: session.claudeDurationMs ?? durationMs,
-      exit_status: exit,
-      status: exit === 0 && !session.isError ? 'success' : 'error',
-      prompt: session.prompt,
-      stdout_preview: session.combinedText,
-      stderr: session.stderrAll || null,
-    });
-
-    if (session.onFinished) {
-      try {
-        session.onFinished({
-          state,
-          exit_status: exit,
-          duration_ms: session.claudeDurationMs ?? durationMs,
-          cost_usd: session.costUsd,
-          model: session.model,
-          stdout_preview: session.combinedText,
-          stderr: session.stderrAll || null,
-        });
-      } catch (e) {
-        console.error('runs: onFinished callback failed', e);
-      }
+  if (session.onFinished) {
+    try {
+      session.onFinished({
+        state,
+        exit_status: exit,
+        duration_ms: session.claudeDurationMs ?? durationMs,
+        cost_usd: session.costUsd,
+        model: session.model,
+        stdout_preview: session.combinedText,
+        stderr: session.stderrAll || null,
+      });
+    } catch (e) {
+      console.error('runs: onFinished callback failed', e);
     }
+  }
 
-    // Phase 1.5: if this run was dispatched by an active project automation,
-    // tick the state machine forward (advance or pause per the gate rules).
-    // Fire-and-forget — auto-tick is best-effort and must not block the
-    // close handler's cleanup. Internal failures log to console only.
-    void onAutomationStepComplete(session.project, session.change_id, session.skill, exit);
-    // Phase 2: per-change automation hook. Runs alongside the project hook
-    // above — they read from different frontmatter (project vs change), so
-    // there's no conflict. The change hook only acts when the change's
-    // automation.enabled is true AND last_run_id matches, so unrelated runs
-    // are silent no-ops.
-    void onChangeAutomationStepComplete(session.change_id, session.skill, exit, session.id);
+  // Phase 1.5: if this run was dispatched by an active project automation,
+  // tick the state machine forward (advance or pause per the gate rules).
+  // Fire-and-forget — auto-tick is best-effort and must not block the
+  // close handler's cleanup. Internal failures log to console only.
+  void onAutomationStepComplete(session.project, session.change_id, session.skill, exit);
+  // Phase 2: per-change automation hook. Runs alongside the project hook
+  // above — they read from different frontmatter (project vs change), so
+  // there's no conflict. The change hook only acts when the change's
+  // automation.enabled is true AND last_run_id matches, so unrelated runs
+  // are silent no-ops.
+  void onChangeAutomationStepComplete(session.change_id, session.skill, exit, session.id);
+
+  // Hooks fired in-process — the unhooked-runs poll (processUnhookedRuns)
+  // skips this row. Supervisor-finalized rows take the poll path instead.
+  setHooksFired(id);
+}
+
+function superviseSession(session: RunSession) {
+  const { child } = session;
+  session.follower = setInterval(() => followTick(session), FOLLOW_INTERVAL_MS);
+  session.follower.unref?.();
+
+  child.on('exit', (code) => {
+    // Drain twice: once immediately (bytes written before exit are visible),
+    // and once shortly after to be safe about flush ordering.
+    followTick(session);
+    setTimeout(() => {
+      followTick(session);
+      finishAndRecord(session, code);
+    }, 150);
   });
 
   child.on('error', (err) => {
-    appendChunk(id, 'stderr', `spawn error: ${err.message}\n`);
+    // Spawn-level failure (ENOENT etc.) — 'exit' may never fire.
+    appendChunk(session.id, 'stderr', `spawn error: ${err.message}\n`);
     broadcast(session, { stderr: `spawn error: ${err.message}\n` });
-    // Let close handler do the final state transition.
+    setTimeout(() => finishAndRecord(session, null), 50);
   });
 }
 
@@ -428,15 +559,102 @@ async function replayFromDisk(reply: FastifyReply, outputPath: string, endOffset
   const rl = createInterface({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
   for await (const rawLine of rl) {
     if (!rawLine) continue;
-    let parsed: JsonlLine | null = null;
-    try {
-      parsed = JSON.parse(rawLine) as JsonlLine;
-    } catch {
-      continue;
+    for (const parsed of lineToJsonlFrames(rawLine)) {
+      const frame = toActionChunk(parsed);
+      if (frame) sseSend(reply, frame);
     }
-    const frame = toActionChunk(parsed);
-    if (frame) sseSend(reply, frame);
   }
+}
+
+// Replay the stderr sidecar (separate file since durable-runs) as one frame.
+function replayStderr(reply: FastifyReply, outputPath: string, endOffset?: number) {
+  try {
+    let text = readFileSync(stderrPathFor(outputPath) as string, 'utf8');
+    if (endOffset != null) text = text.slice(0, endOffset);
+    if (text) sseSend(reply, { stderr: text });
+  } catch {
+    /* no sidecar — legacy run; its stderr frames live in the journal */
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Post-terminal hooks for runs finalized OUTSIDE this process.
+//
+// Row finalization and hook firing are split (hooks_fired_at column): the
+// supervisor (scheduler tick) finalizes dead runs even while the server is
+// down, but events.db recording + automation advancement need the server's
+// modules. This poll fires them idempotently for any terminal row that
+// hasn't had hooks fired — without it, a run that died during a server
+// outage would leave its change automation parked forever.
+// ---------------------------------------------------------------------------
+
+async function deriveOutputsFromFiles(
+  outputPath: string,
+): Promise<{ combined: string; stderrText: string }> {
+  let combined = '';
+  if (existsSync(outputPath)) {
+    const rl = createInterface({
+      input: createReadStream(outputPath, { encoding: 'utf8' }),
+      crlfDelay: Number.POSITIVE_INFINITY,
+    });
+    for await (const line of rl) {
+      if (!line) continue;
+      for (const f of lineToJsonlFrames(line)) {
+        if (f.kind === 'stdout') combined += f.data ?? '';
+      }
+    }
+  }
+  let stderrText = '';
+  try {
+    stderrText = readFileSync(stderrPathFor(outputPath) as string, 'utf8');
+  } catch {
+    /* no sidecar */
+  }
+  return { combined, stderrText };
+}
+
+export async function processUnhookedRuns(): Promise<number> {
+  const rows = listUnhookedTerminalRuns(50) as RunRow[];
+  for (const row of rows) {
+    try {
+      const ok = row.state === 'done' || row.state === 'died-after-writeback';
+      const { combined, stderrText } = await deriveOutputsFromFiles(row.output_path);
+      recordEvent({
+        ts: row.started_at,
+        kind: 'dashboard',
+        action: 'ai-prompt',
+        source: 'dashboard',
+        skill: row.skill,
+        change_id: row.change_id,
+        project: row.project,
+        domain: row.domain,
+        model: row.model,
+        tokens_in: row.tokens_in,
+        tokens_out: row.tokens_out,
+        tokens_cache_hit: row.tokens_cache_hit,
+        tokens_cache_write: row.tokens_cache_write,
+        cost_usd: row.cost_usd,
+        duration_ms: row.duration_ms,
+        exit_status: row.exit_status,
+        status: ok ? 'success' : 'error',
+        prompt: row.prompt,
+        stdout_preview: combined.slice(0, 16384),
+        stderr: stderrText ? stderrText.slice(0, 8192) : null,
+      });
+      // died-after-writeback advances automation as a success (the linked
+      // entity was verifiably updated) — the warning lives on the run row.
+      const effectiveExit = ok ? (row.exit_status ?? 0) : (row.exit_status ?? 1);
+      void onAutomationStepComplete(row.project, row.change_id, row.skill, effectiveExit);
+      void onChangeAutomationStepComplete(row.change_id, row.skill, effectiveExit, row.id);
+    } catch (e) {
+      console.error(`runs: unhooked-run processing failed for ${row.id}`, e);
+    } finally {
+      // Mark even on partial failure — re-firing recordEvent/automation on
+      // every poll forever is worse than one lost event.
+      setHooksFired(row.id);
+    }
+  }
+  return rows.length;
 }
 
 // ---------------------------------------------------------------------------
@@ -606,14 +824,19 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
       const ring: JsonlLine[] = [];
       for await (const raw of rl) {
         if (!raw) continue;
-        try {
-          ring.push(JSON.parse(raw) as JsonlLine);
+        for (const frame of lineToJsonlFrames(raw)) {
+          ring.push(frame);
           if (ring.length > 50) ring.shift();
-        } catch {
-          /* skip */
         }
       }
       recent_chunks.push(...ring);
+      // stderr sidecar tail (separate file since durable-runs)
+      try {
+        const errText = readFileSync(stderrPathFor(row.output_path) as string, 'utf8');
+        if (errText) recent_chunks.push({ kind: 'stderr', data: errText.slice(-4096) });
+      } catch {
+        /* no sidecar — legacy run */
+      }
     }
     return { run: row, recent_chunks };
   });
@@ -634,18 +857,14 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
     const session = sessions.get(id);
     const outputPath = row.output_path;
 
-    // Snapshot the replay endpoint BEFORE attaching to the live bus. Writes
-    // are append-only, so any chunk fanned out after this snapshot has an
-    // offset >= attachOffset — no duplicates.
-    const attachOffset = session
-      ? bytesWritten(id)
-      : existsSync(outputPath)
-        ? Number.MAX_SAFE_INTEGER
-        : 0;
-
     if (session) {
-      // Live path: replay the prefix, then subscribe to live fan-out.
+      // Live path: replay the journal prefix this server has already
+      // consumed (append-only ⇒ no duplicates with the live fan-out), then
+      // subscribe.
+      const attachOffset = session.rawOffset;
+      const errAttach = session.errOffset;
       await replayFromDisk(reply, outputPath, attachOffset);
+      replayStderr(reply, outputPath, errAttach);
       session.subscribers.add(reply);
       req.raw.on('close', () => {
         session.subscribers.delete(reply);
@@ -653,9 +872,60 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
       return reply;
     }
 
-    // Terminal path: file is the source of truth. Replay everything, emit
+    if (row.state === 'running' || row.state === 'queued') {
+      // Adopted live path — this server restarted while the detached child
+      // kept running. No in-memory session exists; follow the journal files
+      // directly until the row goes terminal (the supervisor or this
+      // server's dead-run sweep finalizes it).
+      let closed = false;
+      req.raw.on('close', () => {
+        closed = true;
+      });
+      let offset = 0;
+      let errOffset = 0;
+      let buf = '';
+      const errPath = stderrPathFor(outputPath) as string;
+      const pump = () => {
+        const out = readNewText(outputPath, offset);
+        if (out.text) {
+          offset = out.nextOffset;
+          buf += out.text;
+          let nl = buf.indexOf('\n');
+          while (nl >= 0) {
+            const line = buf.slice(0, nl);
+            buf = buf.slice(nl + 1);
+            nl = buf.indexOf('\n');
+            if (!line) continue;
+            for (const parsed of lineToJsonlFrames(line)) {
+              const frame = toActionChunk(parsed);
+              if (frame) sseSend(reply, frame);
+            }
+          }
+        }
+        const err = readNewText(errPath, errOffset);
+        if (err.text) {
+          errOffset = err.nextOffset;
+          sseSend(reply, { stderr: err.text });
+        }
+      };
+      while (!closed) {
+        pump();
+        const fresh = getRun(id) as RunRow | null;
+        if (!fresh || (fresh.state !== 'running' && fresh.state !== 'queued')) {
+          pump();
+          sseSend(reply, { done: true, exit: fresh?.exit_status ?? null });
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      reply.raw.end();
+      return reply;
+    }
+
+    // Terminal path: files are the source of truth. Replay everything, emit
     // done, close.
-    await replayFromDisk(reply, outputPath, attachOffset);
+    await replayFromDisk(reply, outputPath, Number.MAX_SAFE_INTEGER);
+    replayStderr(reply, outputPath);
     sseSend(reply, { done: true, exit: row.exit_status ?? null });
     reply.raw.end();
     return reply;
@@ -666,6 +936,20 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
     const id = req.params.id;
     const session = sessions.get(id);
     if (!session) {
+      // Detached child from a previous server process — no in-memory
+      // session, but the row + PID survive. Mark the cancel so the
+      // finalizer maps the death to state='cancelled', then signal.
+      const row = getRun(id) as RunRow | null;
+      if (row && row.state === 'running' && row.pid) {
+        markCancelRequested(id);
+        appendChunk(id, 'stderr', '\n✗ Cancelled by user\n');
+        try {
+          process.kill(row.pid, 'SIGTERM');
+        } catch {
+          /* already dead — the supervisor finalizes */
+        }
+        return { ok: true };
+      }
       reply.code(409);
       return { ok: false, error: 'not running' };
     }

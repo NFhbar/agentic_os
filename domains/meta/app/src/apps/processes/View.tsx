@@ -112,8 +112,13 @@ export default function ProcessesView() {
   }, [expandedHashId, filtered]);
 
   const counts = useMemo(() => {
+    // died-after-writeback counts with done — the work landed; the warning
+    // badge on the row itself carries the nuance.
     const c = { running: 0, queued: 0, done: 0, failed: 0, cancelled: 0 };
-    for (const r of runs) c[r.state] += 1;
+    for (const r of runs) {
+      const bucket = r.state === 'died-after-writeback' ? 'done' : r.state;
+      c[bucket] += 1;
+    }
     return c;
   }, [runs]);
 
@@ -204,8 +209,8 @@ function EmptyState({
   if (totalRuns === 0) {
     return (
       <p className="subtle" style={{ fontSize: 13, lineHeight: 1.55 }}>
-        No skill runs recorded yet. Dispatch one from any change / pr-review / overview page;
-        you'll see it appear here in real time.
+        No skill runs recorded yet. Dispatch one from any change / pr-review / overview page; you'll
+        see it appear here in real time.
       </p>
     );
   }
