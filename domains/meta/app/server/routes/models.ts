@@ -18,7 +18,7 @@ interface ModelEntry {
     input: number;
     output: number;
     cache_read: number;
-    cache_write_1h: number;
+    cache_write_5m: number;
   };
   aliases?: string;
   // Optional caveat surfaced in the Settings model dropdown (e.g. "restricted

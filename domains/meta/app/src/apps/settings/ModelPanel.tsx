@@ -26,7 +26,7 @@ interface RegistryModel {
     input: number;
     output: number;
     cache_read: number;
-    cache_write_1h: number;
+    cache_write_5m: number;
   };
   aliases?: string;
   note?: string;
@@ -230,9 +230,9 @@ export function ModelPanel() {
           </summary>
           <div className="tiny subtle" style={{ fontSize: 11, lineHeight: 1.6 }}>
             <div>
-              <strong>Project baseline:</strong>{' '}
-              <code className="mono">.claude/settings.json</code> — git-tracked, ships with the
-              OS. Current: <code className="mono">{projectModel ?? '(unset)'}</code>
+              <strong>Project baseline:</strong> <code className="mono">.claude/settings.json</code>{' '}
+              — git-tracked, ships with the OS. Current:{' '}
+              <code className="mono">{projectModel ?? '(unset)'}</code>
             </div>
             <div>
               <strong>Per-install override:</strong>{' '}
@@ -242,8 +242,8 @@ export function ModelPanel() {
             <div style={{ marginTop: 4 }}>
               Writes from this panel land in the local file. Selecting{' '}
               <em>(use project default)</em> removes the key entirely so the team baseline takes
-              over. When both layers are unset, dispatched runs use the CLI's user-global
-              default — set via Claude Code&apos;s <code className="mono">/model</code> command.
+              over. When both layers are unset, dispatched runs use the CLI's user-global default —
+              set via Claude Code&apos;s <code className="mono">/model</code> command.
             </div>
           </div>
         </details>
@@ -350,7 +350,11 @@ function ApplyAllModelRecommendationsButton({
 
   if (candidates.length === 0) {
     return (
-      <span className="tiny subtle" style={{ fontSize: 11 }} title="No model recommendations to apply">
+      <span
+        className="tiny subtle"
+        style={{ fontSize: 11 }}
+        title="No model recommendations to apply"
+      >
         ✓ all match recommendations
       </span>
     );

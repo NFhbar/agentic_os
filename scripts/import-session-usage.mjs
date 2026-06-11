@@ -18,13 +18,21 @@
 //   node scripts/import-session-usage.mjs --session <path>   # specific session file
 //   node scripts/import-session-usage.mjs --all              # all sessions for this project
 //   node scripts/import-session-usage.mjs --dry-run          # show what would be inserted
+//   node scripts/import-session-usage.mjs --recompute-costs  # re-price existing session rows
 //
 // Idempotent: re-running on the same session inserts no new rows (dedupe_key
 // in events-db.mjs is content-addressed).
 //
-// Cost is computed from a rate table per model (see RATES below). Models not in
-// the table get tokens captured but cost_usd left null. Update RATES when
-// Anthropic publishes new pricing or you add support for a new model.
+// Cost is computed via scripts/models-registry.mjs (the single pricing
+// source — rates + math live there, validated against CLI-reported
+// total_cost_usd). Models not in the registry get tokens captured but
+// cost_usd left null.
+//
+// --recompute-costs exists because historical rows were priced under a
+// wrong rate table (pre-4.5 Opus list price, 3× overstatement — found by
+// the Fable self-review): it re-prices every kind='session' row from its
+// stored token counts using the current registry. Dispatched-run rows are
+// untouched — their cost_usd came from the CLI itself.
 
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { dirname, join, basename } from 'node:path';
@@ -32,6 +40,7 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { recordEvent } from './events-db.mjs';
 import { extractFromPrompt } from './extract-event-attribution.mjs';
+import { computeCost } from './models-registry.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
@@ -51,45 +60,10 @@ const SESSIONS_DIR = join(
   sanitizeCwd(REPO_ROOT),
 );
 
-// Per-million-token rates in USD. Update as pricing evolves. Models not listed
-// here get tokens captured but cost_usd null (we don't guess).
-const RATES = {
-  // Mythos-class — Anthropic's flagship tier above Opus (released 2026-06-09).
-  // Same pricing applies to Fable 5 (general release) and Mythos 5 (restricted).
-  'claude-fable-5': { input: 10.0, output: 50.0, cache_read: 1.0, cache_write_1h: 12.5 },
-  'claude-mythos-5': { input: 10.0, output: 50.0, cache_read: 1.0, cache_write_1h: 12.5 },
-  // Opus 4.x family — high-cost / high-capability
-  'claude-opus-4-8': { input: 15.0, output: 75.0, cache_read: 1.5, cache_write_1h: 18.75 },
-  'claude-opus-4-7': { input: 15.0, output: 75.0, cache_read: 1.5, cache_write_1h: 18.75 },
-  'claude-opus-4-6': { input: 15.0, output: 75.0, cache_read: 1.5, cache_write_1h: 18.75 },
-  'claude-opus-4-5': { input: 15.0, output: 75.0, cache_read: 1.5, cache_write_1h: 18.75 },
-  // Sonnet 4.x family — mid-cost
-  'claude-sonnet-4-6': { input: 3.0, output: 15.0, cache_read: 0.3, cache_write_1h: 3.75 },
-  'claude-sonnet-4-5': { input: 3.0, output: 15.0, cache_read: 0.3, cache_write_1h: 3.75 },
-  // Haiku 4.x family — low-cost
-  'claude-haiku-4-5': { input: 0.8, output: 4.0, cache_read: 0.08, cache_write_1h: 1.0 },
-  'claude-haiku-4-5-20251001': { input: 0.8, output: 4.0, cache_read: 0.08, cache_write_1h: 1.0 },
-};
-
-function lookupRate(model) {
-  if (!model) return null;
-  // Strip bracketed context-window suffix (e.g. "claude-opus-4-7[1m]")
-  const normalized = model.replace(/\[[^\]]+\]$/, '');
-  return RATES[normalized] ?? null;
-}
-
-function computeCost(model, tokens) {
-  const r = lookupRate(model);
-  if (!r) return null;
-  const M = 1_000_000;
-  const cost =
-    ((tokens.input || 0) * r.input) / M +
-    ((tokens.output || 0) * r.output) / M +
-    ((tokens.cache_read || 0) * r.cache_read) / M +
-    ((tokens.cache_write || 0) * r.cache_write_1h) / M;
-  // Round to 6 decimals — sub-cent precision is enough; full float drift looks bad
-  return Math.round(cost * 1_000_000) / 1_000_000;
-}
+// Pricing lives in scripts/models-registry.mjs — computeCost is imported
+// above. (This file used to carry its own RATES duplicate of the registry;
+// the two drifted in lockstep-by-hand until the Fable self-review flagged
+// it. One table, one math site now.)
 
 // Extract a skill name from a slash-command user message.
 //   "/os add change"          → "os"
@@ -253,11 +227,12 @@ function listSessions() {
 }
 
 function parseArgs(argv) {
-  const out = { dryRun: false, all: false, session: null };
+  const out = { dryRun: false, all: false, session: null, recomputeCosts: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dry-run') out.dryRun = true;
     else if (a === '--all') out.all = true;
+    else if (a === '--recompute-costs') out.recomputeCosts = true;
     else if (a === '--session') {
       out.session = argv[++i];
     }
@@ -265,8 +240,65 @@ function parseArgs(argv) {
   return out;
 }
 
-function main() {
+// Re-price every kind='session' row from its stored token counts using the
+// current registry. Token counts are authoritative (read from transcripts);
+// cost_usd was derived from them — deriving again is safe and idempotent.
+// Dispatched-run rows (kind='dashboard'/'schedule') are never touched: their
+// cost_usd came from the CLI's own result event, which is the ground truth
+// the registry is validated against.
+async function recomputeSessionCosts() {
+  const { DatabaseSync } = await import('node:sqlite');
+  const dbPath = join(REPO_ROOT, '.claude', 'state', 'events.db');
+  if (!existsSync(dbPath)) {
+    console.error(`events.db not found at ${dbPath}`);
+    process.exit(1);
+  }
+  const db = new DatabaseSync(dbPath);
+  const rows = db
+    .prepare(
+      "SELECT id, model, tokens_in, tokens_out, tokens_cache_hit, tokens_cache_write, cost_usd FROM events WHERE kind='session'",
+    )
+    .all();
+  const update = db.prepare('UPDATE events SET cost_usd = ? WHERE id = ?');
+  let updated = 0;
+  let unchanged = 0;
+  let noRate = 0;
+  let oldTotal = 0;
+  let newTotal = 0;
+  for (const r of rows) {
+    oldTotal += r.cost_usd ?? 0;
+    const cost = computeCost(r.model, {
+      input: r.tokens_in,
+      output: r.tokens_out,
+      cache_read: r.tokens_cache_hit,
+      cache_write: r.tokens_cache_write,
+    });
+    if (cost == null) {
+      noRate++;
+      newTotal += r.cost_usd ?? 0;
+      continue;
+    }
+    newTotal += cost;
+    if (r.cost_usd === cost) {
+      unchanged++;
+    } else {
+      update.run(cost, r.id);
+      updated++;
+    }
+  }
+  db.close();
+  console.log(
+    `recomputed session costs — rows=${rows.length} updated=${updated} unchanged=${unchanged} no-rate=${noRate}`,
+  );
+  console.log(`  total session cost_usd: $${oldTotal.toFixed(2)} → $${newTotal.toFixed(2)}`);
+}
+
+async function main() {
   const args = parseArgs(process.argv.slice(2));
+  if (args.recomputeCosts) {
+    await recomputeSessionCosts();
+    return;
+  }
   let sessions;
   if (args.session) {
     if (!existsSync(args.session)) {
@@ -308,10 +340,8 @@ function main() {
 const invokedDirectly =
   process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (invokedDirectly) {
-  try {
-    main();
-  } catch (e) {
+  main().catch((e) => {
     console.error(e.message);
     process.exit(1);
-  }
+  });
 }
