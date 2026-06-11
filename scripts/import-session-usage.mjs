@@ -117,7 +117,7 @@ function isAssistantWithUsage(line) {
   return Boolean(line.message?.usage);
 }
 
-function collectBuckets(sessionPath) {
+export function collectBuckets(sessionPath) {
   const text = readFileSync(sessionPath, 'utf8');
   const sessionId = basename(sessionPath).replace(/\.jsonl$/, '');
   const lines = text.split('\n').filter(Boolean);

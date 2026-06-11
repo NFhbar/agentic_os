@@ -60,6 +60,13 @@ jobs:
       - name: Run test suite
         run: npm test
 
+      # Pins the Claude Code transcript-format contract the session importer
+      # depends on (the <command-message> drift class). Pure node — the
+      # flags/live tiers need the claude CLI and run locally instead (the
+      # SessionStart hook refreshes them in the background per session).
+      - name: CC contract fixture check
+        run: node scripts/check-cc-contract.mjs --fixture-only
+
       - name: Markdown format check
         run: npm run md:check
 
