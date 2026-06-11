@@ -52,6 +52,12 @@ last_verified: 2026-05-19
 - **`meta-brief`** — pending curation count, active project listing
 - **Skills** — fast lookup of "entries about X" without grep over hundreds of files
 
+## Search index — `vault/.index/search.db`
+
+The same rebuild also writes a SQLite FTS5 sidecar: one `wiki_fts` virtual table over `id`, `title`, `tags`, and the full entry **body** (plus unindexed `path`/`type`/`domain` for filtering). The vault MCP's `search_wiki` queries it with BM25 ranking (column weights id 10 > title 5 > tags 3 > body 1) and FTS5 `snippet()` match context, falling back to the manifest substring scorer when the file is missing or locked mid-rebuild. Zero-hit queries are logged to events.db (`kind: mcp`, `action: vault-search-miss`) so retrieval misses are observable.
+
+Added after the Fable review demonstrated the snippet-only scorer returning wrong-or-nothing for 3 of 4 realistic queries at ~300 entries — body-only knowledge (audit findings, review comments, decision prose) was unreachable.
+
 ## Rebuild trigger
 
 - Automatic: PostToolUse hook (`Write|Edit` matcher) when path matches `vault/wiki/*`
@@ -59,14 +65,14 @@ last_verified: 2026-05-19
 
 ## Gitignored
 
-The index is derived data; the source of truth is the wiki markdown files. The index is regenerated on first session after clone.
+The index is derived data; the source of truth is the wiki markdown files. The index (manifest + search.db) is regenerated on first session after clone.
 
 ## Rationale
 
 - A JSON index is fast to read in JavaScript (dashboard) and easy to grep
 - Re-deriving from frontmatter avoids the "two sources of truth" problem
 - Cheap to rebuild (small N) so we don't need incremental updates yet
-- When wiki grows past ~1000 entries we add SQLite FTS5 on top of this manifest
+- FTS5 was originally deferred until "~1000 entries"; in practice the substring scorer failed realistic body-content queries at ~300, so the search.db sidecar landed early (drop-and-rebuild per write — same cost profile as the manifest)
 
 ## Related
 

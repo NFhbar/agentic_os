@@ -1,8 +1,13 @@
 #!/usr/bin/env node
-// Walk vault/wiki/ and rebuild vault/.index/manifest.json.
+// Walk vault/wiki/ and rebuild the vault indexes:
 //
-// Each entry includes frontmatter fields, a 200-char body snippet, and
-// backlinks parsed from [[wikilink]] references.
+//   vault/.index/manifest.json — frontmatter fields, 200-char snippet,
+//     backlinks. The structural index-of-record.
+//   vault/.index/search.db — SQLite FTS5 over id + title + tags + BODY.
+//     The retrieval index: the manifest's snippet-only search missed
+//     body-only knowledge on 3 of 4 realistic queries (Fable review,
+//     Finding 5.1). The vault MCP queries this with BM25 and falls back
+//     to the substring scorer when the file is missing.
 //
 // Run by the rebuild-vault-index.sh hook on Write/Edit to vault/wiki/.
 
@@ -80,10 +85,10 @@ function backlinksIn(body) {
   return [...body.matchAll(/\[\[([^\]]+)\]\]/g)].map((m) => m[1]);
 }
 
-const entries = walk(WIKI_DIR).map((p) => {
+const records = walk(WIKI_DIR).map((p) => {
   const content = readFileSync(p, 'utf8');
   const { fm, body } = parseFrontmatter(content);
-  return {
+  return { body, entry: {
     path: relative(REPO_ROOT, p),
     id: fm.id ?? null,
     type: fm.type ?? null,
@@ -206,8 +211,9 @@ const entries = walk(WIKI_DIR).map((p) => {
       : null,
     snippet: snippetOf(body),
     backlinks: backlinksIn(body),
-  };
+  } };
 });
+const entries = records.map((r) => r.entry);
 
 mkdirSync(dirname(INDEX_PATH), { recursive: true });
 writeFileSync(
@@ -219,4 +225,46 @@ writeFileSync(
   ) + '\n'
 );
 
-console.error(`✓ vault index rebuilt — ${entries.length} entries`);
+// FTS5 retrieval index. Full drop-and-rebuild inside one transaction —
+// same cost profile as the manifest rebuild (~300 rows, milliseconds).
+// Graceful skip when node:sqlite/FTS5 is unavailable: the vault MCP falls
+// back to its substring scorer when search.db is missing or stale-locked.
+const SEARCH_DB_PATH = join(REPO_ROOT, 'vault', '.index', 'search.db');
+
+async function rebuildSearchDb() {
+  try {
+    const { DatabaseSync } = await import('node:sqlite');
+    const db = new DatabaseSync(SEARCH_DB_PATH);
+    try {
+      db.exec('BEGIN');
+      db.exec('DROP TABLE IF EXISTS wiki_fts');
+      db.exec(
+        'CREATE VIRTUAL TABLE wiki_fts USING fts5(id, title, tags, body, path UNINDEXED, type UNINDEXED, domain UNINDEXED)'
+      );
+      const ins = db.prepare(
+        'INSERT INTO wiki_fts (id, title, tags, body, path, type, domain) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      );
+      for (const { entry, body } of records) {
+        ins.run(
+          entry.id ?? '',
+          entry.title ?? '',
+          (entry.tags ?? []).join(' '),
+          body ?? '',
+          entry.path,
+          entry.type ?? '',
+          entry.domain ?? ''
+        );
+      }
+      db.exec('COMMIT');
+    } finally {
+      db.close();
+    }
+    return true;
+  } catch (e) {
+    console.error(`⚠ search.db rebuild skipped: ${e.message}`);
+    return false;
+  }
+}
+
+const ftsOk = await rebuildSearchDb();
+console.error(`✓ vault index rebuilt — ${entries.length} entries${ftsOk ? ' (+ fts)' : ''}`);
