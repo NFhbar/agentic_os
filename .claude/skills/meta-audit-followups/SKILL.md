@@ -245,10 +245,9 @@ applied_at + days]`. The target skill = `target_metric.name`'s skill
 
 5. **Decide:**
    - **Window still open** AND no early-close → append one exposure
-     observation `{audit_id: null, observed_at: <now>, qualifies: false,
-runs_so_far: <N>, notes: "window open — closes <date>"}` (skip if an
-     identical-count exposure note was appended within 24h — keep the log
-     low-noise) and leave `pending`.
+     observation `{audit_id: null, observed_at: <now>, qualifies: false, runs_so_far: <N>, notes: "window open — closes <date>"}`
+     (skip if an identical-count exposure note was appended within 24h —
+     keep the log low-noise) and leave `pending`.
    - **Early close** — qualifying audits ≥ 1 AND runs ≥
      `min_qualifying_runs` AND the metric reading is unambiguous across
      all qualifying audits → flip now (note `early: true` in the closing
@@ -259,10 +258,9 @@ runs_so_far: <N>, notes: "window open — closes <date>"}` (skip if an
        `metric_value ≤ target` → `validated`; any `≥ baseline` →
        `regressed`; mixed → `inconclusive`. `skill_score_increase`: mean
        observed vs `target`/`baseline`, same mapping.
-     - 0 qualifying audits: `inconclusive` — reason `insufficient exposure
-(<runs> runs < <min>)` when runs < min, else `exposed but
-unobserved — <runs> runs produced no qualifying audits; consider a
-manual overseer audit`.
+     - 0 qualifying audits: `inconclusive` — reason
+       `insufficient exposure (<runs> runs < <min>)` when runs < min, else
+       `exposed but unobserved — <runs> runs produced no qualifying audits; consider a manual overseer audit`.
      - No `target_metric` declared: `inconclusive — no target_metric`.
 
 6. **Write back** (surgical Edit, single-line JSON fields preserved):
