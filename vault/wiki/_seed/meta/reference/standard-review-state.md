@@ -60,8 +60,13 @@ mixed values map as:
 | `request-changes`  | `drafted` + `review_status: request-changes` |
 | `approved`         | `drafted` + `review_status: approved`        |
 
+`scripts/migrate-review-state.mjs` applies this table mechanically — run it
+once per install after pulling the contract (idempotent; `--dry-run` to
+preview). It also renames `plan_review_path` → `review_path` and
+`plan_reviewed_at` → `reviewed_at`. `install.sh` runs it automatically.
+
 Steppers/timelines render a LINEAR collapse of the pair (`planStageId` in
-`domains/meta/app/server/routes/project-plan-status.ts` — stage ids like
+`domains/meta/app/server/lib/lifecycle-state.ts` — stage ids like
 `awaiting-review` are rendering vocabulary, never persisted).
 
 ## Enforcement

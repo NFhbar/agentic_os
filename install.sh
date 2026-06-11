@@ -104,6 +104,16 @@ mkdir -p vault/raw vault/.index
 echo "  ✓ state files initialized"
 
 echo ""
+echo "→ Migrating vault entries to current contracts..."
+# Idempotent per-install data migrations (the vault is gitignored — code
+# upgrades ship via git pull, but each install owns its entries). Currently:
+# the shared review-state contract for project entries (legacy mixed
+# plan_status values → lifecycle + review_status pair, plan_review_path /
+# plan_reviewed_at renames). No-op on fresh clones and migrated installs.
+node scripts/migrate-review-state.mjs
+echo "  ✓ migrations applied"
+
+echo ""
 echo "→ Building vault manifest from seed entries..."
 # The manifest indexes every wiki entry's frontmatter so the dashboard's Vault
 # view (and downstream skills) can find them. On a fresh install this populates

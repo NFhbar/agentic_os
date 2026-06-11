@@ -3463,7 +3463,7 @@ function checkReviewStateEnums() {
         severity: 'error',
         path: e.path,
         message: `review_status '${e.review_status}' is not in the shared enum (${[...REVIEW_STATUS_ENUM].join(' | ')})`,
-        hint: 'See standard-review-state — one verdict vocabulary across change / research-report / project.',
+        hint: 'See standard-review-state — one verdict vocabulary across change / research-report / project. Pre-contract entries: run `node scripts/migrate-review-state.mjs` once (idempotent).',
       });
     }
     if (e.type === 'project' && e.plan_status != null && !PLAN_LIFECYCLE_ENUM.has(e.plan_status)) {
@@ -3472,7 +3472,7 @@ function checkReviewStateEnums() {
         severity: 'error',
         path: e.path,
         message: `plan_status '${e.plan_status}' is not lifecycle-only (${[...PLAN_LIFECYCLE_ENUM].join(' | ')})`,
-        hint: 'Review verdicts moved to review_status (standard-review-state); legacy values like reviewed-pending/request-changes/approved migrate to the pair form.',
+        hint: 'Review verdicts moved to review_status (standard-review-state). Run `node scripts/migrate-review-state.mjs` once (idempotent) — it maps legacy reviewed-pending/request-changes/approved to the pair form and renames plan_review_path/plan_reviewed_at.',
       });
     }
   }
