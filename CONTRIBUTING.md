@@ -99,7 +99,7 @@ git merge upstream/main                       # or: git rebase upstream/main
 
 # 2. Resolve any conflicts (see § Where conflicts land below)
 
-# 3. Re-run install (idempotent — picks up new deps, regenerates manifest, refreshes hooks)
+# 3. Re-run install (idempotent — picks up new deps, applies vault data migrations, regenerates manifest, refreshes hooks)
 ./install.sh
 
 # 4. Verify the install
