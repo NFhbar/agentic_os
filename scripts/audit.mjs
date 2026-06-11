@@ -34,6 +34,7 @@ import {
   extractSkillLikeLiterals,
   listSkillIds,
 } from './generate-skill-ids.mjs';
+import { missingTargetPaths } from './tuning-targets.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
@@ -3464,6 +3465,24 @@ function checkReviewStateEnums() {
 // because routes/projects.ts named it by string).
 // ---------------------------------------------------------------------------
 
+// The tuning-targets path map (scripts/tuning-targets.mjs) routes non-skill
+// Overseer suggestions to real files. A mapped path that no longer exists
+// silently reverts those suggestions to rationale-only dead ends — the exact
+// failure Finding 3.2 documented — so map rot is an error, not a warning.
+function checkTuningTargetPaths() {
+  const findings = [];
+  for (const { id, path } of missingTargetPaths()) {
+    findings.push({
+      id: 'tuning-target-path-missing',
+      severity: 'error',
+      path: 'scripts/tuning-targets.mjs',
+      message: `Tuning target "${id}" maps to ${path}, which does not exist`,
+      hint: `Update TUNING_TARGETS in scripts/tuning-targets.mjs to the file's new location (or remove the entry if the surface is gone)`,
+    });
+  }
+  return findings;
+}
+
 function checkSkillIdsModule() {
   const findings = [];
   const expected = buildSkillIdsSource(listSkillIds(REPO_ROOT));
@@ -3606,6 +3625,7 @@ function main() {
   if (sections.skills) {
     findings.push(...checkSkillIdsModule());
     findings.push(...checkStaleSkillLiterals(knownTargets));
+    findings.push(...checkTuningTargetPaths());
   }
   if (sections.wiki) findings.push(...checkWiki(domains, archetypes, knownTargets));
   if (sections.domains) {

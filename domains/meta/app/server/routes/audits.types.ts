@@ -35,12 +35,19 @@ export interface PerSkillFinding {
   evidence_paths: string[]; // file paths the judgment cites
 }
 
+// Routable target vocabulary. Non-skill kinds resolve to repo paths via
+// scripts/tuning-targets.mjs; absent on pre-target_kind audits → 'skill'.
+export type TuningTargetKind = 'skill' | 'orchestrator' | 'route' | 'script';
+
 export interface TuningSuggestion {
-  skill: string; // target skill for the suggestion
-  suggestion: string; // concrete prose describing the SKILL.md change
+  // Target name: a skill id, or for non-skill kinds a canonical id from
+  // scripts/tuning-targets.mjs (e.g. 'automation-orchestrator').
+  skill: string;
+  target_kind?: TuningTargetKind;
+  suggestion: string; // concrete prose describing the change
   confidence: SuggestionConfidence;
   evidence_summary: string; // 1-2 sentences
-  target_change: string; // where in SKILL.md the change lands
+  target_change: string; // where in the target file the change lands
 }
 
 export interface FollowupSignal {
