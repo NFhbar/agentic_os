@@ -3580,7 +3580,7 @@ function ProjectPhaseTimeline({ project }: { project: ProjectSummary }) {
     {
       id: 'in-research',
       label: 'Research',
-      tooltip: 'meta-research-project running — assembling materials + drafting plan.',
+      tooltip: 'research-write running — assembling materials + drafting the research report.',
     },
     {
       id: 'reviewed-pending',

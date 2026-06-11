@@ -86,6 +86,12 @@ Per-change automation orchestrator events. Fire when the orchestrator transition
 | ---------------------------------------------------- | ----------------------------------------------------- | --------------- | ------------------- | -------------------------------------------- |
 | dashboard.research-write                             | research-write skill dispatched                       | research-report | report_id           | research-report:drafted, project:in-research |
 | dashboard.research-write-dispatch                    | research-write run record (companion to the above)    | research-report | report_id           | —                                            |
+| dashboard.research-review-dispatch                   | research-review run record                            | research-report | report_id           | —                                            |
+| dashboard.research-revise-dispatch                   | research-revise run record                            | research-report | report_id           | —                                            |
+| dashboard.research-update-dispatch                   | research-update run record                            | research-report | report_id           | —                                            |
+| dashboard.research-materials-add                     | Material file added to the report's drop zone         | research-report | report_id           | —                                            |
+| dashboard.research-materials-delete                  | Material file removed from the drop zone              | research-report | report_id           | —                                            |
+| dashboard.research-trigger-dismiss                   | Update-trigger dismissed on a research-report         | research-report | report_id           | —                                            |
 | dashboard.research-review                            | research-review skill dispatched                      | research-report | report_id           | research-report:reviewed                     |
 | dashboard.research-revise                            | research-revise skill dispatched                      | research-report | report_id           | —                                            |
 | dashboard.research-mark-approved                     | review_status overridden to approved (mark approved)  | research-report | report_id           | research-report:approved                     |

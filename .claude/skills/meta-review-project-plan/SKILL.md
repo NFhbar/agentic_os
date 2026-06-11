@@ -1,6 +1,6 @@
 ---
 name: meta-review-project-plan
-description: 'Peer-review a project plan produced by meta-research-project. Read-only: walks the plan + cited repos + project body, produces a structured verdict (approve | request-changes | reject) with concerns. Writes review to vault/output/<domain>/project-plans/.'
+description: 'Peer-review a project plan produced by research-write (formerly the meta-research-project alias). Read-only: walks the plan + cited repos + project body, produces a structured verdict (approve | request-changes | reject) with concerns. Writes review to vault/output/<domain>/project-plans/.'
 user-invocable: true
 recommended_effort: xhigh
 version: 1
@@ -25,7 +25,7 @@ spawns: []
 
 ## Purpose
 
-Act as a peer reviewer for a project plan produced by [[meta-research-project]]. Read the plan, the project body, and the repo state for any repo cited in the plan — then produce a structured verdict (approve / request-changes / reject) with specific concerns.
+Act as a peer reviewer for a project plan produced by [[research-write]]. Read the plan, the project body, and the repo state for any repo cited in the plan — then produce a structured verdict (approve / request-changes / reject) with specific concerns.
 
 **Read-only operation.** This skill MUST NOT edit code, MUST NOT create branches, MUST NOT run tests, MUST NOT mutate the plan file. It reads + writes one artifact (the review document) + updates a small set of frontmatter fields on the project entry. Nothing else. Same separation principle as [[dev-review-change]] — the writer skills (research, revise, scaffold) CAN mutate; the reviewer CANNOT. If something feels like it should be acted on, that's evidence FOR a `request-changes` verdict (because revise should do it), not evidence to do it directly.
 
@@ -44,7 +44,7 @@ Act as a peer reviewer for a project plan produced by [[meta-research-project]].
 
 ### Step 2: Read the plan
 
-1. Read `plan_path` in full. Parse the structured sections per the template in [[meta-research-project]]:
+1. Read `plan_path` in full. Parse the structured sections per the template in [[research-write]]:
    - `## Intent (from research prompt)`
    - `## Proposed changes` (numbered)
    - `## Proposed schedules`
@@ -260,7 +260,7 @@ If you're tempted to act on a concern directly, that's an `approve` (the concern
 
 - [[standard-project-workflow]] — full plan-lifecycle state machine + review-gate fields
 - [[archetype-project]] — project archetype + `plan_status` enum
-- [[meta-research-project]] — produces the plan this skill reviews
+- [[research-write]] — produces the plan this skill reviews (formerly via the deleted `meta-research-project` alias)
 - [[meta-revise-project-plan]] — consumes this skill's verdict + folds findings into the plan
 - [[meta-scaffold-project-plan]] — terminal phase, only fires after `plan_status: approved`
 - [[dev-review-change]] — the change-side analogue; this skill mirrors its read-only constraint

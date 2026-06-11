@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import type { FastifyPluginAsync } from 'fastify';
 import { removeFrontmatterFields, rewriteFrontmatter } from '../frontmatter-rewrite.js';
 import { parseFrontmatter } from '../frontmatter.js';
+import { SKILL } from '../lib/skill-ids.js';
 import { REPO_ROOT, safePath } from '../repo.js';
 import { readAutomationConfig } from './automation.js';
 import { type FileRef, loadFileRef } from './changes.js';
@@ -911,8 +912,11 @@ export const projectsRoutes: FastifyPluginAsync = async (fastify) => {
   // POST /api/projects/:id/research — dual-mode endpoint.
   //
   // Body-shape discriminator (priority: `prompt` first):
-  //   - `prompt` present → dispatcher mode: dispatch `meta-research-project`
+  //   - `prompt` present → dispatcher mode: dispatch `research-write`
   //     through the runs system. Returns `{ ok, run_id, current_cost_usd }`.
+  //     (Dispatched the deprecated meta-research-project alias until the
+  //     alias was deleted — the slug-derivation duty the alias performed now
+  //     lives in the dispatcher prompt below.)
   //     409 if `plan_status === 'in-research'` (one research per project).
   //   - `prompt` absent AND `title` present → legacy note-creation mode:
   //     scaffold a research note linked to the project. Returns
@@ -959,25 +963,27 @@ export const projectsRoutes: FastifyPluginAsync = async (fastify) => {
       const materialsBlock = JSON.stringify(materials);
       const materialLimit =
         typeof req.body?.material_limit === 'number' ? req.body.material_limit : null;
-      const dispatcherPrompt = `Run the meta-research-project skill for project "${projectId}".
+      const dispatcherPrompt = `Run the research-write skill for project "${projectId}".
 
 User intent:
 ${rawPrompt}
 
 Inputs:
 - project: ${projectId}
+- report_topic: derive a kebab-case slug from the user intent above (lowercase [a-z0-9-], 3-60 chars, no leading/trailing hyphen) — it names the report entry
+- prompt: the user intent above, verbatim
 - materials: ${materialsBlock}
 ${materialLimit !== null ? `- material_limit: ${materialLimit}` : ''}
 
-Read .claude/skills/meta-research-project/SKILL.md and follow its Procedure exactly.
+Read .claude/skills/research-write/SKILL.md and follow its Procedure exactly.
 Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary of what was produced when done.`;
       const result = await startRun({
         prompt: dispatcherPrompt,
-        title: `/os research-project ${projectId}`,
+        title: `/os research write ${projectId}`,
         tags: {
           project: projectId,
           domain: projectDomain,
-          skill: 'meta-research-project',
+          skill: SKILL.RESEARCH_WRITE,
         },
       });
       if (!result.ok) {

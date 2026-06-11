@@ -114,7 +114,7 @@ const records = walk(WIKI_DIR).map((p) => {
     pr_reviewed_at: typeof fm.pr_reviewed_at === 'string' ? fm.pr_reviewed_at : null,
     pr_ready_at: typeof fm.pr_ready_at === 'string' ? fm.pr_ready_at : null,
     // Plan-* fields cluster — written by dev-revise-plan (for change entries) and
-    // by the four project-orchestration skills (meta-research-project /
+    // by the project-orchestration skills (research-write /
     // meta-review-project-plan / meta-revise-project-plan / meta-scaffold-project-plan
     // for project entries). Lifted flat onto every record so the dashboard's
     // lifecycle stepper / Plan tab / projects list can render plan state without

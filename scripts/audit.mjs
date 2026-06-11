@@ -28,6 +28,12 @@ import {
   REPORT_SCOPED_SKILLS,
 } from './extract-event-attribution.mjs';
 import { parseFrontmatter as sharedParseFrontmatter } from './frontmatter.mjs';
+import {
+  SKILL_IDS_MODULE_REL,
+  buildSkillIdsSource,
+  extractSkillLikeLiterals,
+  listSkillIds,
+} from './generate-skill-ids.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
@@ -1943,9 +1949,9 @@ function checkDeferredCommentsAge() {
   return findings;
 }
 
-// Mirror of checkEventAttribution for project-scoped skills. The four
-// orchestration skills (meta-research-project, meta-review-project-plan,
-// meta-revise-project-plan, meta-scaffold-project-plan) all carry a project
+// Mirror of checkEventAttribution for project-scoped skills. The
+// orchestration skills (meta-review-project-plan, meta-revise-project-plan,
+// meta-scaffold-project-plan) all carry a project
 // id; events tagged with these skills that have project=null indicate a
 // dropped tag somewhere on the write path.
 function checkProjectAttribution() {
@@ -2167,8 +2173,8 @@ function checkPlanFileOrphan() {
   return findings;
 }
 
-// Project stuck `plan_status: in-research` for >1h: the meta-research-project
-// skill almost certainly crashed before flipping plan_status to `pending` (the
+// Project stuck `plan_status: in-research` for >1h: the research-write
+// dispatch almost certainly crashed before flipping plan_status to `pending` (the
 // terminal value). Without this check, dead research runs sit invisibly and
 // the human has no signal to retry or salvage.
 function checkPlanStatusStuckInResearch() {
@@ -3387,6 +3393,116 @@ function checkDispatchSpawnSites() {
   return findings;
 }
 
+// ---------------------------------------------------------------------------
+// Skill-id constants module — app TS names skills via the generated
+// server/lib/skill-ids.ts instead of raw string literals, so a rename or
+// deletion is a compile error rather than a silently-stale string (the
+// deprecated meta-research-project alias was undeletable for a project phase
+// because routes/projects.ts named it by string).
+// ---------------------------------------------------------------------------
+
+function checkSkillIdsModule() {
+  const findings = [];
+  const expected = buildSkillIdsSource(listSkillIds(REPO_ROOT));
+  const p = join(REPO_ROOT, SKILL_IDS_MODULE_REL);
+  if (!existsSync(p)) {
+    findings.push({
+      id: 'skill-ids-module-stale',
+      severity: 'error',
+      path: SKILL_IDS_MODULE_REL,
+      message: 'Generated skill-ids module is missing',
+      hint: 'run: node scripts/generate-skill-ids.mjs',
+    });
+    return findings;
+  }
+  if (readFileSync(p, 'utf8') !== expected) {
+    findings.push({
+      id: 'skill-ids-module-stale',
+      severity: 'error',
+      path: SKILL_IDS_MODULE_REL,
+      message: 'Generated skill-ids module is out of sync with .claude/skills/',
+      hint: 'run: node scripts/generate-skill-ids.mjs (meta-add-skill / meta-rename / meta-delete regenerate it as part of their procedures)',
+    });
+  }
+  return findings;
+}
+
+// Whole-string literals in app code that LOOK like skill ids but name no
+// existing skill — the residue a rename/deletion leaves behind. Three
+// legitimate vocabularies share the (dev|meta|research)- prefix space and
+// pass: wiki entry ids + skill names (knownTargets), archetype names, and
+// events.db ACTION names — sourced from the event-catalog reference, which
+// doubles as a nudge to catalogue new actions. Anything else goes in
+// STALE_LITERAL_ALLOW with a written reason.
+const STALE_LITERAL_ALLOW = new Set([]);
+
+// Action names from event-catalog.md rows (`| dashboard.<action> …`).
+function catalogedActionNames() {
+  const out = new Set();
+  try {
+    const text = readFileSync(
+      join(REPO_ROOT, 'vault', 'wiki', '_seed', 'meta', 'reference', 'event-catalog.md'),
+      'utf8',
+    );
+    for (const m of text.matchAll(/\|\s*[a-z]+\.([a-z][a-z0-9-]*)/g)) out.add(m[1]);
+  } catch {
+    /* catalog missing — fall through to the other allowlists */
+  }
+  return out;
+}
+
+function checkStaleSkillLiterals(knownTargets) {
+  const findings = [];
+  const skillIds = new Set(listSkillIds(REPO_ROOT));
+  const catalogActions = catalogedActionNames();
+  const archetypes = new Set();
+  for (const f of listFiles(join(REPO_ROOT, '_templates', 'wiki-entry'))) {
+    if (f.endsWith('.md.tmpl')) archetypes.add(f.replace(/\.md\.tmpl$/, ''));
+  }
+  const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.git']);
+  const CODE_EXT = /\.(ts|tsx|mjs|js)$/;
+  const walkCodeFiles = (dir) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    const out = [];
+    for (const e of entries) {
+      if (SKIP_DIRS.has(e.name)) continue;
+      const p = join(dir, e.name);
+      if (e.isDirectory()) out.push(...walkCodeFiles(p));
+      else if (e.isFile() && CODE_EXT.test(e.name)) out.push(p);
+    }
+    return out;
+  };
+  for (const root of ['domains/meta/app/server', 'domains/meta/app/src']) {
+    for (const p of walkCodeFiles(join(REPO_ROOT, root))) {
+      const rel = relative(REPO_ROOT, p);
+      if (rel === SKILL_IDS_MODULE_REL) continue;
+      const seen = new Set();
+      for (const lit of extractSkillLikeLiterals(readFileSync(p, 'utf8'))) {
+        if (seen.has(lit)) continue;
+        seen.add(lit);
+        if (skillIds.has(lit)) continue;
+        if (knownTargets.has(lit)) continue;
+        if (archetypes.has(lit)) continue;
+        if (catalogActions.has(lit)) continue;
+        if (STALE_LITERAL_ALLOW.has(lit)) continue;
+        findings.push({
+          id: 'app-stale-skill-literal',
+          severity: 'error',
+          path: rel,
+          message: `String literal '${lit}' looks like a skill id but no such skill exists`,
+          hint: 'Renamed or deleted skill? Reference skills via SKILL.<NAME> from server/lib/skill-ids.ts; if the literal is a legitimate non-skill term, add it to STALE_LITERAL_ALLOW with a reason.',
+        });
+      }
+    }
+  }
+  return findings;
+}
+
 function main() {
   const args = process.argv.slice(2);
   const json = args.includes('--json');
@@ -3424,6 +3540,10 @@ function main() {
   const findings = [];
 
   if (sections.skills) findings.push(...checkSkills(domains, knownTargets));
+  if (sections.skills) {
+    findings.push(...checkSkillIdsModule());
+    findings.push(...checkStaleSkillLiterals(knownTargets));
+  }
   if (sections.wiki) findings.push(...checkWiki(domains, archetypes, knownTargets));
   if (sections.domains) {
     findings.push(...checkDomains());

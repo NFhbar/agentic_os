@@ -45,7 +45,7 @@ spawns: []
 
 Compose a **research-report** entry — the durable, queryable artifact that captures one focused investigation under a project. Reads materials from the drop zone (with project-level fallback), wikilinks, and URLs; synthesizes them into findings and recommended changes; writes the result to `vault/wiki/research/research-report/<report_id>.md` and registers the path on the owning project entry.
 
-This skill is the **entry phase** of the research-domain lifecycle. It mirrors [[dev-write-change]]'s PLAN phase and [[meta-research-project]]'s research phase — but produces a durable typed wiki entry (with its own review gate, update loop, and `recommended_changes` array) rather than a transient output markdown.
+This skill is the **entry phase** of the research-domain lifecycle. It mirrors [[dev-write-change]]'s PLAN phase and the original `meta-research-project` research phase — but produces a durable typed wiki entry (with its own review gate, update loop, and `recommended_changes` array) rather than a transient output markdown.
 
 Graduated from `meta-research-project` during the research-domain refactor (per-install project tracking the graduation phases). The legacy skill is retained as a deprecation alias that derives `report_topic` from its free-form `prompt` and delegates here — callers that haven't migrated continue to work transparently.
 
@@ -56,7 +56,7 @@ Downstream: [[research-review]] gates the report; [[research-revise]] folds revi
 ### Step 1: Validate inputs + idempotency check
 
 1. Validate `inputs.project` matches `^[a-z0-9][a-z0-9-]*$`. Reject if not.
-2. Validate `inputs.report_topic` matches `^[a-z0-9][a-z0-9-]{1,58}[a-z0-9]$`. Reject if not (the alias's slug-derivation must produce a value passing this regex; see [[meta-research-project]] § alias procedure).
+2. Validate `inputs.report_topic` matches `^[a-z0-9][a-z0-9-]{1,58}[a-z0-9]$`. Reject if not (callers must pass a value matching this regex — the dashboard’s research dispatcher derives the slug from the user intent before invoking).
 3. Locate the project entry at `vault/wiki/*/project/<project>.md`. Reject with `project "<id>" not found` if missing or `type != project`. Capture its `domain` (the project's owning domain — usually `development`; used for the project-frontmatter writeback in step 9).
 4. Compose `report_id = "<project>-<report_topic>"`. Target path: `vault/wiki/research/research-report/<report_id>.md`.
 5. **Idempotency check.** If the target file already exists, reject:
@@ -77,7 +77,7 @@ Downstream: [[research-review]] gates the report; [[research-revise]] folds revi
 2. List `.md` / `.txt` / `.pdf` files in the directory, sorted by mtime **ascending** (FIFO).
 3. **Compatibility fallback.** If the per-report dir is empty AND `vault/raw/project-research/<project>/` (the parent project-level dir) contains files, read from the project-level dir instead — design doc § Compatibility / migration calls for this so legacy project-research dumps don't go silently unread. Record which layout was read in the materials summary (see step 6).
 4. For each non-PDF: Read in full.
-5. **PDF handling.** Same chunked-read pattern as [[meta-research-project]] Step 3:
+5. **PDF handling.** Same chunked-read pattern as the original `meta-research-project` implementation:
    1. Probe length with `pages: "1"`.
    2. Issue chunked reads: `pages: "1-20"`, `"21-40"`, `"41-50"` to cover up to the first 50 pages.
    3. Stop at the first range that errors or returns empty.
@@ -225,7 +225,7 @@ node scripts/record-dashboard-action.mjs \
 ## Errors
 
 - `inputs.project` slug invalid → reject with the regex
-- `inputs.report_topic` slug invalid → reject with the regex (the alias's slug-derivation is responsible for producing a passing value; see [[meta-research-project]])
+- `inputs.report_topic` slug invalid → reject with the regex (dispatching callers derive the slug before invoking — the dashboard’s research dispatcher does this from the user intent)
 - Project not found / not `type: project` → reject with id
 - Target report file already exists → idempotent stop; instruct user to use `research-update` or `research-revise`
 - Drop zone unreadable → reject (filesystem error; user must resolve)
@@ -238,6 +238,5 @@ node scripts/record-dashboard-action.mjs \
 - [[research-review]] — gates the report's `review_status`
 - [[research-revise]] — folds review findings back in
 - [[research-update]] — delta-driven rewrite when new materials / milestones land
-- [[meta-research-project]] — the legacy alias that delegates here
 - [[meta-scaffold-project-plan]] — consumes `recommended_changes` from `status: approved` reports
 - [[dev-write-change]] — change-tier analog (PLAN phase mirrors this skill's research-then-compose pattern)

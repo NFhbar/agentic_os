@@ -72,7 +72,6 @@ Direct invocation (`/dev-pr-review`, `/meta-dashboard`) is a power-user escape h
 | `status report`, `weekly update`, `report`                                                 | `meta-status-report`                |
 | `audit`, `check`, `lint os`, `health`                                                      | `meta-audit`                        |
 | `vault search`, `search wiki`, `find entry`, `list archetypes`                             | `meta-vault-query`                  |
-| `research project (legacy)`                                                                | `meta-research-project`             |
 | `research write`, `write research`, `author research report`                               | `research-write`                    |
 | `research review`, `review research`, `peer review research`                               | `research-review`                   |
 | `research revise`, `apply research review findings`, `fold review into research`           | `research-revise`                   |

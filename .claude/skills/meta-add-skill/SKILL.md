@@ -78,6 +78,8 @@ Create a new Claude Code skill at `.claude/skills/<name>/SKILL.md` from `_templa
 
    - **If the skill is not user-invocable** (rare; e.g. internal helper skills): skip this step entirely. The audit's router check only fires on `user-invocable: true` skills.
 
+8b. **Regenerate the skill-id constants module**: `node scripts/generate-skill-ids.mjs` — keeps `domains/meta/app/server/lib/skill-ids.ts` in sync so app code can reference the new skill as `SKILL.<NAME>` instead of a raw string literal. The audit's `skill-ids-module-stale` check ERRORs until this runs.
+
 9. Validate by running the audit against just this skill. Quick check via the scoped flag:
 
    ```bash

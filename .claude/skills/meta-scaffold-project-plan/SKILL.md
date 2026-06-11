@@ -91,7 +91,7 @@ For each selected item, dispatch according to `kind`. Capture per-item outcomes 
    - `name`: from `payload.name`
    - `title`: from `payload.title`
    - `domain`: from `project.domain`
-   - `repo`: `project.repos[0]` for v1. If the plan ever carries a per-step `repo:` field in a future revision, that field takes precedence. (Multi-repo composition is an explicit v2 concern documented in [[meta-research-project]] § Out-of-scope notes.)
+   - `repo`: `project.repos[0]` for v1. If the plan ever carries a per-step `repo:` field in a future revision, that field takes precedence. (Multi-repo composition is an explicit v2 concern — see the plan template’s Out-of-scope notes.)
    - `type`: from `payload.type`
    - `size`: from `payload.size`
    - `description`: from `payload.why` (the "Why" line for the step)
@@ -213,7 +213,7 @@ When the run was a partial-failure (Step 6), the same audit event runs (with the
 
 - [[standard-project-workflow]] — full plan-lifecycle state machine
 - [[archetype-project]] — project archetype + `plan_status` enum
-- [[meta-research-project]] — produces the plan this skill materializes
+- [[research-write]] — produces the plan this skill materializes (formerly via the deleted `meta-research-project` alias)
 - [[meta-review-project-plan]] — the review gate that flips `plan_status: approved`
 - [[meta-revise-project-plan]] — the loop that re-runs when a revised plan needs re-review
 - [[dev-add-change]] — sub-scaffolder dispatched for each `change-*` item

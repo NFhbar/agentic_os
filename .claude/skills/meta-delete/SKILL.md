@@ -74,6 +74,8 @@ Permanently delete a skill, domain, or wiki entry. Recursively removes contents 
    - Trigger vault index rebuild: `node .claude/hooks/rebuild-vault-index.mjs`
    - (Optional, defer): grep `vault/wiki/` for `[[<old-id>]]` and surface count of dangling links
 
+4b. **Regenerate the skill-id constants module** (skill deletions only): `node scripts/generate-skill-ids.mjs`, then `node scripts/audit.mjs --skills` — `skill-ids-module-stale` ERRORs until regenerated, and `app-stale-skill-literal` lists any app-code site still naming the deleted skill.
+
 5. **Record the audit event** via the dual-write wrapper:
 
    ```bash

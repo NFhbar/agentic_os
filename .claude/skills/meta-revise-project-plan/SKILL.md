@@ -70,7 +70,7 @@ Then stop.
 
 The revised plan stays grounded in the same context the original research ingested. Re-read what's available:
 
-1. Re-walk the drop zone at `vault/raw/project-research/<project-id>/` using the same FIFO-by-mtime + chunked-PDF pattern documented in [[meta-research-project]] Step 3. Truncation rules from `material_limit` do NOT apply here — the revise pass reads what's on disk now, no cap (this skill is a refinement, not a fresh research pass).
+1. Re-walk the drop zone at `vault/raw/project-research/<project-id>/` using the same FIFO-by-mtime + chunked-PDF pattern documented in [[research-write]] § PDF handling. Truncation rules from `material_limit` do NOT apply here — the revise pass reads what's on disk now, no cap (this skill is a refinement, not a fresh research pass).
 2. Read the project entry body for current narrative (`## Why`, `## Approach`).
 3. Read the entity entries for each repo in `project.repos[]` to capture any convention drift since the original plan.
 
@@ -78,7 +78,7 @@ The revised plan stays grounded in the same context the original research ingest
 
 Produce a NEW plan that:
 
-1. Keeps the SAME structure as the [[meta-research-project]] template:
+1. Keeps the SAME structure as the original plan template (authored by [[research-write]], formerly the `meta-research-project` alias):
    - `# Plan — <project.title>` (header with bumped `**Revision:** <N+1>`)
    - `## Intent (from research prompt)`
    - `## Proposed changes`
@@ -165,7 +165,7 @@ If you need different semantics (e.g. throw out the plan and start fresh), use `
 
 - [[standard-project-workflow]] — full plan-lifecycle state machine
 - [[archetype-project]] — project archetype + plan-tracking fields
-- [[meta-research-project]] — produces the initial plan this skill revises
+- [[research-write]] — produces the initial plan this skill revises (formerly via the deleted `meta-research-project` alias)
 - [[meta-review-project-plan]] — produces the review this skill consumes
 - [[meta-scaffold-project-plan]] — terminal phase; only fires after the revised plan re-passes review (`plan_status: approved`)
 - [[dev-revise-plan]] — the change-side analogue; this skill mirrors its structural pattern

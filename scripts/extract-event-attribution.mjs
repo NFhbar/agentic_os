@@ -43,7 +43,6 @@ export const CHANGE_SCOPED_SKILLS = new Set([
 // so the project id is the *output* of the skill, not an input — same shape
 // as `dev-add-change`'s exclusion above.
 export const PROJECT_SCOPED_SKILLS = new Set([
-  'meta-research-project',
   'meta-review-project-plan',
   'meta-revise-project-plan',
   'meta-scaffold-project-plan',
