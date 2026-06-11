@@ -67,3 +67,11 @@ cat <<EOF
   Run \`/os brief\` for a fuller report.
 
 EOF
+
+# Keep session telemetry fresh: import new transcript usage into events.db
+# in the background (idempotent — dedupe is content-addressed). Without this
+# the Usage analytics only update when someone clicks Sync (3 days stale at
+# the time of the Fable review). Fire-and-forget: the brief prints instantly
+# and import output is discarded; chosen over a scheduled runbook because a
+# runbook would spawn a whole `claude -p` session to run one node script.
+(node scripts/import-session-usage.mjs --all >/dev/null 2>&1 &) || true

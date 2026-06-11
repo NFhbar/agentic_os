@@ -19,6 +19,7 @@
 //   node scripts/import-session-usage.mjs --all              # all sessions for this project
 //   node scripts/import-session-usage.mjs --dry-run          # show what would be inserted
 //   node scripts/import-session-usage.mjs --recompute-costs  # re-price existing session rows
+//   node scripts/import-session-usage.mjs --backfill-skills  # repair slash attribution on existing rows
 //
 // Idempotent: re-running on the same session inserts no new rows (dedupe_key
 // in events-db.mjs is content-addressed).
@@ -66,16 +67,29 @@ const SESSIONS_DIR = join(
 // it. One table, one math site now.)
 
 // Extract a skill name from a slash-command user message.
-//   "/os add change"          → "os"
-//   "/dev-write-change foo"   → "dev-write-change"
-//   "/help"                   → "help" (Claude Code builtin; still useful to track)
-//   "hello world"             → null (not a slash command)
-// We attribute to the literal slash-command's skill, not the dispatched skill.
-// Sub-attribution (router → dispatched) is captured via record-router-event.mjs
-// for OS-aware slash commands; for ad-hoc /<name> we just keep the surface name.
-function extractSlashSkill(text) {
+//
+// Claude Code stores slash invocations in transcripts as XML, e.g.:
+//   <command-message>os</command-message>
+//   <command-name>/os</command-name>
+//   <command-args>brief</command-args>
+// <command-name> is canonical (carries the leading slash). The bare "/name"
+// form is kept as a fallback for older transcripts. Until 2026-06-11 only
+// the bare form was matched, so every XML-form invocation — including all
+// `/os` router dispatches — imported as an anonymous interactive-turn
+// (Fable review Finding 2.1); `--backfill-skills` repairs those rows.
+//
+// We attribute to the literal slash-command's skill, not the dispatched
+// skill. Sub-attribution (router → dispatched) is captured via
+// record-router-event.mjs for OS-aware slash commands.
+export function extractSlashSkill(text) {
   if (!text) return null;
   const trimmed = text.trim();
+  const name = trimmed.match(/<command-name>\/?([a-z][a-z0-9-]*)/);
+  if (name) return name[1];
+  if (trimmed.startsWith('<command-message>')) {
+    const msg = trimmed.match(/^<command-message>([a-z][a-z0-9-]*)/);
+    if (msg) return msg[1];
+  }
   if (!trimmed.startsWith('/')) return null;
   // Must look like a slash command — short token after the slash
   const m = trimmed.match(/^\/([a-z][a-z0-9-]*)\b/);
@@ -227,12 +241,19 @@ function listSessions() {
 }
 
 function parseArgs(argv) {
-  const out = { dryRun: false, all: false, session: null, recomputeCosts: false };
+  const out = {
+    dryRun: false,
+    all: false,
+    session: null,
+    recomputeCosts: false,
+    backfillSkills: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dry-run') out.dryRun = true;
     else if (a === '--all') out.all = true;
     else if (a === '--recompute-costs') out.recomputeCosts = true;
+    else if (a === '--backfill-skills') out.backfillSkills = true;
     else if (a === '--session') {
       out.session = argv[++i];
     }
@@ -293,10 +314,50 @@ async function recomputeSessionCosts() {
   console.log(`  total session cost_usd: $${oldTotal.toFixed(2)} → $${newTotal.toFixed(2)}`);
 }
 
+// Repair skill attribution on already-imported rows whose user message was
+// the XML slash-command form the old matcher missed. The stored `prompt`
+// column carries the message (4096-char trim — the XML header is at the
+// front, so parsing it is safe). Also flips action → 'slash-command' so
+// per-action analytics stop counting these as freeform turns.
+async function backfillSlashAttribution() {
+  const { DatabaseSync } = await import('node:sqlite');
+  const dbPath = join(REPO_ROOT, '.claude', 'state', 'events.db');
+  if (!existsSync(dbPath)) {
+    console.error(`events.db not found at ${dbPath}`);
+    process.exit(1);
+  }
+  const db = new DatabaseSync(dbPath);
+  const rows = db
+    .prepare(
+      "SELECT id, prompt FROM events WHERE kind='session' AND skill IS NULL AND prompt LIKE '<command-%'",
+    )
+    .all();
+  const update = db.prepare("UPDATE events SET skill = ?, action = 'slash-command' WHERE id = ?");
+  let updated = 0;
+  let unparsed = 0;
+  for (const r of rows) {
+    const skill = extractSlashSkill(r.prompt ?? '');
+    if (!skill) {
+      unparsed++;
+      continue;
+    }
+    update.run(skill, r.id);
+    updated++;
+  }
+  db.close();
+  console.log(
+    `backfilled slash attribution — candidates=${rows.length} updated=${updated} unparsed=${unparsed}`,
+  );
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.recomputeCosts) {
     await recomputeSessionCosts();
+    return;
+  }
+  if (args.backfillSkills) {
+    await backfillSlashAttribution();
     return;
   }
   let sessions;
