@@ -30,12 +30,13 @@ A captured choice with context, alternatives considered, and rationale. The poin
 
 ## Optional frontmatter
 
-| field                           | type   | notes                                                                                                                                                                                                                                                                                                                                                                                       |
-| ------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `implements_tuning_suggestions` | array  | optional; list of `{audit_id, suggestion_index}` pairs naming lifecycle-audit `tuning_suggestions[]` entries this decision authorizes acting on. Used by [[meta-apply-tuning-suggestion]] as the gate for `apply` mode — skill changes are not auto-applied from suggestion text alone, they require a decision entry citing the suggestion explicitly. See Phase 4 of the Overseer arc.    |
-| `target_metric`                 | object | optional; declares what observable signal this decision expects to move once applied. Filled in at acceptance time. The mechanism that closes the Overseer loop: after a skill change ships, qualifying audits measure whether the named metric tracked toward `target`. See "Validation" below for shape + lifecycle.                                                                      |
-| `validation_result`             | enum   | optional; `pending` (default after acceptance — not enough qualifying audits yet), `validated` (post-acceptance audits confirm the metric moved as expected), `regressed` (no movement or wrong direction), `inconclusive` (signal ambiguous, manual judgment). Orthogonal to `status` — `status: accepted, validation_result: regressed` means "still in code, but evidence says revisit." |
-| `validation_observations`       | array  | optional; running log of qualifying post-acceptance audits and their observed metric values, appended as audits accumulate. Each entry: `{audit_id, observed_at, qualifies, metric_value, notes}`. Append-only audit trail behind the `validation_result` verdict.                                                                                                                          |
+| field                           | type   | notes                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `implements_tuning_suggestions` | array  | optional; list of `{audit_id, suggestion_index}` pairs naming lifecycle-audit `tuning_suggestions[]` entries this decision authorizes acting on. Used by [[meta-apply-tuning-suggestion]] as the gate for `apply` mode — skill changes are not auto-applied from suggestion text alone, they require a decision entry citing the suggestion explicitly. See Phase 4 of the Overseer arc.                                                                            |
+| `target_metric`                 | object | optional; declares what observable signal this decision expects to move once applied. Filled in at acceptance time. The mechanism that closes the Overseer loop: after a skill change ships, qualifying audits measure whether the named metric tracked toward `target`. See "Validation" below for shape + lifecycle.                                                                                                                                              |
+| `validation_result`             | enum   | optional; `pending` (window still open), `validated` (post-apply evidence confirms the metric moved as expected), `regressed` (no movement or wrong direction), `inconclusive` (window closed without enough evidence — insufficient exposure, no qualifying audits, or no declared metric). Orthogonal to `status` — `status: accepted, validation_result: regressed` means "still in code, but evidence says revisit." Nothing stays `pending` past window close. |
+| `validation_observations`       | array  | optional; append-only log behind the verdict, single-line JSON. Audit observations: `{audit_id, observed_at, qualifies, metric_value, notes}`. Sweep exposure/closing entries use `audit_id: null` and add `runs_so_far` (+ `window_closed: true` on the closing entry).                                                                                                                                                                                            |
+| `validation_window`             | object | optional; single-line JSON `{"days": N, "min_qualifying_runs": M}` — the validation window in WALL TIME + exposure, not audit counts. Default `{"days": 5, "min_qualifying_runs": 5}`. Opens at `applied_at`; see § Lifecycle for close rules.                                                                                                                                                                                                                      |
 
 ## Validation
 
@@ -74,6 +75,14 @@ target_metric:
   window_audits: 5
 ```
 
+> **Denomination note (2026-06-11).** The `window_audits` field in the
+> shapes above is the original audit-count denomination. It proved
+> arithmetically unreachable — thresholds of 5–8 qualifying audits against
+> a production rate of ~1 audit/week meant every decision sat `pending`
+> forever (Fable review, Finding 3.1). Windows are now denominated in
+> **wall time + qualifying runs** via `validation_window`; `window_audits`
+> is ignored by the sweep and kept only for historical readability.
+
 ### Qualifying audits
 
 An audit _qualifies_ for a decision's validation when:
@@ -85,26 +94,31 @@ An audit _qualifies_ for a decision's validation when:
 ### Lifecycle
 
 ```
-proposed → accepted → (apply runs, skill ships)
-                         ↓
-                       validation_result: pending
-                         ↓
-                       qualifying audits accumulate
-                         ↓
-              ┌──────────┴──────────┐
-              ↓                     ↓
-        validated              regressed
-              ↓                     ↓
-        (keep)                (deprecate or supersede)
+proposed → accepted → (apply runs, skill ships) → validation_result: pending
+                                                    window opens at applied_at
+                                                            ↓
+                              evidence accumulates: qualifying audits (strong)
+                              + qualifying runs (exposure — any dispatched
+                              events.db run of the target skill post-apply)
+                                                            ↓
+                  window closes at applied_at + days (or EARLY when ≥1
+                  qualifying audit exists, runs ≥ min, and the metric is
+                  unambiguous)
+                                                            ↓
+                       ┌────────────────┼────────────────────┐
+                       ↓                ↓                    ↓
+                  validated         regressed          inconclusive
+                  (metric at/      (metric at/         (no audits, or
+                  toward target    beyond baseline     runs < min — the
+                  in qualifying    in qualifying       loop SAYS SO instead
+                  audits)          audits)             of pending forever)
 ```
 
-`status` stays `accepted` throughout — until you decide to deprecate/supersede in response to a regression.
+`status` stays `accepted` throughout — until you decide to deprecate/supersede in response to a regression. An `inconclusive` close is a real signal: either the skill isn't running enough to validate the tuning (re-arm the window or accept), or it ran plenty but produced no qualifying audits (consider a manual overseer audit).
 
 ### Who validates
 
-For v1 (light): the human reads the audits post-acceptance and updates `validation_result` + appends to `validation_observations[]` manually. The structured shape makes this trackable; the dashboard surfaces the count of qualifying audits per decision so you know when the window is satisfied.
-
-A future `meta-validate-decision` skill can automate the count + the verdict by reading audits + the decision's `target_metric` + applying the comparison. Deferred until enough decisions are in flight to make automation worthwhile.
+`meta-audit-followups` (the daily Phase-3 sweep, scheduled via `runbook-daily-audit-followups`) evaluates every `validation_result: pending` decision on each run: it appends exposure observations while the window is open and flips the result when it closes, per the rules above. Manual edits remain a legitimate override — the sweep never reverses a human-set terminal value.
 
 ## When to use
 

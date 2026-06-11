@@ -40,6 +40,12 @@ export const RUNS_EXPECTED_COLUMNS = [
   'tokens_cache_hit',
   'tokens_cache_write',
   'model',
+  // Set when post-terminal side-effects (events.db row, automation hooks)
+  // have fired for this run. Row finalization and hook firing are split:
+  // the supervisor (scheduler tick) can finalize a row while the server is
+  // down; the server fires hooks idempotently for any terminal row where
+  // this is NULL. Prevents both double-firing and parked-forever automation.
+  'hooks_fired_at',
 ];
 
 const CREATE_TABLE = `
@@ -87,6 +93,7 @@ const COLUMN_MIGRATIONS = [
   { col: 'tokens_cache_hit', sql: 'ALTER TABLE runs ADD COLUMN tokens_cache_hit INTEGER' },
   { col: 'tokens_cache_write', sql: 'ALTER TABLE runs ADD COLUMN tokens_cache_write INTEGER' },
   { col: 'model', sql: 'ALTER TABLE runs ADD COLUMN model TEXT' },
+  { col: 'hooks_fired_at', sql: 'ALTER TABLE runs ADD COLUMN hooks_fired_at TEXT' },
 ];
 
 export function initRunsTable(db) {
@@ -98,6 +105,16 @@ export function initRunsTable(db) {
   );
   for (const m of COLUMN_MIGRATIONS) {
     if (!existing.has(m.col)) db.exec(m.sql);
+  }
+  // One-time backfill, only on the migration that introduces hooks_fired_at:
+  // pre-migration terminal rows already had their events + automation hooks
+  // fired by the in-process close handler — stamp them so the server's
+  // unhooked-runs poll doesn't re-fire history.
+  if (!existing.has('hooks_fired_at')) {
+    db.exec(
+      `UPDATE runs SET hooks_fired_at = COALESCE(ended_at, started_at)
+        WHERE state NOT IN ('queued','running') AND hooks_fired_at IS NULL`,
+    );
   }
   return db;
 }

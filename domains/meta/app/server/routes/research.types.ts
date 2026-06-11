@@ -31,7 +31,28 @@ export interface RecommendedChangeRef {
 // surface missed cases at compile time; the runtime test catches values that
 // land in actual entries but aren't here yet.
 export type ResearchReportStatus = 'draft' | 'reviewed' | 'approved' | 'updated';
-export type ResearchReviewStatus = 'pending' | 'approved' | 'request-changes' | 'rejected';
+// The shared review-state enum (see standard-review-state) — identical for
+// research-reports, change plans, and project plans. This union previously
+// omitted 'overridden' / 'not-required' even though meta-mark-research-
+// approved writes the former and the archetype documents both.
+export type ResearchReviewStatus =
+  | 'pending'
+  | 'approved'
+  | 'request-changes'
+  | 'rejected'
+  | 'overridden'
+  | 'not-required';
+
+// Server-computed stepper statuses (derived in lib/lifecycle-state.ts —
+// clients render, never re-derive; Finding 4.3).
+export type ReportStepStatus = 'done' | 'current' | 'pending';
+
+export interface ReportStepStatuses {
+  drafted: ReportStepStatus;
+  reviewed: ReportStepStatus;
+  approved: ReportStepStatus;
+  updated: ReportStepStatus;
+}
 
 export interface ResearchReportSummary {
   id: string;
@@ -40,6 +61,7 @@ export interface ResearchReportSummary {
   project: string | null;
   status: ResearchReportStatus | null;
   review_status: ResearchReviewStatus | null;
+  step_statuses: ReportStepStatuses;
   review_required: boolean;
   review_path: string | null;
   reviewed_at: string | null;

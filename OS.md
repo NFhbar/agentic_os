@@ -72,7 +72,6 @@ Direct invocation (`/dev-pr-review`, `/meta-dashboard`) is a power-user escape h
 | `status report`, `weekly update`, `report`                                                 | `meta-status-report`                |
 | `audit`, `check`, `lint os`, `health`                                                      | `meta-audit`                        |
 | `vault search`, `search wiki`, `find entry`, `list archetypes`                             | `meta-vault-query`                  |
-| `research project (legacy)`                                                                | `meta-research-project`             |
 | `research write`, `write research`, `author research report`                               | `research-write`                    |
 | `research review`, `review research`, `peer review research`                               | `research-review`                   |
 | `research revise`, `apply research review findings`, `fold review into research`           | `research-revise`                   |
@@ -84,7 +83,9 @@ Direct invocation (`/dev-pr-review`, `/meta-dashboard`) is a power-user escape h
 | `register skill in router`, `add skill to router vocab`, `router vocab coverage`           | `meta-add-skill-to-router-vocab`    |
 | `audit lifecycle`, `overseer review`, `audit change`, `lifecycle audit`                    | `meta-overseer-review`              |
 | `audit followups`, `update audit signals`, `sweep audits`, `forward-look audits`           | `meta-audit-followups`              |
+| `mine sessions`, `automation candidates`, `session mining`, `mine transcripts`             | `meta-mine-sessions`                |
 | `apply tuning suggestion`, `propose skill edit`, `materialize tuning suggestion`           | `meta-apply-tuning-suggestion`      |
+| `eval skill edit`, `replay eval`, `eval tuning proposal`, `skill edit regression check`    | `meta-eval-skill-edit`              |
 | `scaffold research recommendations`, `scaffold research changes`, `materialize research`   | `research-scaffold-recommendations` |
 | `review project plan`, `review plan`, `peer review project plan`                           | `meta-review-project-plan`          |
 | `revise project plan`, `apply project review findings`, `fold review into project plan`    | `meta-revise-project-plan`          |
@@ -93,7 +94,7 @@ Direct invocation (`/dev-pr-review`, `/meta-dashboard`) is a power-user escape h
 | `ingest repo`, `add repo`, `ingest <url>`                                                  | `dev-ingest-repo`                   |
 | `add change`, `new change`, `change this`                                                  | `dev-add-change`                    |
 | `write change`, `execute change`, `implement change`                                       | `dev-write-change`                  |
-| `review change`, `review plan`, `peer review`                                              | `dev-review-change`                 |
+| `review change`, `review change plan`, `peer review`                                       | `dev-review-change`                 |
 | `revise plan`, `apply review findings`, `address nits`, `fold review into plan`            | `dev-revise-plan`                   |
 | `open pr`, `push pr`, `create pr`, `publish change`                                        | `dev-open-pr`                       |
 | `cache repo`, `pull repo for review`, `refresh review cache`                               | `dev-cache-pr-review-repo`          |

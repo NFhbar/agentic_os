@@ -46,8 +46,18 @@ function ensureRunsDir() {
   mkdirSync(RUNS_DIR, { recursive: true });
 }
 
+// Raw journal — the child's stdout (stream-json) is redirected straight to
+// this file at spawn time, so it stays complete even if the server dies.
+// Readers parse raw lines on read. Legacy runs used `<id>.jsonl` with
+// pre-parsed {kind,...} frames; per-line format detection keeps them
+// renderable.
 export function outputPathFor(runId) {
-  return join(RUNS_DIR, `${runId}.jsonl`);
+  return join(RUNS_DIR, `${runId}.raw.jsonl`);
+}
+
+// The child's stderr, also file-redirected at spawn.
+export function stderrPathFor(outputPath) {
+  return outputPath.replace(/\.raw\.jsonl$|\.jsonl$/, '.stderr.log');
 }
 
 function getStream(runId, outputPath) {
@@ -124,6 +134,73 @@ export function markRunning(id, pid) {
     try {
       process.stderr.write(`markRunning error: ${e.message}\n`);
     } catch {}
+  }
+}
+
+// Record a user cancel request on a still-running row. The finalizer maps
+// a death whose error starts with 'cancelled' to state='cancelled' — needed
+// for detached children cancelled after a server restart (no in-memory
+// session flag to consult).
+export function markCancelRequested(id) {
+  try {
+    getDb()
+      .prepare(`UPDATE runs SET error='cancelled by user' WHERE id=@id AND state='running'`)
+      .run({ id });
+  } catch (e) {
+    try {
+      process.stderr.write(`markCancelRequested error: ${e.message}\n`);
+    } catch {}
+  }
+}
+
+// Persist an in-flight error annotation (e.g. the supervisor's wall-cap
+// SIGTERM marker) without finalizing the row.
+export function setRunError(id, error) {
+  try {
+    getDb().prepare(`UPDATE runs SET error=@error WHERE id=@id`).run({ id, error });
+  } catch (e) {
+    try {
+      process.stderr.write(`setRunError error: ${e.message}\n`);
+    } catch {}
+  }
+}
+
+export function setHooksFired(id, ts = new Date().toISOString()) {
+  try {
+    getDb().prepare(`UPDATE runs SET hooks_fired_at=@ts WHERE id=@id`).run({ id, ts });
+  } catch (e) {
+    try {
+      process.stderr.write(`setHooksFired error: ${e.message}\n`);
+    } catch {}
+  }
+}
+
+// Terminal rows whose post-terminal side-effects haven't fired yet — the
+// server's idempotent hook poll consumes this (see routes/runs.ts
+// processUnhookedRuns).
+export function listUnhookedTerminalRuns(limit = 50) {
+  try {
+    return getDb()
+      .prepare(
+        `SELECT * FROM runs
+          WHERE state IN ('done','failed','cancelled','died-after-writeback')
+            AND hooks_fired_at IS NULL
+          ORDER BY started_at ASC
+          LIMIT ?`,
+      )
+      .all(limit);
+  } catch {
+    return [];
+  }
+}
+
+export function listActiveRuns() {
+  try {
+    return getDb()
+      .prepare(`SELECT * FROM runs WHERE state IN ('queued','running')`)
+      .all();
+  } catch {
+    return [];
   }
 }
 
@@ -351,72 +428,23 @@ export function evictBeyondCap(cap = 200) {
   }
 }
 
-/** Best-effort unlink for evicted JSONL files. */
+/** Best-effort unlink for evicted journal files (raw + stderr sibling). */
 export function unlinkOutput(outputPath) {
   try {
     unlinkSync(outputPath);
   } catch {
     /* ENOENT or permission issue — best-effort */
   }
-}
-
-/**
- * Mark any runs in state='running' whose pid is no longer alive as failed.
- * Called on server boot — handles the "server restarted mid-run" case so
- * stale rows don't linger.
- */
-// Sweep runs stuck in `state: running` whose child process is no longer
-// alive. Called on server boot (reason: 'server restart' — every running row
-// is orphaned because the prior process is gone, including queued rows that
-// never spawned a child) AND from a periodic interval (reason describes the
-// in-flight orphan pattern — child died without firing close handler).
-//
-// `mode` controls how queued-without-PID rows are treated:
-//   - 'boot' — sweep them (default; matches prior behavior).
-//   - 'periodic' — leave them (a queued row mid-spawn has no PID for a few
-//     ms; killing it would race with the legitimate spawn that's about to
-//     land). Periodic sweep only acts on rows with PID set + PID dead.
-//
-// `reason` is written into the run row's `error` column so post-mortem
-// debugging can distinguish boot orphans from periodic ones.
-export function sweepOrphanedRuns(reason = 'server restart', mode = 'boot') {
   try {
-    const rows = getDb()
-      .prepare(`SELECT id, pid, started_at FROM runs WHERE state='running'`)
-      .all();
-    let swept = 0;
-    for (const r of rows) {
-      let alive = false;
-      if (r.pid) {
-        try {
-          process.kill(r.pid, 0);
-          alive = true;
-        } catch {
-          alive = false;
-        }
-      }
-      if (mode === 'periodic' && !r.pid) {
-        // Queued / mid-spawn — leave for next sweep.
-        continue;
-      }
-      if (!alive) {
-        const startedMs = r.started_at ? new Date(r.started_at).getTime() : null;
-        const durationMs =
-          startedMs && Number.isFinite(startedMs) ? Date.now() - startedMs : null;
-        finishRun(r.id, {
-          state: 'failed',
-          exit_status: null,
-          duration_ms: durationMs,
-          error: reason,
-        });
-        swept += 1;
-      }
-    }
-    return swept;
-  } catch (e) {
-    try {
-      process.stderr.write(`sweepOrphanedRuns error: ${e.message}\n`);
-    } catch {}
-    return 0;
+    unlinkSync(stderrPathFor(outputPath));
+  } catch {
+    /* no stderr file — best-effort */
   }
 }
+
+// Dead-run sweeping moved to scripts/runs-supervisor.mjs (sweepDeadRuns),
+// which finalizes via runs-finalize.mjs instead of blanket-failing: it
+// extracts the result event from the raw journal when present, and
+// distinguishes died-after-writeback from genuine failures via linked-entity
+// artifact verification. Both the server (boot + periodic) and the
+// scheduler tick call the same implementation.

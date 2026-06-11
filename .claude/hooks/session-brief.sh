@@ -57,13 +57,35 @@ if [ -s "$dlog" ]; then
   fi
 fi
 
+# CC contract status — written by the background check below on a prior
+# session. A failed status means a Claude Code update drifted a surface the
+# OS depends on (flags / stream-json fields / transcript format).
+cc_warn=""
+if [ -s ".claude/state/cc-contract-status.json" ] && grep -q '"ok":false' ".claude/state/cc-contract-status.json"; then
+  cc_warn="  ⚠ CC contract drift detected — run: node scripts/check-cc-contract.mjs
+"
+fi
+
 cat <<EOF
 
 📋 Agentic OS — session brief
   • ${pending} raw item(s) awaiting curation (oldest: ${oldest_age})
   • Router miss rate (last 100): ${miss_rate}
   • Dashboard last opened: ${dashboard_last}
-
+${cc_warn}
   Run \`/os brief\` for a fuller report.
 
 EOF
+
+# Keep session telemetry fresh: import new transcript usage into events.db
+# in the background (idempotent — dedupe is content-addressed). Without this
+# the Usage analytics only update when someone clicks Sync (3 days stale at
+# the time of the Fable review). Fire-and-forget: the brief prints instantly
+# and import output is discarded; chosen over a scheduled runbook because a
+# runbook would spawn a whole `claude -p` session to run one node script.
+(node scripts/import-session-usage.mjs --all >/dev/null 2>&1 &) || true
+
+# Refresh the CC contract status in the background (fixture + flags tiers;
+# the paid live probe is manual-only). The NEXT session's brief surfaces a
+# WARN if this finds drift — one-session lag by design, keeps the hook fast.
+(node scripts/check-cc-contract.mjs --no-live --status-file .claude/state/cc-contract-status.json >/dev/null 2>&1 &) || true

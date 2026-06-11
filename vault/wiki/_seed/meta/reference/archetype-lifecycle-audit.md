@@ -65,7 +65,7 @@ The `provisional → final` transition is a deliberate human action OR an automa
 | `scores`             | object  | Per-dimension aggregate scores. See "Scores" below.                                                                                                                                                                         |
 | `per_skill_findings` | array   | One entry per skill that ran in the lifecycle. See "Per-skill findings" below.                                                                                                                                              |
 | `audit_tags`         | array   | Categorical pattern tags from the canonical vocabulary. See "Tag vocabulary" below. (Named `audit_tags` rather than `tags` to avoid clashing with the wiki-standard `tags` field that classifies entries for vault search.) |
-| `tuning_suggestions` | array   | Concrete recommendations for skill SKILL.md changes. See "Tuning suggestions" below.                                                                                                                                        |
+| `tuning_suggestions` | array   | Concrete recommendations for tuning targets — SKILL.md edits by default; orchestrator/route/script surfaces via `target_kind`. See "Tuning suggestions" below.                                                              |
 | `red_flags`          | array   | Free-form prose for things that surprised the Overseer (don't fit a tag). Aggregable as text.                                                                                                                               |
 | `files_touched`      | array   | Files modified by the audited change (for Phase 3 forward-link analysis). Derived from the change's plan + execute artifacts.                                                                                               |
 | `followup_signals`   | array   | (Phase 3) Forward-look entries appended when later changes touch the same files. See "Followup signals" below.                                                                                                              |
@@ -137,7 +137,7 @@ Tags are append-only across an audit's lifetime — adding tags via human overri
 
 ## Per-skill findings
 
-The `per_skill_findings` array contains one entry per skill that ran in the audited lifecycle. Skills that produced no output (no-op runs) are still listed with their scores.
+The `per_skill_findings` array contains one entry per skill that ran in the audited lifecycle. The skill universe is open — any skill observed in the lifecycle's events.db rows or attested by artifacts gets scored, `meta-*` / `research-*` / the `os` router included, not just the dev change-lifecycle skills. Skills that produced no output (no-op runs) are still listed with their scores.
 
 ```yaml
 per_skill_findings:
@@ -192,7 +192,7 @@ The threshold values are deliberate but adjustable in future rubric versions. Tr
 
 ## Tuning suggestions
 
-The `tuning_suggestions` array contains concrete, actionable recommendations for skill SKILL.md changes. Each suggestion is the Overseer's hypothesis about a skill improvement; aggregated across audits, recurring suggestions become candidate skill-tuning work.
+The `tuning_suggestions` array contains concrete, actionable recommendations for tuning targets. Each suggestion is the Overseer's hypothesis about an improvement; aggregated across audits, recurring suggestions become candidate tuning work.
 
 ```yaml
 tuning_suggestions:
@@ -210,7 +210,22 @@ tuning_suggestions:
     target_change: |
       Insert under "## Focus areas — code review" in dev-pr-review SKILL.md,
       between the existing logic + security bullets.
+  - skill: automation-orchestrator    # canonical id from scripts/tuning-targets.mjs
+    target_kind: orchestrator         # skill (default) | orchestrator | route | script
+    suggestion: |
+      Gate phase advancement on commit progression: the orchestrator
+      advanced execute → pr-open while the branch had zero new commits,
+      burning a full dispatch on a no-op.
+    confidence: high
+    evidence_summary: |
+      Events show pr-open dispatched 4 minutes after execute completed with
+      no commits between the two on the change branch.
+    target_change: |
+      advanceState() in automation-state-machine.ts — add a commit-count
+      precondition before the execute → pr-open transition.
 ```
+
+`target_kind` routes non-skill suggestions: `skill` (the default when the field is absent — all pre-`target_kind` audits read this way) targets a `.claude/skills/<name>/SKILL.md`; `orchestrator`, `route`, and `script` target repo surfaces resolved through the path map in `scripts/tuning-targets.mjs`. For non-skill kinds the `skill` field MUST carry a canonical map id (run `node scripts/tuning-targets.mjs` to list) — free-prose target names are what made Finding 3.2's orchestrator suggestion unroutable. [[meta-apply-tuning-suggestion]] proposes a SKILL.md diff for skill targets; for non-skill targets it scaffolds a change via [[dev-add-change]] so the implementation flows through the change lifecycle.
 
 `confidence` tells aggregation surfaces how to weight the suggestion. Low-confidence suggestions need more corroborating audits before triggering a real skill change.
 

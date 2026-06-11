@@ -129,6 +129,12 @@ Flat, AND-of-clauses, whitespace-separated. Each clause matches one manifest ent
 
 The value `null` in an OR-list also matches empty/missing — useful for things like `ci_state=null|running` (either "never polled" or "still running").
 
+**OR-groups:** `||` separates whole clause-groups — an entry matches when it satisfies ANY group, and the match count is the size of the union. Added for `runbook-daily-audit-followups`, which fires when provisional audits OR pending decision validations exist:
+
+```yaml
+precondition_query: 'type=lifecycle-audit audit_status=provisional || type=decision validation_result=pending'
+```
+
 The manifest lives at `vault/.index/manifest.json` and is built by `.claude/hooks/rebuild-vault-index.mjs` on every wiki write. Available fields are the ones explicitly extracted by the rebuilder — `type`, `domain`, `status`, `pr_url`, `ci_state`, `review_status`, `project`, `repo`, `parent_change`, etc. Plain frontmatter fields not surfaced into the manifest can't be queried; if you need one, extend the rebuilder.
 
 ### Edge cases

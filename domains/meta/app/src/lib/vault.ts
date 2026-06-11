@@ -28,8 +28,28 @@ export interface Manifest {
   entries: ManifestEntry[];
 }
 
-export async function fetchManifest(): Promise<Manifest> {
-  return getJson<Manifest>('/api/vault/index');
+// Module-level cache for the manifest. Set on first fetch; clients call
+// fetchManifest(true) to force a refresh (post-edit, post-rename, etc.).
+let _manifestCache: Promise<Manifest> | null = null;
+
+export function fetchManifest(force = false): Promise<Manifest> {
+  if (force || !_manifestCache) {
+    _manifestCache = getJson<Manifest>('/api/vault/index');
+  }
+  return _manifestCache;
+}
+
+// Returns id → type map. Used by EditableMarkdown's wikilink resolver so
+// wikilinks can route polymorphically to the type-appropriate app (changes,
+// pr-review) rather than always landing in the Vault generic entry view.
+// Closes #449. Shares the same manifest cache as the Vault app.
+export async function fetchEntryTypes(): Promise<Map<string, string>> {
+  const m = await fetchManifest();
+  const out = new Map<string, string>();
+  for (const e of m.entries) {
+    if (e.id && e.type) out.set(e.id, e.type);
+  }
+  return out;
 }
 
 export interface EntryResponse {

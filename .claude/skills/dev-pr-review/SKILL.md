@@ -106,11 +106,12 @@ The review is a **single-model, single-call** review: one prompt that asks the m
    - Else, set `repo: '<owner>/<repo>'` (raw string, no entity link). The audit will surface this as a "repo not ingested" suggestion.
 
 7. **Load config** from `vault/wiki/development/reference/reference-pr-review-config.md`. Parse frontmatter; capture:
-   - `primary_model`
    - `comment_style`
    - `focus_areas` (list)
    - `context_strategy` (v1: must be `full-diff`; reject anything else with a "not yet supported in v1" message)
    - `custom_instructions` (string; may be empty)
+
+   **Note**: `primary_model` is NOT read from config. The model running this skill is whichever model the dispatcher resolved from Settings → Model (project default + per-skill override). Capture it from your own runtime context — your system prompt declares "The exact model ID is `<id>`" — and write that into the entry's `config.primary_model` field at step 12. Same convention as `dev-analyze-repo-for-review`'s `analyzer_model`. Don't infer the model id from the config file — it's not authoritative there.
 
    Compute `custom_instructions_hash`: if empty/null → `null`. Else `sha256(custom_instructions)`, first 12 hex chars. Implementation:
 
@@ -290,7 +291,7 @@ The review is a **single-model, single-call** review: one prompt that asks the m
     deletions: <deletions>
     commits: <commits>
     config:
-      primary_model: <model>
+      primary_model: <model id from your runtime context — see step 7 note>
       comment_style: <style>
       focus_areas: <list>
       context_strategy: full-diff

@@ -1,9 +1,12 @@
-// Frontmatter parser. Uses js-yaml so nested objects (like skill `inputs:`
-// schemas) parse correctly. The simpler .mjs parser at
-// .claude/hooks/rebuild-vault-index.mjs only needs flat key-values for
-// wiki entries; this one needs the full YAML grammar for skill frontmatter.
+// Frontmatter parser — thin TS facade over the shared runtime parser at
+// scripts/frontmatter.mjs (real YAML via js-yaml CORE_SCHEMA, the single
+// implementation every subsystem uses since the parser consolidation).
+// CORE_SCHEMA means timestamps stay STRINGS — the DEFAULT_SCHEMA Date
+// coercion that bit /api/decisions in 0.3.0 can't recur; routes'
+// asIsoString() helpers accept both shapes regardless.
 
-import yaml from 'js-yaml';
+// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
+import { parseFrontmatter as sharedParseFrontmatter } from '../../../../scripts/frontmatter.mjs';
 
 // biome-ignore lint/suspicious/noExplicitAny: frontmatter shape is arbitrary YAML
 export type FmValue = any;
@@ -19,16 +22,12 @@ export interface ParseResult {
 }
 
 export function parseFrontmatter(content: string): ParseResult {
-  const m = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-  if (!m) return { fm: {}, body: content, parseError: null };
-
-  try {
-    const parsed = yaml.load(m[1]) as Frontmatter | null;
-    return { fm: parsed ?? {}, body: m[2], parseError: null };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return { fm: {}, body: m[2], parseError: msg };
-  }
+  const r = sharedParseFrontmatter(content) as {
+    fm: Frontmatter;
+    body: string;
+    parseError: string | null;
+  };
+  return { fm: r.fm, body: r.body, parseError: r.parseError };
 }
 
 // Input schema as declared in skill frontmatter (under `inputs:`).

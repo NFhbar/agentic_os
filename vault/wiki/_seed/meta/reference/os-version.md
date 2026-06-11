@@ -3,7 +3,7 @@ id: os-version
 type: reference
 domain: meta
 created: 2026-06-03T18:00:00Z
-updated: 2026-06-09T15:30:00Z
+updated: 2026-06-09T16:30:00Z
 tags: [version, distribution, compatibility]
 source: seed
 private: false
@@ -11,14 +11,14 @@ title: OS version — canonical version marker for compatibility tracking
 url: internal://reference/os-version
 kind: reference
 last_verified: 2026-06-09
-version: 0.4.1
+version: 0.4.2
 ---
 
 # OS version
 
 This entry is the **single source of truth for what version of the Agentic OS is shipping**. The `version:` field in the frontmatter is the canonical value; everything else in the file describes how versioning works.
 
-Current version: **0.4.1** (Observability + dispatch consistency).
+Current version: **0.4.2** (Dismissal-id drift + approved research surface).
 
 ## Versioning policy
 

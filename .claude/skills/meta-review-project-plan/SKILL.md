@@ -1,6 +1,6 @@
 ---
 name: meta-review-project-plan
-description: 'Peer-review a project plan produced by meta-research-project. Read-only: walks the plan + cited repos + project body, produces a structured verdict (approve | request-changes | reject) with concerns. Writes review to vault/output/<domain>/project-plans/.'
+description: 'Peer-review a project plan produced by research-write (formerly the meta-research-project alias). Read-only: walks the plan + cited repos + project body, produces a structured verdict (approve | request-changes | reject) with concerns. Writes review to vault/output/<domain>/project-plans/.'
 user-invocable: true
 recommended_effort: xhigh
 version: 1
@@ -17,7 +17,7 @@ outputs:
     path: vault/output/{{input.domain}}/project-plans/{{input.project}}-plan-review.md
   - kind: frontmatter
     path: vault/wiki/{{input.domain}}/project/{{input.project}}.md
-    fields: [plan_review_path, plan_reviewed_at, plan_status, updated]
+    fields: [review_path, reviewed_at, review_status, updated]
 spawns: []
 ---
 
@@ -25,7 +25,7 @@ spawns: []
 
 ## Purpose
 
-Act as a peer reviewer for a project plan produced by [[meta-research-project]]. Read the plan, the project body, and the repo state for any repo cited in the plan — then produce a structured verdict (approve / request-changes / reject) with specific concerns.
+Act as a peer reviewer for a project plan produced by [[research-write]]. Read the plan, the project body, and the repo state for any repo cited in the plan — then produce a structured verdict (approve / request-changes / reject) with specific concerns.
 
 **Read-only operation.** This skill MUST NOT edit code, MUST NOT create branches, MUST NOT run tests, MUST NOT mutate the plan file. It reads + writes one artifact (the review document) + updates a small set of frontmatter fields on the project entry. Nothing else. Same separation principle as [[dev-review-change]] — the writer skills (research, revise, scaffold) CAN mutate; the reviewer CANNOT. If something feels like it should be acted on, that's evidence FOR a `request-changes` verdict (because revise should do it), not evidence to do it directly.
 
@@ -37,14 +37,14 @@ Act as a peer reviewer for a project plan produced by [[meta-research-project]].
 2. Locate the project entry at `vault/wiki/*/project/<project>.md`. Reject with `project "<id>" not found` if missing or `type != project`.
 3. Extract `domain` from project frontmatter.
 4. Verify `plan_path` is set AND the file exists at that path. Reject with `no plan to review — run /os research project <id> first` if not.
-5. Verify `plan_status` is one of:
-   - `reviewed-pending` — the standard path. Both a first review after research AND a re-review after revise land here, because [[meta-revise-project-plan]] resets `plan_status: reviewed-pending`.
+5. Verify `plan_status: drafted` AND `review_status` is one of:
+   - `pending` — the standard path. Both a first review after research AND a re-review after revise land here, because [[meta-revise-project-plan]] resets `review_status: pending`.
    - `request-changes` — the second-opinion path. The user can re-run review on an unrevised plan to confirm or update the prior verdict without going through revise. This is a niche-but-valid use case (e.g. a different reviewer wants a second look at the same plan). It IS deliberate, not a typo.
-     Any other state is rejected with `plan is currently <state> — nothing to review`.
+     Any other state is rejected with `plan review is currently <state> — nothing to review`.
 
 ### Step 2: Read the plan
 
-1. Read `plan_path` in full. Parse the structured sections per the template in [[meta-research-project]]:
+1. Read `plan_path` in full. Parse the structured sections per the template in [[research-write]]:
    - `## Intent (from research prompt)`
    - `## Proposed changes` (numbered)
    - `## Proposed schedules`
@@ -193,13 +193,13 @@ Write to `vault/output/<domain>/project-plans/<project-id>-plan-review.md`. Use 
 
 Edit the project entry's frontmatter:
 
-- `plan_review_path: vault/output/<domain>/project-plans/<project-id>-plan-review.md`
-- `plan_reviewed_at: <ISO 8601 UTC now>`
+- `review_path: vault/output/<domain>/project-plans/<project-id>-plan-review.md`
+- `reviewed_at: <ISO 8601 UTC now>`
 - `updated: <ISO 8601 UTC now>`
-- `plan_status`:
-  - On `approve` verdict → `plan_status: approved`
-  - On `request-changes` verdict → `plan_status: request-changes`
-  - On `reject` verdict → **leave `plan_status` unchanged**. No enum value exists for "plan rejected" today (the [[archetype-project]] enum lacks a `rejected`/`abandoned` terminal — see §Out-of-scope in any pre-existing plan for the audit-phase follow-up). The rejection lives in `plan_review_path` and the Step 9 summary's `next:` line surfaces both recovery paths so the operator is not blind.
+- `review_status` (the shared enum — see standard-review-state; `plan_status` stays `drafted`):
+  - On `approve` verdict → `review_status: approved`
+  - On `request-changes` verdict → `review_status: request-changes`
+  - On `reject` verdict → `review_status: rejected` (the shared enum has a real terminal for this — the old project dialect did not). The rationale lives in `review_path`; the Step 9 summary’s `next:` line surfaces both recovery paths so the operator is not blind.
 
 ### Step 9: Audit log + summary
 
@@ -236,7 +236,7 @@ Print:
 ## Outputs
 
 - Review markdown at `vault/output/<domain>/project-plans/<project-id>-plan-review.md`
-- Project entry frontmatter: `plan_review_path`, `plan_reviewed_at`, `updated` set; `plan_status` flipped to `approved` (on approve) or `request-changes` (on request-changes); UNCHANGED on `reject`
+- Project entry frontmatter: `review_path`, `reviewed_at`, `updated` set; `review_status` flipped per verdict (`plan_status` stays `drafted`)
 - Audit log line
 
 ## Errors
@@ -245,22 +245,22 @@ Print:
 - Project not found / not `type: project` → reject with id
 - `plan_path` not set → instruct user to run `/os research project <id>` first
 - Plan file missing on disk → instruct user to re-run research
-- `plan_status` is anything other than `reviewed-pending` or `request-changes` → reject with the actual state
+- `plan_status` is not `drafted`, or `review_status` is anything other than `pending` / `request-changes` → reject with the actual state
 
 ## What this skill must NOT do
 
 - Edit code in any repo
 - Create branches, run tests, run builds
 - Mutate the plan file (the plan is the writer's artifact, not the reviewer's)
-- Modify any project frontmatter beyond `plan_review_path`, `plan_reviewed_at`, `plan_status`, `updated`
+- Modify any project frontmatter beyond `review_path`, `reviewed_at`, `review_status`, `updated`
 
 If you're tempted to act on a concern directly, that's an `approve` (the concern is moot) or `request-changes` (revise should address it). The reviewer NEVER acts on the plan or the repo itself.
 
 ## See also
 
 - [[standard-project-workflow]] — full plan-lifecycle state machine + review-gate fields
-- [[archetype-project]] — project archetype + `plan_status` enum
-- [[meta-research-project]] — produces the plan this skill reviews
+- [[archetype-project]] — project archetype + the `plan_status` lifecycle and shared `review_status` enums
+- [[research-write]] — produces the plan this skill reviews (formerly via the deleted `meta-research-project` alias)
 - [[meta-revise-project-plan]] — consumes this skill's verdict + folds findings into the plan
-- [[meta-scaffold-project-plan]] — terminal phase, only fires after `plan_status: approved`
+- [[meta-scaffold-project-plan]] — terminal phase, only fires after `review_status: approved`
 - [[dev-review-change]] — the change-side analogue; this skill mirrors its read-only constraint

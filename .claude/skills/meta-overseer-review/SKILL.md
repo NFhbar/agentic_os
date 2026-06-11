@@ -99,28 +99,24 @@ Producing audits is cheap (one LLM call per merged change, typically $1-3). Acti
      - OR `git -C <repo> log --name-only <merge-base>..<merged-sha>` (fallback — implicit from git history)
      - Deduplicated, sorted, relative to repo root.
 
-6. **Apply the rubric.** This is the LLM-judgment step. For EACH skill that ran in the lifecycle (identified from the events.db query + the artifacts):
+6. **Apply the rubric.** This is the LLM-judgment step. The skill universe is OPEN: enumerate it from the evidence, not from a fixed list. `SELECT DISTINCT skill FROM events WHERE change_id = '<change>'` plus any skill visibly attested in the artifacts (e.g. a plan-review file proves `dev-review-change` ran even if its event row is missing). Score EVERY skill observed — `dev-*`, `meta-*`, `research-*`, and the router (`os`) alike. A skill being outside the dev change-lifecycle is not an exemption; if it dispatched within this lifecycle, it gets a findings entry. For EACH observed skill:
    - Score the skill on **Correctness** (1-5), **Completeness** (1-5), **Efficiency** (1-5) using the anchored levels in [[archetype-lifecycle-audit]] § "The rubric — three dimensions, 1-5 scale".
    - Identify which **tags** from the canonical vocabulary apply (see [[archetype-lifecycle-audit]] § "Tag vocabulary").
    - Write 2-3 sentences of `notes` elaborating on the scores + tags with specific evidence from the artifacts.
    - Record `evidence_paths` — the specific file paths the judgment cites.
 
-   Skills that may appear in `per_skill_findings`:
-   - `dev-write-change` (with phases: `plan`, `execute`, `address-comments` — one entry per phase)
-   - `dev-review-change`
-   - `dev-revise-plan` (if revision happened)
-   - `dev-open-pr`
-   - `dev-pr-review` (one entry per pass; phase: `pass-1`, `pass-2`, etc.)
-   - `dev-pr-review-publish` (if published)
-   - `dev-mark-pr-ready`
-   - `dev-close-change`
+   Phase conventions for the common dev lifecycle skills (these are EXAMPLES of multi-phase shapes, not the universe):
+   - `dev-write-change` — phases: `plan`, `execute`, `address-comments` (one entry per phase)
+   - `dev-pr-review` — one entry per pass; phase: `pass-1`, `pass-2`, etc.
+   - Single-phase skills (`dev-review-change`, `dev-revise-plan`, `dev-open-pr`, `dev-pr-review-publish`, `dev-mark-pr-ready`, `dev-close-change`, and any `meta-*` / `research-*` / `os` dispatch) — one entry each.
 
 7. **Identify tuning suggestions.** For each tag with negative polarity OR score ≤ 3, produce a `tuning_suggestions[]` entry with:
-   - `skill` — which skill should be tuned
-   - `suggestion` — concrete prose describing the SKILL.md change
+   - `skill` — the tuning target's name. For skill targets: the skill id. For non-skill targets: a CANONICAL id from the path map — run `node scripts/tuning-targets.mjs` to list them (e.g. `automation-orchestrator`, `router-vocabulary`, `dispatch-helper`). Free-prose names like "meta — automation orchestrator" are not routable; if the surface you want to name has no map entry, pick the closest one or note in the suggestion prose that the map needs a new entry.
+   - `target_kind` — `skill` when the tunable surface is a SKILL.md (the default; may be omitted). `orchestrator` / `route` / `script` when the evidence points at app-layer TypeScript, the router vocabulary table, or an OS script. Use the kind recorded in the map entry.
+   - `suggestion` — concrete prose describing the change
    - `confidence` — `low` / `medium` / `high` based on how clearly the evidence supports the suggestion (single-instance = low; pattern within this one lifecycle = medium; clear systemic issue = high)
    - `evidence_summary` — 1-2 sentence summary of what triggered the suggestion
-   - `target_change` — where in the skill's SKILL.md the change should land (specific section or insertion point)
+   - `target_change` — where the change should land: a specific SKILL.md section for skill targets, or the specific function/section within the mapped file(s) for non-skill targets
 
 8. **Compute aggregate fields.**
    - `scores` (object) — for each dimension, compute the mean across all `per_skill_findings`. Round to one decimal.

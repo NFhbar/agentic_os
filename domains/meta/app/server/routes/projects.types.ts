@@ -76,16 +76,25 @@ export interface ProjectSummary {
   changes: ChangeAggregate | null;
   // Plan-tracking fields written by the project-orchestration skills.
   plan_path: string | null;
+  // LIFECYCLE-only since the shared review-state contract: pending |
+  // in-research | drafted | scaffolded | active. The review verdict lives
+  // in review_status (the same 6-value enum changes and research-reports
+  // use). See standard-review-state.
   plan_status: string | null;
-  // Derived from research_reports + owned_changes: when a project goes
+  review_status: string | null;
+  // Derived pair from research_reports + owned_changes: when a project goes
   // through the research-driven flow (`research-write` → review → approve →
-  // scaffold), the frontmatter `plan_status` stays null but the lifecycle
-  // is in fact progressing. Clients should prefer derived when present
-  // (mirrors lifecycle_stage_derived).
+  // scaffold), the frontmatter fields stay null but the lifecycle is in
+  // fact progressing (mirrors lifecycle_stage_derived).
   plan_status_derived: string | null;
+  review_status_derived: string | null;
+  // Server-computed linear stage for steppers/timelines — the collapse of
+  // the (derived-or-frontmatter) plan_status × review_status pair via
+  // lifecycle-state.ts planStageId. Rendering vocabulary only.
+  plan_stage: string | null;
   plan_revision: number | null;
-  plan_review_path: string | null;
-  plan_reviewed_at: string | null;
+  review_path: string | null;
+  reviewed_at: string | null;
   plan_revised_at: string | null;
   plan_revised_from_review: string | null;
   plan_generated_at: string | null;

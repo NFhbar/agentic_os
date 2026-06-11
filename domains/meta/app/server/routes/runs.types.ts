@@ -6,7 +6,18 @@
 // runtime values. Anything stateful belongs in the sibling `runs.ts` (or
 // `scripts/runs-db.mjs` for storage).
 
-export type RunState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+// `died-after-writeback`: the child died without emitting a stream-json
+// result event (silent OS kill, wall-cap, server restart), but the run's
+// linked entity was updated after the run started — the work likely landed.
+// Terminal; the automation orchestrator treats it as success-with-warning.
+// Written by scripts/runs-finalize.mjs, never by the in-process close path.
+export type RunState =
+  | 'queued'
+  | 'running'
+  | 'done'
+  | 'failed'
+  | 'cancelled'
+  | 'died-after-writeback';
 
 // Attribution tags written at start-time. Used for change/project/repo
 // filtering in the Processes view + cost rollups on the change/project

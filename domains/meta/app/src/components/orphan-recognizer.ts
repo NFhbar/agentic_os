@@ -1,7 +1,7 @@
 // Pure helpers for recognizing died-but-likely-succeeded run failures + the
 // entity-link target on those runs. Extracted from RunRow.tsx so unit tests
 // can exercise them without pulling React. Same separation pattern as
-// automation-state-machine.ts and project-plan-status.ts.
+// automation-state-machine.ts and lifecycle-state.ts.
 
 import type { RunRecord } from '../lib/runs';
 
@@ -11,12 +11,30 @@ import type { RunRecord } from '../lib/runs';
 // writes, GitHub calls) often complete before the subprocess actually
 // terminates. Surfacing this distinguishably tells operators "go verify
 // the entity" instead of assuming total failure. See Task #398 + #418.
-export function recognizeOrphanLike(
-  run: RunRecord,
-): { kind: 'orphan-sweep' | 'wall-time-cap'; label: string; hint: string } | null {
+export function recognizeOrphanLike(run: RunRecord): {
+  kind: 'orphan-sweep' | 'wall-time-cap' | 'died-after-writeback';
+  label: string;
+  hint: string;
+} | null {
+  // Since durable-runs, the finalizer encodes the "verify the entity"
+  // judgment itself: a death with no result event but a verifiably-updated
+  // linked entity lands as state='died-after-writeback' (automation already
+  // advanced). The banner is informational, not a call to action.
+  if (run.state === 'died-after-writeback') {
+    return {
+      kind: 'died-after-writeback',
+      label: 'Died after writeback',
+      hint:
+        'The subprocess died without reporting a result, but the linked entity was updated after the run ' +
+        'started — the work landed. Automation treated this as a success; spot-check the entity if it matters.',
+    };
+  }
   if (run.state !== 'failed') return null;
   const err = run.error ?? '';
-  if (err.startsWith('orphan-sweep:')) {
+  // Both the server sweep ('orphan-sweep:', 'server restart:') and the
+  // scheduler-tick supervisor ('supervisor:') use the same PID-not-alive
+  // phrasing.
+  if (err.startsWith('orphan-sweep:') || err.includes('PID not alive')) {
     return {
       kind: 'orphan-sweep',
       label: 'Subprocess died unexpectedly',

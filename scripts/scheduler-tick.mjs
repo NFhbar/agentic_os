@@ -12,9 +12,9 @@
 //   node scripts/scheduler-tick.mjs --list       list all schedules + next run
 //   node scripts/scheduler-tick.mjs --run-id ID  force-fire one schedule by id
 //
-// No npm dependencies — pure node built-ins so launchd can run it directly.
+// Requires the root `npm install` (js-yaml, via the shared frontmatter
+// parser) — install.sh runs it; everything else is node built-ins.
 
-import { spawn } from 'node:child_process';
 import {
   appendFileSync,
   existsSync,
@@ -25,7 +25,10 @@ import {
 } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnClaude } from './dispatch-claude.mjs';
 import { recordEvent } from './events-db.mjs';
+import { extractSkill } from './extract-event-attribution.mjs';
+import { superviseRuns } from './runs-supervisor.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
@@ -34,30 +37,13 @@ const STATE_PATH = join(REPO_ROOT, '.claude', 'state', 'schedule-runs.json');
 const LOG_PATH = join(REPO_ROOT, 'vault', 'raw', 'scheduled-runs.jsonl');
 
 // ---------------------------------------------------------------------------
-// Frontmatter parser (flat key:value, sufficient for runbook frontmatter).
+// Frontmatter parsing — shared real-YAML parser (scripts/frontmatter.mjs).
+// The old flat parser here stripped only OUTER quotes, so single-quoted
+// prompts with doubled-apostrophe escapes (''running'') reached `claude -p`
+// still doubled. Real YAML unescapes them correctly.
 // ---------------------------------------------------------------------------
 
-function parseFrontmatter(content) {
-  const m = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-  if (!m) return { fm: {}, body: content };
-  const fm = {};
-  for (const raw of m[1].split('\n')) {
-    const line = raw.trimEnd();
-    if (!line || line.startsWith('#')) continue;
-    const kv = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*):\s*(.*)$/);
-    if (!kv) continue;
-    let v = kv[2].trim();
-    // Strip surrounding quotes (single or double) from string values.
-    if (
-      (v.startsWith('"') && v.endsWith('"')) ||
-      (v.startsWith("'") && v.endsWith("'"))
-    ) {
-      v = v.slice(1, -1);
-    }
-    fm[kv[1]] = v;
-  }
-  return { fm, body: m[2] };
-}
+import { parseFrontmatter } from './frontmatter.mjs';
 
 function walkMd(dir) {
   const out = [];
@@ -206,7 +192,13 @@ export function discoverProjectStatuses() {
 //   field=set             field present + non-empty
 //   field=null            field unset/null/empty string
 //
+// ' || ' separates OR-groups: an entry matches when it satisfies ANY group
+// (each group is still AND-of-clauses). The match count is the size of the
+// UNION across groups. Added for the audit-followups runbook, which fires
+// when provisional audits OR pending decision validations exist.
+//
 // Example: 'type=change status=in-review pr_url=set ci_state=null|running'
+// Example: 'type=lifecycle-audit audit_status=provisional || type=decision validation_result=pending'
 // ---------------------------------------------------------------------------
 
 function parsePreconditionQuery(query) {
@@ -248,8 +240,16 @@ export function countManifestMatches(query) {
     return null; // manifest unavailable — caller decides whether to fire
   }
   const entries = manifest.entries ?? [];
-  const clauses = parsePreconditionQuery(query);
-  return entries.filter((e) => clauses.every((c) => clauseMatches(e, c))).length;
+  const groups = query
+    .split('||')
+    .map((g) => g.trim())
+    .filter(Boolean)
+    .map((g) => parsePreconditionQuery(g));
+  if (groups.length === 0) return 0;
+  // Union across OR-groups — an entry counts once even if multiple groups
+  // match it.
+  return entries.filter((e) => groups.some((clauses) => clauses.every((c) => clauseMatches(e, c))))
+    .length;
 }
 
 // ---------------------------------------------------------------------------
@@ -277,27 +277,19 @@ function minuteFloor(date) {
 // Firing — spawn `claude -p`, capture stdout, log result.
 // ---------------------------------------------------------------------------
 
-function fireJob(schedule) {
+async function fireJob(schedule) {
+  const startedAt = new Date();
+  const startedMs = Date.now();
+  // Spawn via the shared dispatch helper (scripts/dispatch-claude.mjs) so
+  // cron-fired runs honor the same effort/model resolution as dashboard
+  // dispatches — Settings → Effort/Model + per-skill SKILL.md frontmatter.
+  // stream-json + verbose: each stdout line is a JSON event carrying
+  // model/tokens/cost metadata.
+  const scheduledSkill = extractSkill(schedule.prompt);
+  const { child } = await spawnClaude(schedule.prompt, scheduledSkill, {
+    logPrefix: 'scheduler',
+  });
   return new Promise((resolve) => {
-    const startedAt = new Date();
-    const startedMs = Date.now();
-    // stream-json + verbose: each stdout line is a JSON event. Same pattern
-    // as the dashboard's /api/action so scheduler-driven runs capture the
-    // same model/tokens/cost metadata as dashboard-driven runs.
-    const child = spawn(
-      'claude',
-      [
-        '-p',
-        schedule.prompt,
-        '--permission-mode',
-        'bypassPermissions',
-        '--output-format',
-        'stream-json',
-        '--verbose',
-      ],
-      { cwd: REPO_ROOT, stdio: ['ignore', 'pipe', 'pipe'] },
-    );
-
     let stdoutBuf = '';
     let stderrAll = '';
     let combinedText = ''; // accumulated assistant text — cleaner artifact than raw event stream
@@ -495,6 +487,22 @@ async function main() {
   const nowMinute = minuteFloor(now);
   const state = loadState();
   state.runs ??= {};
+
+  // Run supervision — liveness + wall-cap for detached `claude` children
+  // (see scripts/runs-supervisor.mjs). Lives in the tick because launchd
+  // keeps firing when the dashboard server is down; this is what makes runs
+  // durable rather than children of a dev server. Runs every tick, before
+  // the due-schedule early return.
+  try {
+    const sup = await superviseRuns();
+    if (sup.reaped || sup.terminated || sup.escalated) {
+      console.error(
+        `supervisor: reaped=${sup.reaped} wall-cap-terminated=${sup.terminated} escalated=${sup.escalated}`,
+      );
+    }
+  } catch (e) {
+    console.error(`supervisor error: ${e.message}`);
+  }
 
   // Project-scoped runbooks fire only when the named project's status is
   // "active". Skip silently otherwise — pausing a project pauses its work.

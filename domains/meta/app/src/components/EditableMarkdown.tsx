@@ -2,8 +2,10 @@ import type React from 'react';
 import { isValidElement, useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useNavigate } from 'react-router-dom';
 import { useNavigation } from '../lib/navigation';
 import { fetchSkillNames } from '../lib/skills';
+import { fetchEntryTypes } from '../lib/vault';
 import { MermaidDiagram } from './MermaidDiagram';
 
 interface Props {
@@ -113,6 +115,7 @@ export function EditableMarkdown({ path, content, onSaved }: Props) {
 
 export function Rendered({ content }: { content: string }) {
   const nav = useNavigation();
+  const navigate = useNavigate();
   const { fm, body } = useMemo(() => splitFrontmatter(content), [content]);
   const processed = useMemo(() => preprocessWikilinks(body), [body]);
 
@@ -120,9 +123,19 @@ export function Rendered({ content }: { content: string }) {
   // [[name]] routes to Skills view when `name` is a skill, else to Vault.
   // Cached at fetchSkills() level — same fetch as Skills view + Quick Actions.
   const [skillNames, setSkillNames] = useState<Set<string>>(() => new Set());
+  // Cache id→type map from the vault manifest. Powers type-aware wikilink
+  // routing so [[change-id]] opens /changes/<id> (full detail view with
+  // status hero + lifecycle stepper) instead of /vault/entries/<id> (generic
+  // markdown render). Same for pr-review. Closes #449.
+  const [entryTypes, setEntryTypes] = useState<Map<string, string>>(() => new Map());
   useEffect(() => {
     fetchSkillNames()
       .then(setSkillNames)
+      .catch(() => {
+        /* leave empty — wikilinks fall back to Vault navigation */
+      });
+    fetchEntryTypes()
+      .then(setEntryTypes)
       .catch(() => {
         /* leave empty — wikilinks fall back to Vault navigation */
       });
@@ -137,12 +150,32 @@ export function Rendered({ content }: { content: string }) {
         if (href?.startsWith(WIKILINK_HREF_PREFIX)) {
           const id = decodeURIComponent(href.slice(WIKILINK_HREF_PREFIX.length));
           const isSkill = skillNames.has(id);
+          // Type-aware routing: change/pr-review entries open in their
+          // dedicated apps (full detail view) rather than the generic Vault
+          // entry renderer. Falls back to Vault for everything else (decision,
+          // note, project, reference, runbook, entity, etc.). #449.
+          const entryType = entryTypes.get(id);
+          let label: string;
+          let onClick: () => void;
+          if (isSkill) {
+            label = `Open ${id} in Skills`;
+            onClick = () => nav.navigateToSkill(id);
+          } else if (entryType === 'change') {
+            label = `Open ${id} in Changes`;
+            onClick = () => navigate(`/changes/${id}`);
+          } else if (entryType === 'pr-review') {
+            label = `Open ${id} in PR Review`;
+            onClick = () => navigate(`/pr-review/reviews/${id}`);
+          } else {
+            label = `Open ${id} in Vault`;
+            onClick = () => nav.navigateToEntry(id);
+          }
           return (
             <button
               type="button"
               className={isSkill ? 'wikilink wikilink-skill' : 'wikilink'}
-              onClick={() => (isSkill ? nav.navigateToSkill(id) : nav.navigateToEntry(id))}
-              title={isSkill ? `Open ${id} in Skills` : `Open ${id} in Vault`}
+              onClick={onClick}
+              title={label}
             >
               {children}
             </button>

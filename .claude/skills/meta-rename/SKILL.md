@@ -68,6 +68,8 @@ Rename a skill, domain, or wiki entry. Updates the file/folder name AND all know
    - Grep all `vault/wiki/` files for `[[<old-id>]]` and replace with `[[<new_name>]]`
    - Trigger vault index rebuild: run `node .claude/hooks/rebuild-vault-index.mjs`
 
+3b. **Regenerate the skill-id constants module** (skill renames only): `node scripts/generate-skill-ids.mjs` — app TypeScript references skills via the generated `domains/meta/app/server/lib/skill-ids.ts`; the audit's `skill-ids-module-stale` check ERRORs until regenerated. Then run `node scripts/audit.mjs --skills`: the `app-stale-skill-literal` check lists any app-code site still naming the OLD id (the class of breakage that kept the meta-research-project alias undeletable).
+
 4. **Record the audit event** via the dual-write wrapper:
 
    ```bash

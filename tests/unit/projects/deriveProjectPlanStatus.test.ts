@@ -1,27 +1,24 @@
-// Tier 1 unit tests for the project plan-status deriver.
+// Tier 1 unit tests for the project plan-state deriver.
 //
-// `deriveProjectPlanStatus` maps a project's research-report state + owned
-// changes to a single string that drives the Plan-lifecycle stepper and the
-// Phase Timeline on the project page. Bugs surface as silently-blank
-// lifecycle widgets.
+// Since the shared review-state contract (Fable review, Finding 4.2) the
+// deriver returns a PAIR — { plan_status (lifecycle), review_status (shared
+// verdict enum) } — plus planStageId(), which collapses the pair into one
+// linear id for stepper RENDERING only. The old single-string vocabulary
+// ('reviewed-pending' et al.) is gone; this file and the migration note in
+// archetype-project are the only places that should still spell it.
 //
-// This test exists primarily as a Task #417 regression guard. The bug was
-// `status: updated` (written by research-update) wasn't in the function's
-// switch — the deriver returned null, blanking both lifecycle widgets on
-// every project whose research had been refreshed.
-//
-// Every branch documented in the function's mapping comment is exercised.
+// Task #417 regression guard retained: `status: updated` (research-update)
+// must keep deriving a post-approval stage instead of blanking widgets.
 
 import { describe, expect, it } from 'vitest';
 import {
-  deriveProjectPlanStatus,
+  deriveProjectPlanState,
   derivePostApprovalStage,
-} from '../../../domains/meta/app/server/routes/project-plan-status.js';
+  planStageId,
+} from '../../../domains/meta/app/server/lib/lifecycle-state.js';
 import type { OwnedChangeRef } from '../../../domains/meta/app/server/routes/projects.types.js';
 import type { ResearchReportSummary } from '../../../domains/meta/app/server/routes/research.types.js';
 
-// Helpers for building minimal stubs. The function only reads specific
-// fields — we narrow to those to keep tests focused.
 function makeReport(overrides: Partial<ResearchReportSummary> = {}): ResearchReportSummary {
   return {
     id: 'r1',
@@ -58,259 +55,126 @@ function makeChange(status: string): OwnedChangeRef {
   };
 }
 
-describe('deriveProjectPlanStatus — empty cases', () => {
-  it('returns null when no research-reports exist', () => {
-    expect(deriveProjectPlanStatus([], [])).toBeNull();
+describe('deriveProjectPlanState', () => {
+  it('no reports → null pair, null stage', () => {
+    const s = deriveProjectPlanState([], []);
+    expect(s).toEqual({ plan_status: null, review_status: null });
+    expect(planStageId(s)).toBeNull();
+  });
+
+  it('draft report → in-research / pending', () => {
+    const s = deriveProjectPlanState([makeReport({ status: 'draft' })], []);
+    expect(s).toEqual({ plan_status: 'in-research', review_status: 'pending' });
+    expect(planStageId(s)).toBe('in-research');
+  });
+
+  it('reviewed + pending verdict → drafted / pending (awaiting-review stage)', () => {
+    const s = deriveProjectPlanState([makeReport({ status: 'reviewed' })], []);
+    expect(s).toEqual({ plan_status: 'drafted', review_status: 'pending' });
+    expect(planStageId(s)).toBe('awaiting-review');
+  });
+
+  it('reviewed + request-changes → drafted / request-changes', () => {
+    const s = deriveProjectPlanState(
+      [makeReport({ status: 'reviewed', review_status: 'request-changes' })],
+      [],
+    );
+    expect(s).toEqual({ plan_status: 'drafted', review_status: 'request-changes' });
+    expect(planStageId(s)).toBe('request-changes');
+  });
+
+  it('approved, nothing scaffolded → drafted / approved (approved stage)', () => {
+    const s = deriveProjectPlanState(
+      [makeReport({ status: 'reviewed', review_status: 'approved' })],
+      [],
+    );
+    expect(s).toEqual({ plan_status: 'drafted', review_status: 'approved' });
+    expect(planStageId(s)).toBe('approved');
+  });
+
+  it('approved + scaffolded, no in-flight changes → scaffolded / approved', () => {
+    const s = deriveProjectPlanState(
+      [
+        makeReport({
+          status: 'approved',
+          review_status: 'approved',
+          recommended_changes_scaffolded: 6,
+        }),
+      ],
+      [makeChange('planning')],
+    );
+    expect(s).toEqual({ plan_status: 'scaffolded', review_status: 'approved' });
+    expect(planStageId(s)).toBe('scaffolded');
+  });
+
+  it('approved + scaffolded + in-flight change → active / approved', () => {
+    const s = deriveProjectPlanState(
+      [
+        makeReport({
+          status: 'approved',
+          review_status: 'approved',
+          recommended_changes_scaffolded: 6,
+        }),
+      ],
+      [makeChange('in-progress')],
+    );
+    expect(s).toEqual({ plan_status: 'active', review_status: 'approved' });
+    expect(planStageId(s)).toBe('active');
+  });
+
+  it('Task #417 guard: status updated + approved stays post-approval', () => {
+    const s = deriveProjectPlanState(
+      [
+        makeReport({
+          status: 'updated',
+          review_status: 'approved',
+          recommended_changes_scaffolded: 3,
+        }),
+      ],
+      [makeChange('merged')],
+    );
+    expect(s).toEqual({ plan_status: 'active', review_status: 'approved' });
+  });
+
+  it('status updated + pending verdict → drafted / pending', () => {
+    const s = deriveProjectPlanState([makeReport({ status: 'updated' })], []);
+    expect(s).toEqual({ plan_status: 'drafted', review_status: 'pending' });
+  });
+
+  it('overridden verdict behaves like approved and survives into the pair', () => {
+    const s = deriveProjectPlanState(
+      [makeReport({ status: 'reviewed', review_status: 'overridden' })],
+      [],
+    );
+    expect(s).toEqual({ plan_status: 'drafted', review_status: 'overridden' });
+    expect(planStageId(s)).toBe('approved');
+  });
+
+  it('latest report wins by report_revision, then updated', () => {
+    const s = deriveProjectPlanState(
+      [
+        makeReport({ id: 'old', status: 'draft', report_revision: 1 }),
+        makeReport({
+          id: 'new',
+          status: 'reviewed',
+          review_status: 'approved',
+          report_revision: 2,
+        }),
+      ],
+      [],
+    );
+    expect(s.review_status).toBe('approved');
   });
 });
 
-describe('deriveProjectPlanStatus — status: draft', () => {
-  it('maps draft → in-research regardless of other fields', () => {
-    expect(deriveProjectPlanStatus([makeReport({ status: 'draft' })], [])).toBe('in-research');
-    // Edge: draft + already-approved review_status (shouldn't happen but is well-defined)
-    expect(
-      deriveProjectPlanStatus(
-        [makeReport({ status: 'draft', review_status: 'approved' })],
-        [],
-      ),
-    ).toBe('in-research');
+describe('derivePostApprovalStage', () => {
+  it('zero scaffolded recommendations → drafted', () => {
+    expect(derivePostApprovalStage(makeReport(), [])).toBe('drafted');
   });
 });
 
-describe('deriveProjectPlanStatus — status: reviewed', () => {
-  it('reviewed + pending review → reviewed-pending', () => {
-    expect(
-      deriveProjectPlanStatus(
-        [makeReport({ status: 'reviewed', review_status: 'pending' })],
-        [],
-      ),
-    ).toBe('reviewed-pending');
-  });
-
-  it('reviewed + request-changes → request-changes', () => {
-    expect(
-      deriveProjectPlanStatus(
-        [makeReport({ status: 'reviewed', review_status: 'request-changes' })],
-        [],
-      ),
-    ).toBe('request-changes');
-  });
-
-  it('reviewed + approved + no scaffolded → approved', () => {
-    expect(
-      deriveProjectPlanStatus(
-        [
-          makeReport({
-            status: 'reviewed',
-            review_status: 'approved',
-            recommended_changes_scaffolded: 0,
-          }),
-        ],
-        [],
-      ),
-    ).toBe('approved');
-  });
-
-  it('reviewed + approved + scaffolded, no in-flight changes → scaffolded', () => {
-    expect(
-      deriveProjectPlanStatus(
-        [
-          makeReport({
-            status: 'reviewed',
-            review_status: 'approved',
-            recommended_changes_scaffolded: 3,
-          }),
-        ],
-        [makeChange('planning')],
-      ),
-    ).toBe('scaffolded');
-  });
-
-  it('reviewed + approved + scaffolded + in-flight changes → active', () => {
-    expect(
-      deriveProjectPlanStatus(
-        [
-          makeReport({
-            status: 'reviewed',
-            review_status: 'approved',
-            recommended_changes_scaffolded: 3,
-          }),
-        ],
-        [makeChange('in-progress')],
-      ),
-    ).toBe('active');
-  });
-});
-
-describe('deriveProjectPlanStatus — status: approved', () => {
-  it('approved + no scaffolded → approved', () => {
-    expect(
-      deriveProjectPlanStatus(
-        [makeReport({ status: 'approved', recommended_changes_scaffolded: 0 })],
-        [],
-      ),
-    ).toBe('approved');
-  });
-
-  it('approved + scaffolded + no in-flight → scaffolded', () => {
-    expect(
-      deriveProjectPlanStatus(
-        [makeReport({ status: 'approved', recommended_changes_scaffolded: 4 })],
-        [makeChange('planning'), makeChange('planning')],
-      ),
-    ).toBe('scaffolded');
-  });
-
-  it('approved + scaffolded + one merged change → active', () => {
-    expect(
-      deriveProjectPlanStatus(
-        [makeReport({ status: 'approved', recommended_changes_scaffolded: 4 })],
-        [makeChange('planning'), makeChange('merged')],
-      ),
-    ).toBe('active');
-  });
-
-  it.each(['in-progress', 'in-review', 'merged'])(
-    'approved + scaffolded + any %s change → active',
-    (status) => {
-      expect(
-        deriveProjectPlanStatus(
-          [makeReport({ status: 'approved', recommended_changes_scaffolded: 1 })],
-          [makeChange(status)],
-        ),
-      ).toBe('active');
-    },
-  );
-});
-
-describe('deriveProjectPlanStatus — status: updated (Task #417 regression)', () => {
-  // The bug: research-update writes `status: updated` and the deriver
-  // didn't have a case for it. These tests pin every branch so a future
-  // refactor can't silently re-introduce the gap.
-
-  it('updated + approved → derives like approved (post-approval logic)', () => {
-    // The mull-version-2 case from the bug report.
-    expect(
-      deriveProjectPlanStatus(
-        [
-          makeReport({
-            status: 'updated',
-            review_status: 'approved',
-            recommended_changes_scaffolded: 6,
-          }),
-        ],
-        [makeChange('merged')],
-      ),
-    ).toBe('active');
-  });
-
-  it('updated + approved + no scaffolded → approved', () => {
-    expect(
-      deriveProjectPlanStatus(
-        [
-          makeReport({
-            status: 'updated',
-            review_status: 'approved',
-            recommended_changes_scaffolded: 0,
-          }),
-        ],
-        [],
-      ),
-    ).toBe('approved');
-  });
-
-  it('updated + request-changes → request-changes (refresh awaiting fix)', () => {
-    expect(
-      deriveProjectPlanStatus(
-        [makeReport({ status: 'updated', review_status: 'request-changes' })],
-        [],
-      ),
-    ).toBe('request-changes');
-  });
-
-  it('updated + pending → reviewed-pending (refresh awaiting re-review)', () => {
-    expect(
-      deriveProjectPlanStatus(
-        [makeReport({ status: 'updated', review_status: 'pending' })],
-        [],
-      ),
-    ).toBe('reviewed-pending');
-  });
-});
-
-describe('deriveProjectPlanStatus — unknown status (forward-compat)', () => {
-  it('returns null for an unrecognized status (current behavior)', () => {
-    // Documents the current forward-compat behavior: unknown status =>
-    // null. Same behavior as before Task #417 was fixed — but now if a
-    // skill starts writing a new status value, the archetype-enums
-    // structural test fires FIRST (block at commit time), so reaching
-    // this branch at runtime requires actively bypassing the test suite.
-    expect(
-      deriveProjectPlanStatus([makeReport({ status: 'superseded' })], []),
-    ).toBeNull();
-  });
-});
-
-describe('deriveProjectPlanStatus — picks latest report by revision', () => {
-  it('higher report_revision wins over lower', () => {
-    const r1 = makeReport({
-      id: 'r1',
-      status: 'draft',
-      report_revision: 1,
-      updated: '2026-06-01T00:00:00Z',
-    });
-    const r2 = makeReport({
-      id: 'r2',
-      status: 'approved',
-      review_status: 'approved',
-      report_revision: 2,
-      updated: '2026-05-31T00:00:00Z', // earlier `updated` than r1
-      recommended_changes_scaffolded: 0,
-    });
-    expect(deriveProjectPlanStatus([r1, r2], [])).toBe('approved');
-  });
-
-  it('ties on revision break on `updated` desc', () => {
-    const r1 = makeReport({
-      id: 'r1',
-      status: 'draft',
-      report_revision: 1,
-      updated: '2026-06-01T00:00:00Z',
-    });
-    const r2 = makeReport({
-      id: 'r2',
-      status: 'approved',
-      review_status: 'approved',
-      report_revision: 1, // same revision
-      updated: '2026-06-02T00:00:00Z', // newer
-      recommended_changes_scaffolded: 0,
-    });
-    expect(deriveProjectPlanStatus([r1, r2], [])).toBe('approved');
-  });
-});
-
-describe('derivePostApprovalStage — direct', () => {
-  it('no scaffolded recs → approved', () => {
-    expect(
-      derivePostApprovalStage(makeReport({ recommended_changes_scaffolded: 0 }), []),
-    ).toBe('approved');
-  });
-
-  it('scaffolded + only planning changes → scaffolded', () => {
-    expect(
-      derivePostApprovalStage(
-        makeReport({ recommended_changes_scaffolded: 3 }),
-        [makeChange('planning'), makeChange('planning')],
-      ),
-    ).toBe('scaffolded');
-  });
-
-  it('scaffolded + at least one non-planning change → active', () => {
-    expect(
-      derivePostApprovalStage(
-        makeReport({ recommended_changes_scaffolded: 3 }),
-        [makeChange('planning'), makeChange('in-progress')],
-      ),
-    ).toBe('active');
+describe('planStageId', () => {
+  it('lifecycle pending → planning stage', () => {
+    expect(planStageId({ plan_status: 'pending', review_status: null })).toBe('planning');
   });
 });

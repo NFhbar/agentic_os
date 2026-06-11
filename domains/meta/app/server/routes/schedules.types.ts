@@ -31,6 +31,10 @@ export interface RunEntry {
   // `skip_reason` instead.
   outcome?: RunOutcome;
   skip_reason?: string;
+  // Manual dashboard fires (run-now) dispatch via the canonical startRun()
+  // path; run_id links this JSONL line to the runs-table row.
+  manual?: boolean;
+  run_id?: string;
 }
 
 // One scheduled runbook in the GET /api/schedules response. last_run is null

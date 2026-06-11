@@ -11,6 +11,7 @@
 //   node scripts/audit.mjs --templates     (archetypes/templates only)
 //   node scripts/audit.mjs --router        (OS.md vocab only)
 //   node scripts/audit.mjs --logs          (vault/raw/*.jsonl validity only)
+//   node scripts/audit.mjs --dispatch      (claude spawn-site discipline only)
 //
 // Exit code: 0 if no ERRORs, 1 if any ERROR-severity findings.
 // Pure node — no npm deps, runnable from a fresh clone.
@@ -26,6 +27,14 @@ import {
   PROJECT_SCOPED_SKILLS,
   REPORT_SCOPED_SKILLS,
 } from './extract-event-attribution.mjs';
+import { parseFrontmatter as sharedParseFrontmatter } from './frontmatter.mjs';
+import {
+  SKILL_IDS_MODULE_REL,
+  buildSkillIdsSource,
+  extractSkillLikeLiterals,
+  listSkillIds,
+} from './generate-skill-ids.mjs';
+import { missingTargetPaths } from './tuning-targets.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
@@ -35,49 +44,20 @@ const EVENTS_DB_PATH = join(REPO_ROOT, '.claude', 'state', 'events.db');
 // Frontmatter parser (flat, sufficient for what we audit).
 // ---------------------------------------------------------------------------
 
+// Adapter over the shared real-YAML parser (scripts/frontmatter.mjs).
+// Audit semantics preserved: fm === null means "no frontmatter fence at
+// all" (drives skill-frontmatter-missing); fm === {} with parseError set
+// means "fence present, YAML broken". Note the skill-frontmatter-parse-error
+// check was wired for parseError all along, but the old flat parser never
+// reported one — it's live for the first time.
 function parseFrontmatter(content) {
-  const m = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-  if (!m) return { fm: null, body: content, raw: '' };
-  const fm = {};
-  for (const raw of m[1].split('\n')) {
-    const line = raw.trimEnd();
-    if (!line || line.startsWith('#')) continue;
-    const kv = line.match(/^([a-zA-Z_][a-zA-Z0-9_-]*):\s*(.*)$/);
-    if (!kv) continue;
-    let v = kv[2].trim();
-    // Strip YAML inline comments (unquoted values only). `key: val  # hint` → `val`.
-    // Quoted values are left to the existing quote-strip below; a `#` inside
-    // quotes is data, not a comment.
-    if (!v.startsWith('"') && !v.startsWith("'")) {
-      v = v.replace(/\s+#.*$/, '').trim();
-    }
-    // Strip surrounding quotes for strings.
-    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
-      v = v.slice(1, -1);
-    } else if (v === 'true') v = true;
-    else if (v === 'false') v = false;
-    else if (v === 'null' || v === '~') v = null;
-    else if (v.startsWith('[') && v.endsWith(']')) {
-      const inner = v.slice(1, -1).trim();
-      // Inline JSON arrays (e.g. recommended_changes: [{...},{...}]) round-trip via
-      // JSON.parse to preserve object shape — naive comma-split would shred them.
-      if (inner.startsWith('{')) {
-        try { v = JSON.parse(v); }
-        catch { v = []; }
-      } else {
-        v = inner === '' ? [] : inner.split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, ''));
-      }
-    } else if (v.startsWith('{') && v.endsWith('}')) {
-      // Inline JSON object (e.g. project automation: {"enabled":true,...}).
-      // JSON is a subset of YAML flow style — round-trip via JSON.parse for
-      // a clean structured value. On parse failure, fall back to the raw
-      // string so the audit doesn't crash on malformed entries.
-      try { v = JSON.parse(v); }
-      catch { /* leave as raw string */ }
-    }
-    fm[kv[1]] = v;
-  }
-  return { fm, body: m[2], raw: m[1] };
+  const r = sharedParseFrontmatter(content);
+  return {
+    fm: r.hasFrontmatter ? r.fm : null,
+    body: r.body,
+    raw: r.raw,
+    parseError: r.parseError,
+  };
 }
 
 function walkMd(dir) {
@@ -494,6 +474,28 @@ function checkWiki(domains, archetypes, knownTargets) {
       }
     }
 
+    // Telemetry promoted to wiki (Finding 5.2). A note sourced from a .jsonl
+    // telemetry log AND carrying a date-bucketed id is an event restatement,
+    // not knowledge — events.db / vault/raw already hold the data. Both
+    // conditions required: analysis notes legitimately cite a .jsonl source
+    // (pr-ci-monitor-skip-pattern), and dated ids are fine when the content
+    // is a journal, not telemetry (os-iteration-*).
+    if (
+      fm.type === 'note' &&
+      typeof fm.source === 'string' &&
+      fm.source.endsWith('.jsonl') &&
+      typeof fm.id === 'string' &&
+      /\d{4}-\d{2}-\d{2}/.test(fm.id)
+    ) {
+      findings.push({
+        id: 'note-run-telemetry',
+        severity: 'warn',
+        path: relPath,
+        message: `Date-bucketed run-log note sourced from telemetry (${fm.source}) — telemetry stays out of the wiki (OS.md layer contract)`,
+        hint: `Fold durable observations into a pattern/retrospective note (no date-bucketed id) and delete this entry — the data of record lives in events.db + ${fm.source}. See meta-curate § telemetry rule.`,
+      });
+    }
+
     // id must match filename slug
     const filenameSlug = p.split('/').pop().replace(/\.md$/, '');
     if (fm.id && fm.id !== filenameSlug) {
@@ -617,6 +619,9 @@ function checkWiki(domains, archetypes, knownTargets) {
             severity: 'info',
             path: relPath,
             message: `Active project hasn't been updated in ${Math.floor(ageDays)} days (counting both the project entry and any owned entries)`,
+            // `dedupe_key: ''` — path is unique per project; day-count in
+            // message drifts daily and would break dismissal match (#424).
+            dedupe_key: '',
             hint: `If still active, capture progress as an owned note. If stalled, set status: paused. If done, set status: completed.`,
           });
         }
@@ -767,6 +772,8 @@ function checkWiki(domains, archetypes, knownTargets) {
             severity: 'info',
             path: relPath,
             message: `last_verified is ${Math.floor(ageDays)} days old (>90)`,
+            // Path is unique per entry; day-count drifts daily (#424).
+            dedupe_key: '',
             hint: `Re-verify and bump last_verified, or accept as historical`,
           });
         }
@@ -888,6 +895,11 @@ function checkRouter() {
   // Collect skills referenced from the vocab table — used both for the
   // forward check below AND for the reverse check (vocab coverage).
   const skillsInVocab = new Set();
+  // phrase → set of skills it routes to. A phrase on two rows makes
+  // `/os <phrase>` ambiguous — the router's "prefer the most specific" rule
+  // has no answer for an exact tie, and the miss-rate metric can't see it
+  // (ambiguous hits aren't misses).
+  const phraseToSkills = new Map();
 
   while (i < lines.length && lines[i].trim().startsWith('|')) {
     const cells = lines[i].trim().split('|').slice(1, -1).map((c) => c.trim());
@@ -896,6 +908,11 @@ function checkRouter() {
       if (skillMatch) {
         const skill = skillMatch[1];
         skillsInVocab.add(skill);
+        for (const m of cells[0].matchAll(/`([^`]+)`/g)) {
+          const phrase = m[1];
+          if (!phraseToSkills.has(phrase)) phraseToSkills.set(phrase, new Set());
+          phraseToSkills.get(phrase).add(skill);
+        }
         if (!existsSync(join(skillsDir, skill, 'SKILL.md'))) {
           findings.push({
             id: 'router-vocab-skill-exists',
@@ -908,6 +925,18 @@ function checkRouter() {
       }
     }
     i++;
+  }
+
+  for (const [phrase, skills] of phraseToSkills) {
+    if (skills.size > 1) {
+      findings.push({
+        id: 'router-vocab-duplicate-phrase',
+        severity: 'error',
+        path: 'OS.md',
+        message: `Intent phrase "${phrase}" maps to ${skills.size} skills (${[...skills].join(', ')}) — /os dispatch is ambiguous`,
+        hint: 'Keep the phrase on exactly one row; make the other rows more specific',
+      });
+    }
   }
 
   // Reverse check: every user-invocable skill should appear in the vocab
@@ -1348,6 +1377,8 @@ function checkChangesPrFrozen() {
       severity: 'info',
       path: f.path,
       message: `Change "${f.id}" has CI passing but PR not merged for ${f.days} days`,
+      // Path is unique per change; day-count drifts daily (#424).
+      dedupe_key: '',
       hint: `Either merge the PR (then runbook-pr-ci-monitor will transition status→merged on next poll), abandon (status: abandoned), or push new commits if more work is needed.`,
     });
   }
@@ -1741,6 +1772,8 @@ function checkEventsDbFreshness() {
       severity: 'info',
       path: '.claude/state/events.db',
       message: `events.db hasn't been written to in ${Math.floor(ageDays)} days`,
+      // Single finding (events.db is global); day-count drifts daily (#424).
+      dedupe_key: '',
       hint: 'Either the OS isn\'t being used (quiet period — fine to ignore) OR the event-recording pipeline is broken. Check that scripts/record-dashboard-action.mjs is reachable from skills and that the scheduler is firing.',
     });
   }
@@ -1939,9 +1972,9 @@ function checkDeferredCommentsAge() {
   return findings;
 }
 
-// Mirror of checkEventAttribution for project-scoped skills. The four
-// orchestration skills (meta-research-project, meta-review-project-plan,
-// meta-revise-project-plan, meta-scaffold-project-plan) all carry a project
+// Mirror of checkEventAttribution for project-scoped skills. The
+// orchestration skills (meta-review-project-plan, meta-revise-project-plan,
+// meta-scaffold-project-plan) all carry a project
 // id; events tagged with these skills that have project=null indicate a
 // dropped tag somewhere on the write path.
 function checkProjectAttribution() {
@@ -2062,6 +2095,8 @@ function checkAutomationStuckRunning() {
       severity: 'warn',
       path: e.path,
       message: `Project "${e.id}" automation has been running for ${mins} minutes (>60) on step "${auto.state.current_step ?? '?'}" of change "${auto.state.current_change ?? '?'}"`,
+      // Path unique per project; minutes-count drifts every minute (#424).
+      dedupe_key: '',
       hint: 'Either the dispatched skill hung or the auto-tick path failed. Pause + investigate the current run in the Processes view, then Resume or Stop.',
     });
   }
@@ -2110,6 +2145,8 @@ function checkAutomationStalePaused() {
       severity: 'info',
       path: e.path,
       message: `Project "${e.id}" automation has been paused for ${days} days — reason: ${auto.state.paused_reason ?? 'unknown'}`,
+      // Path unique per project; day-count drifts daily (#424).
+      dedupe_key: '',
       hint: 'Resolve the pause condition and Resume, or Stop the automation if the project no longer needs auto-execution.',
     });
   }
@@ -2159,8 +2196,8 @@ function checkPlanFileOrphan() {
   return findings;
 }
 
-// Project stuck `plan_status: in-research` for >1h: the meta-research-project
-// skill almost certainly crashed before flipping plan_status to `pending` (the
+// Project stuck `plan_status: in-research` for >1h: the research-write
+// dispatch almost certainly crashed before flipping plan_status to `pending` (the
 // terminal value). Without this check, dead research runs sit invisibly and
 // the human has no signal to retry or salvage.
 function checkPlanStatusStuckInResearch() {
@@ -2212,7 +2249,10 @@ function checkPlanApprovedButUnscaffolded() {
   const now = Date.now();
   for (const e of manifest.entries ?? []) {
     if (e.type !== 'project') continue;
-    if (e.plan_status !== 'approved') continue;
+    // Shared review-state contract: the verdict lives in review_status;
+    // plan_status 'drafted' means the plan exists but nothing scaffolded.
+    if (e.review_status !== 'approved' && e.review_status !== 'overridden') continue;
+    if (e.plan_status !== 'drafted') continue;
     if (!e.updated) continue;
     const updatedMs = Date.parse(e.updated);
     if (Number.isNaN(updatedMs)) continue;
@@ -2224,6 +2264,8 @@ function checkPlanApprovedButUnscaffolded() {
       severity: 'info',
       path: e.path,
       message: `Project "${e.id}" plan was approved ${days} days ago but never scaffolded`,
+      // Path unique per project; day-count drifts daily (#424).
+      dedupe_key: '',
       hint: 'Run /os scaffold project <id> to materialize the plan, or revise/abandon if scope shifted.',
     });
   }
@@ -2277,6 +2319,8 @@ function checkMaterialsOrphan() {
       severity: 'info',
       path: rel,
       message: `Materials directory belongs to a ${project.status} project (${days} days since last update)`,
+      // Path unique per materials dir; day-count drifts daily (#424).
+      dedupe_key: '',
       hint: 'Archive elsewhere or `rm -rf` the materials dir; the project is done with them.',
     });
   }
@@ -2361,6 +2405,8 @@ function checkResearchMaterialsStale() {
       severity: 'warn',
       path: entry.path,
       message: `Research report "${entry.id}" has new materials since last_data_ingest (${days}d ago) — drift may have accumulated`,
+      // Path unique per report; day-count drifts daily (#424).
+      dedupe_key: '',
       hint: `Run /os update research ${entry.id} to re-walk materials.`,
     });
   }
@@ -2466,6 +2512,9 @@ function checkResearchRecommendedChangesScaffoldedNotMerged() {
         severity: 'info',
         path: entry.path,
         message: `Report "${entry.id}" recommends change "${rec.id}" (scaffolded ${days}d ago) but the change is still ${ch.status}`,
+        // Multiple recs per report can each produce a finding — disambiguate
+        // by rec.id (stable). Day-count drifts daily (#424).
+        dedupe_key: rec.id,
         hint: `Check change ${rec.id}'s blockers, or revise the report if the recommendation is stale.`,
       });
     }
@@ -2764,6 +2813,8 @@ function checkNotificationRateLimitExceeded() {
         severity: 'info',
         path: `events.db:rule:${id}`,
         message: `Rule "${id}" hit its rate-limit cap ${count} time${count !== 1 ? 's' : ''} in the last 24h`,
+        // Path unique per rule; count drifts as hits accumulate (#424).
+        dedupe_key: '',
         hint: 'Tune cap_per_day on the rule OR ignore — caps biting is by design but worth knowing.',
       });
     }
@@ -2792,6 +2843,8 @@ function checkNotificationDeliveryFailed() {
         severity: 'warn',
         path: `events.db:rule:${id}`,
         message: `Rule "${id}" had ${count} delivery failure${count !== 1 ? 's' : ''} in the last 24h`,
+        // Path unique per rule; count + latest-desc drift (#424).
+        dedupe_key: '',
         hint: desc ? `Latest: ${desc.slice(0, 200)}` : 'Check the adapter config + channel availability.',
       });
     }
@@ -2884,6 +2937,8 @@ function checkNotesUnconsideredStale() {
       severity: 'info',
       path: rel,
       message: `${staleCount} unconsidered note${staleCount !== 1 ? 's' : ''} on research-report "${fm.id}" older than ${STALE_DAYS} days (oldest: ${oldestIso})`,
+      // Path unique per report; count + oldestIso drift (#424).
+      dedupe_key: '',
       hint: `Re-run /research-review or /research-revise on the report — unconsidered notes are read at the start of each run and get a considered_by entry appended when folded in.`,
     });
   }
@@ -3305,6 +3360,253 @@ function liveAuditCheckIds() {
 // Driver
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Dispatch — claude spawn-site discipline.
+// ---------------------------------------------------------------------------
+
+// Every `claude` subprocess must be spawned via scripts/dispatch-claude.mjs —
+// the single source for effort/model resolution. A spawn('claude', …)
+// anywhere else silently ignores Settings → Effort/Model; that drift class
+// left cron-fired runs unconfigured across two releases (Fable review
+// Finding 1.1) because nobody could reliably enumerate the spawn sites.
+const DISPATCH_HELPER_REL = 'scripts/dispatch-claude.mjs';
+
+function checkDispatchSpawnSites() {
+  const findings = [];
+  const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.git', 'repos']);
+  const CODE_EXT = /\.(mjs|cjs|js|ts|tsx)$/;
+  const spawnRe = /spawn\(\s*['"]claude['"]/;
+  const walkCodeFiles = (dir) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    const out = [];
+    for (const e of entries) {
+      if (SKIP_DIRS.has(e.name)) continue;
+      const p = join(dir, e.name);
+      if (e.isDirectory()) out.push(...walkCodeFiles(p));
+      else if (e.isFile() && CODE_EXT.test(e.name)) out.push(p);
+    }
+    return out;
+  };
+  // The helper itself spawns; this file's own message/hint strings name the
+  // pattern, so it would self-match without the exemption.
+  const ALLOWED = new Set([DISPATCH_HELPER_REL, 'scripts/audit.mjs']);
+  for (const root of ['scripts', 'domains', 'mcps', '.claude/hooks']) {
+    for (const p of walkCodeFiles(join(REPO_ROOT, root))) {
+      const rel = relative(REPO_ROOT, p);
+      if (ALLOWED.has(rel)) continue;
+      let content;
+      try {
+        content = readFileSync(p, 'utf8');
+      } catch {
+        continue;
+      }
+      if (spawnRe.test(content)) {
+        findings.push({
+          id: 'dispatch-spawn-outside-helper',
+          severity: 'error',
+          message: `spawn('claude', …) outside ${DISPATCH_HELPER_REL} — effort/model resolution will not apply to this subprocess`,
+          path: rel,
+          hint: `import { spawnClaude } (or buildClaudeArgs) from ${DISPATCH_HELPER_REL} so per-skill settings reach the subprocess`,
+        });
+      }
+    }
+  }
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
+// Review-state enum pins — the shared contract (standard-review-state).
+// One verdict vocabulary across change plans, research-reports, and project
+// plans; plan_status on projects is LIFECYCLE-only. Without these pins the
+// three pipelines drift back into private dialects (the pre-contract state:
+// projects spelled "awaiting review" as `reviewed-pending` while the other
+// two used `pending` — Fable review, Finding 4.2).
+// ---------------------------------------------------------------------------
+
+const REVIEW_STATUS_ENUM = new Set([
+  'pending',
+  'approved',
+  'request-changes',
+  'rejected',
+  'overridden',
+  'not-required',
+]);
+const PLAN_LIFECYCLE_ENUM = new Set([
+  'pending',
+  'in-research',
+  'drafted',
+  'scaffolded',
+  'active',
+]);
+
+function checkReviewStateEnums() {
+  const findings = [];
+  const manifestPath = join(REPO_ROOT, 'vault', '.index', 'manifest.json');
+  if (!existsSync(manifestPath)) return findings;
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  } catch {
+    return findings;
+  }
+  for (const e of manifest.entries ?? []) {
+    const reviewed = e.type === 'change' || e.type === 'research-report' || e.type === 'project';
+    if (!reviewed) continue;
+    if (e.review_status != null && !REVIEW_STATUS_ENUM.has(e.review_status)) {
+      findings.push({
+        id: 'review-status-enum',
+        severity: 'error',
+        path: e.path,
+        message: `review_status '${e.review_status}' is not in the shared enum (${[...REVIEW_STATUS_ENUM].join(' | ')})`,
+        hint: 'See standard-review-state — one verdict vocabulary across change / research-report / project. Pre-contract entries: run `node scripts/migrate-review-state.mjs` once (idempotent).',
+      });
+    }
+    if (e.type === 'project' && e.plan_status != null && !PLAN_LIFECYCLE_ENUM.has(e.plan_status)) {
+      findings.push({
+        id: 'plan-status-enum',
+        severity: 'error',
+        path: e.path,
+        message: `plan_status '${e.plan_status}' is not lifecycle-only (${[...PLAN_LIFECYCLE_ENUM].join(' | ')})`,
+        hint: 'Review verdicts moved to review_status (standard-review-state). Run `node scripts/migrate-review-state.mjs` once (idempotent) — it maps legacy reviewed-pending/request-changes/approved to the pair form and renames plan_review_path/plan_reviewed_at.',
+      });
+    }
+  }
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
+// Skill-id constants module — app TS names skills via the generated
+// server/lib/skill-ids.ts instead of raw string literals, so a rename or
+// deletion is a compile error rather than a silently-stale string (the
+// deprecated meta-research-project alias was undeletable for a project phase
+// because routes/projects.ts named it by string).
+// ---------------------------------------------------------------------------
+
+// The tuning-targets path map (scripts/tuning-targets.mjs) routes non-skill
+// Overseer suggestions to real files. A mapped path that no longer exists
+// silently reverts those suggestions to rationale-only dead ends — the exact
+// failure Finding 3.2 documented — so map rot is an error, not a warning.
+function checkTuningTargetPaths() {
+  const findings = [];
+  for (const { id, path } of missingTargetPaths()) {
+    findings.push({
+      id: 'tuning-target-path-missing',
+      severity: 'error',
+      path: 'scripts/tuning-targets.mjs',
+      message: `Tuning target "${id}" maps to ${path}, which does not exist`,
+      hint: `Update TUNING_TARGETS in scripts/tuning-targets.mjs to the file's new location (or remove the entry if the surface is gone)`,
+    });
+  }
+  return findings;
+}
+
+function checkSkillIdsModule() {
+  const findings = [];
+  const expected = buildSkillIdsSource(listSkillIds(REPO_ROOT));
+  const p = join(REPO_ROOT, SKILL_IDS_MODULE_REL);
+  if (!existsSync(p)) {
+    findings.push({
+      id: 'skill-ids-module-stale',
+      severity: 'error',
+      path: SKILL_IDS_MODULE_REL,
+      message: 'Generated skill-ids module is missing',
+      hint: 'run: node scripts/generate-skill-ids.mjs',
+    });
+    return findings;
+  }
+  if (readFileSync(p, 'utf8') !== expected) {
+    findings.push({
+      id: 'skill-ids-module-stale',
+      severity: 'error',
+      path: SKILL_IDS_MODULE_REL,
+      message: 'Generated skill-ids module is out of sync with .claude/skills/',
+      hint: 'run: node scripts/generate-skill-ids.mjs (meta-add-skill / meta-rename / meta-delete regenerate it as part of their procedures)',
+    });
+  }
+  return findings;
+}
+
+// Whole-string literals in app code that LOOK like skill ids but name no
+// existing skill — the residue a rename/deletion leaves behind. Three
+// legitimate vocabularies share the (dev|meta|research)- prefix space and
+// pass: wiki entry ids + skill names (knownTargets), archetype names, and
+// events.db ACTION names — sourced from the event-catalog reference, which
+// doubles as a nudge to catalogue new actions. Anything else goes in
+// STALE_LITERAL_ALLOW with a written reason.
+const STALE_LITERAL_ALLOW = new Set([]);
+
+// Action names from event-catalog.md rows (`| dashboard.<action> …`).
+function catalogedActionNames() {
+  const out = new Set();
+  try {
+    const text = readFileSync(
+      join(REPO_ROOT, 'vault', 'wiki', '_seed', 'meta', 'reference', 'event-catalog.md'),
+      'utf8',
+    );
+    for (const m of text.matchAll(/\|\s*[a-z]+\.([a-z][a-z0-9-]*)/g)) out.add(m[1]);
+  } catch {
+    /* catalog missing — fall through to the other allowlists */
+  }
+  return out;
+}
+
+function checkStaleSkillLiterals(knownTargets) {
+  const findings = [];
+  const skillIds = new Set(listSkillIds(REPO_ROOT));
+  const catalogActions = catalogedActionNames();
+  const archetypes = new Set();
+  for (const f of listFiles(join(REPO_ROOT, '_templates', 'wiki-entry'))) {
+    if (f.endsWith('.md.tmpl')) archetypes.add(f.replace(/\.md\.tmpl$/, ''));
+  }
+  const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.git']);
+  const CODE_EXT = /\.(ts|tsx|mjs|js)$/;
+  const walkCodeFiles = (dir) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    const out = [];
+    for (const e of entries) {
+      if (SKIP_DIRS.has(e.name)) continue;
+      const p = join(dir, e.name);
+      if (e.isDirectory()) out.push(...walkCodeFiles(p));
+      else if (e.isFile() && CODE_EXT.test(e.name)) out.push(p);
+    }
+    return out;
+  };
+  for (const root of ['domains/meta/app/server', 'domains/meta/app/src']) {
+    for (const p of walkCodeFiles(join(REPO_ROOT, root))) {
+      const rel = relative(REPO_ROOT, p);
+      if (rel === SKILL_IDS_MODULE_REL) continue;
+      const seen = new Set();
+      for (const lit of extractSkillLikeLiterals(readFileSync(p, 'utf8'))) {
+        if (seen.has(lit)) continue;
+        seen.add(lit);
+        if (skillIds.has(lit)) continue;
+        if (knownTargets.has(lit)) continue;
+        if (archetypes.has(lit)) continue;
+        if (catalogActions.has(lit)) continue;
+        if (STALE_LITERAL_ALLOW.has(lit)) continue;
+        findings.push({
+          id: 'app-stale-skill-literal',
+          severity: 'error',
+          path: rel,
+          message: `String literal '${lit}' looks like a skill id but no such skill exists`,
+          hint: 'Renamed or deleted skill? Reference skills via SKILL.<NAME> from server/lib/skill-ids.ts; if the literal is a legitimate non-skill term, add it to STALE_LITERAL_ALLOW with a reason.',
+        });
+      }
+    }
+  }
+  return findings;
+}
+
 function main() {
   const args = process.argv.slice(2);
   const json = args.includes('--json');
@@ -3315,6 +3617,7 @@ function main() {
     templates: args.length === 0 || args.includes('--all') || args.includes('--templates'),
     router: args.length === 0 || args.includes('--all') || args.includes('--router'),
     logs: args.length === 0 || args.includes('--all') || args.includes('--logs'),
+    dispatch: args.length === 0 || args.includes('--all') || args.includes('--dispatch'),
   };
   // If only --json was passed, run all
   if (args.length === 1 && args[0] === '--json') {
@@ -3341,6 +3644,11 @@ function main() {
   const findings = [];
 
   if (sections.skills) findings.push(...checkSkills(domains, knownTargets));
+  if (sections.skills) {
+    findings.push(...checkSkillIdsModule());
+    findings.push(...checkStaleSkillLiterals(knownTargets));
+    findings.push(...checkTuningTargetPaths());
+  }
   if (sections.wiki) findings.push(...checkWiki(domains, archetypes, knownTargets));
   if (sections.domains) {
     findings.push(...checkDomains());
@@ -3349,7 +3657,9 @@ function main() {
   if (sections.templates) findings.push(...checkTemplates(archetypes));
   if (sections.router) findings.push(...checkRouter());
   if (sections.logs) findings.push(...checkLogs());
+  if (sections.dispatch) findings.push(...checkDispatchSpawnSites());
   if (sections.wiki) findings.push(...checkManifestFreshness());
+  if (sections.wiki) findings.push(...checkReviewStateEnums());
   // Event store schema drift — cheap, runs unconditionally.
   findings.push(...checkEventsDb());
   findings.push(...checkEventAttribution());

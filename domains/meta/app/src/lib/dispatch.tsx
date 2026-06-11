@@ -15,7 +15,7 @@ import {
 } from 'react';
 import { type RunFilter, type RunRecord, type RunTags, listRuns, startRun } from './runs';
 
-const TERMINAL_STATES = new Set(['done', 'failed', 'cancelled']);
+const TERMINAL_STATES = new Set(['done', 'failed', 'cancelled', 'died-after-writeback']);
 
 interface DispatchContextValue {
   drawerOpen: boolean;

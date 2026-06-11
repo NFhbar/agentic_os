@@ -18,6 +18,9 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 
+import { parseFrontmatter } from '../../scripts/frontmatter.mjs';
+import { searchWiki } from './search.mjs';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR
   ? resolve(process.env.CLAUDE_PROJECT_DIR)
@@ -35,35 +38,20 @@ function loadIndex() {
   return Array.isArray(raw.entries) ? raw.entries : [];
 }
 
-function scoreEntry(entry, query) {
-  // Simple substring scoring over title, id, snippet. Higher = better match.
-  const q = query.toLowerCase();
-  const title = (entry.title ?? '').toLowerCase();
-  const id = (entry.id ?? '').toLowerCase();
-  const snippet = (entry.snippet ?? '').toLowerCase();
-  let score = 0;
-  if (id === q) score += 100;
-  if (id.includes(q)) score += 40;
-  if (title === q) score += 80;
-  if (title.includes(q)) score += 30;
-  if (snippet.includes(q)) score += 10;
-  // Token-level matches in title (lightweight tokenization)
-  for (const token of q.split(/\s+/).filter(Boolean)) {
-    if (title.includes(token)) score += 5;
-    if (snippet.includes(token)) score += 2;
-  }
-  return score;
-}
+const SEARCH_DB_PATH = join(REPO_ROOT, 'vault', '.index', 'search.db');
 
 const TOOLS = [
   {
     name: 'search_wiki',
     description:
-      'Search wiki entries by free-text query. Optional filters: archetype (e.g. "decision", "runbook"), domain (e.g. "meta", "development"). Returns top hits with id, title, archetype, domain, path, snippet, score.',
+      'Full-text search over wiki entries — FTS5/BM25 across id, title, tags, and entry BODIES (falls back to substring-over-snippets when the search index is missing). Optional filters: archetype (e.g. "decision", "runbook"), domain (e.g. "meta", "development"). Returns top hits with id, title, archetype, domain, path, match snippet, score, and the engine used.',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Free-text query (matched against id, title, snippet).' },
+        query: {
+          type: 'string',
+          description: 'Free-text query (matched against id, title, tags, and entry bodies).',
+        },
         archetype: {
           type: 'string',
           description: 'Optional. Filter by archetype (entry.type in the index).',
@@ -97,48 +85,14 @@ const TOOLS = [
   },
 ];
 
-function handleSearchWiki({ query, archetype, domain, limit = 10 }) {
+async function handleSearchWiki({ query, archetype, domain, limit = 10 }) {
   if (!query || typeof query !== 'string') {
     throw new Error('query is required');
   }
-  const entries = loadIndex();
-  const filtered = entries.filter((e) => {
-    if (archetype && e.type !== archetype) return false;
-    if (domain && e.domain !== domain) return false;
-    return true;
-  });
-  const scored = filtered
-    .map((e) => ({ entry: e, score: scoreEntry(e, query) }))
-    .filter((s) => s.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, Math.max(1, Math.min(50, limit)));
-  return {
-    count: scored.length,
-    total_searched: filtered.length,
-    hits: scored.map(({ entry, score }) => ({
-      id: entry.id,
-      title: entry.title,
-      archetype: entry.type,
-      domain: entry.domain,
-      path: entry.path,
-      snippet: entry.snippet,
-      score,
-    })),
-  };
-}
-
-function parseFrontmatter(content) {
-  const m = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-  if (!m) return { frontmatter: null, body: content };
-  const fm = {};
-  for (const line of m[1].split('\n')) {
-    const eq = line.indexOf(':');
-    if (eq === -1) continue;
-    const key = line.slice(0, eq).trim();
-    const val = line.slice(eq + 1).trim();
-    fm[key] = val;
-  }
-  return { frontmatter: fm, body: m[2] };
+  return await searchWiki(
+    { query, archetype, domain, limit },
+    { loadIndex, searchDbPath: SEARCH_DB_PATH },
+  );
 }
 
 function handleGetEntry({ id, path }) {
@@ -157,7 +111,11 @@ function handleGetEntry({ id, path }) {
     throw new Error(`Entry file not found: ${entry.path}`);
   }
   const content = readFileSync(fullPath, 'utf8');
-  const { frontmatter, body } = parseFrontmatter(content);
+  // Shared real-YAML parser — the old colon-split here garbled any nested
+  // value (arrays, inline JSON, multi-line strings).
+  const parsed = parseFrontmatter(content);
+  const frontmatter = parsed.hasFrontmatter ? parsed.fm : null;
+  const body = parsed.body;
   return {
     id: entry.id ?? frontmatter?.id ?? null,
     path: entry.path,
@@ -204,7 +162,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     throw new Error(`Unknown tool: ${name}`);
   }
   try {
-    const result = handler(args ?? {});
+    const result = await handler(args ?? {});
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

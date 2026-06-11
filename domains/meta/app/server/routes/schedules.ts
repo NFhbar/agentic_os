@@ -1,13 +1,10 @@
-import { spawn } from 'node:child_process';
 import type { Dirent } from 'node:fs';
 import { appendFile, mkdir, readFile, readdir } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import type { FastifyPluginAsync } from 'fastify';
-// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
-import { extractSkill } from '../../../../../scripts/extract-event-attribution.mjs';
 import { parseFrontmatter } from '../frontmatter.js';
 import { REPO_ROOT } from '../repo.js';
-import { resolveEffortForRun } from './runs.js';
+import { startRun } from './runs.js';
 import type { RunEntry, ScheduleSummary } from './schedules.types.js';
 
 // Re-export wire-shape types for backward-compat. New consumers should import
@@ -223,9 +220,12 @@ export const schedulesRoutes: FastifyPluginAsync = async (fastify) => {
     return { runs: runs.slice(0, limit) };
   });
 
-  // POST /api/schedules/run-now { id } — fire a schedule manually,
-  // bypassing the cron-due check. Streams stdout via SSE (same shape as
-  // /api/action so the client can reuse ActionRunner if it wants to).
+  // POST /api/schedules/run-now { id } — fire a schedule manually, bypassing
+  // the cron-due check. Dispatches through the canonical startRun() path so
+  // manual fires get a runs-table row, drawer streaming, watchdog coverage,
+  // and events.db cost capture — the bespoke SSE spawn this replaces had
+  // none of those. The scheduled-runs.jsonl line is still appended when the
+  // run finishes, so the Recent-runs list keeps manual fires.
   fastify.post<{ Body: { id: string } }>('/run-now', async (req, reply) => {
     const { id } = req.body;
     const schedules = await discoverSchedules();
@@ -236,58 +236,45 @@ export const schedulesRoutes: FastifyPluginAsync = async (fastify) => {
     }
 
     const startedAt = new Date();
-    const startedMs = Date.now();
-
-    reply.raw.writeHead(200, {
-      'content-type': 'text/event-stream',
-      'cache-control': 'no-cache',
-      connection: 'keep-alive',
+    let runId: string | null = null;
+    const result = await startRun({
+      prompt: target.prompt,
+      title: `Run now: ${target.title}`,
+      tags: { skill: target.id ?? undefined },
+      onFinished: (s) => {
+        const preview =
+          s.stdout_preview.length > 4096
+            ? s.stdout_preview.slice(0, 4096) + '\n…[truncated]'
+            : s.stdout_preview;
+        const entry = {
+          ts: startedAt.toISOString(),
+          id: target.id,
+          schedule: target.schedule,
+          prompt: target.prompt,
+          project: target.project ?? null,
+          outcome: 'fired' as const,
+          exit: s.exit_status,
+          duration_ms: s.duration_ms,
+          stdout_preview: preview,
+          stderr: (s.stderr ?? '').slice(0, 2048),
+          manual: true,
+          run_id: runId ?? undefined,
+        };
+        void mkdir(dirname(RUN_LOG), { recursive: true })
+          .then(() => appendFile(RUN_LOG, JSON.stringify(entry) + '\n'))
+          .catch((e) => console.error('schedules: run-now log append failed', e));
+      },
     });
-
-    const scheduledSkill = extractSkill(target.prompt) as string | null;
-    const effort = await resolveEffortForRun(scheduledSkill);
-    const args = ['-p', target.prompt, '--permission-mode', 'bypassPermissions'];
-    if (effort) args.push('--effort', effort);
-    if (effort)
-      console.log(
-        `schedules: spawning ${scheduledSkill ?? '(unknown skill)'} with --effort ${effort}`,
-      );
-    const child = spawn('claude', args, {
-      cwd: REPO_ROOT,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (c: Buffer) => {
-      const s = c.toString('utf8');
-      stdout += s;
-      reply.raw.write(`data: ${JSON.stringify({ chunk: s })}\n\n`);
-    });
-    child.stderr.on('data', (c: Buffer) => {
-      const s = c.toString('utf8');
-      stderr += s;
-      reply.raw.write(`data: ${JSON.stringify({ stderr: s })}\n\n`);
-    });
-    child.on('close', async (code) => {
-      const finishedMs = Date.now();
-      reply.raw.write(`data: ${JSON.stringify({ done: true, exit: code })}\n\n`);
-      reply.raw.end();
-
-      const entry = {
-        ts: startedAt.toISOString(),
-        id: target.id,
-        schedule: target.schedule,
-        prompt: target.prompt,
-        exit: code,
-        duration_ms: finishedMs - startedMs,
-        stdout_preview: stdout.length > 4096 ? stdout.slice(0, 4096) + '\n…[truncated]' : stdout,
-        stderr: stderr.slice(0, 2048),
-        manual: true,
-      };
-      await mkdir(dirname(RUN_LOG), { recursive: true });
-      await appendFile(RUN_LOG, JSON.stringify(entry) + '\n');
-    });
+    if (!result.ok) {
+      if ('blocking' in result) {
+        reply.code(409);
+        return { ok: false, error: 'blocked', blocking: result.blocking };
+      }
+      reply.code(500);
+      return { ok: false, error: result.error };
+    }
+    runId = result.run_id;
+    return { ok: true, run_id: result.run_id };
   });
 };
 

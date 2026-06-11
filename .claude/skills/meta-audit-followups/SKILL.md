@@ -1,6 +1,6 @@
 ---
 name: meta-audit-followups
-description: 'Phase 3 of the Overseer arc — the forward-link aggregator. Scans provisional lifecycle-audits, finds subsequent changes that touched the same files, classifies each follow-up (fix / refactor / feat-extension / feat-rewrite / test / docs), and appends followup_signals[] entries that retroactively adjust the audit''s Correctness score. Promotes audits from provisional → final once the 90-day forward-look window closes. Designed to run as a daily scheduled job; safe to invoke manually for one-offs.'
+description: 'Phase 3 of the Overseer arc — the forward-link aggregator. Scans provisional lifecycle-audits, finds subsequent changes that touched the same files, classifies each follow-up (fix / refactor / feat-extension / feat-rewrite / test / docs), and appends followup_signals[] entries that retroactively adjust the audit''s Correctness score. Promotes audits from provisional → final once the 90-day forward-look window closes. Also runs the decision-validation sweep: appends exposure observations to every validation_result: pending decision and flips the result when its wall-time + qualifying-runs window closes. Scheduled daily via runbook-daily-audit-followups; safe to invoke manually for one-offs.'
 user-invocable: true
 version: 1
 domain: meta
@@ -205,6 +205,73 @@ Aggregated across many audits, this is what answers _"are skill X's outputs dura
       total signals added: <S>
       next sweep:         24h
     ```
+
+## Decision-validation sweep
+
+Runs on EVERY invocation, after the audit sweep. This is the loop's last
+mile: decisions used to sit `validation_result: pending` forever behind
+audit-count thresholds (`window_audits: 5` against ~1 audit/week — Fable
+review, Finding 3.1). Windows are now wall-time + exposure; see
+[[archetype-decision]] § Validation for the contract this implements.
+
+For each decision under `vault/wiki/meta/decision/` with
+`implements_tuning_suggestions` set AND `validation_result: pending`:
+
+1. **Skip (with a console note) when `applied_at` is absent** — the skill
+   change never shipped; there is nothing to validate yet.
+
+2. **Resolve the window.** `validation_window` frontmatter, default
+   `{"days": 5, "min_qualifying_runs": 5}`. Window = `[applied_at,
+applied_at + days]`. The target skill = `target_metric.name`'s skill
+   segment, or the skill named in `implements_tuning_suggestions` →
+   audit's `tuning_suggestions[i].skill`.
+
+3. **Count qualifying runs** (exposure — any dispatched run of the target
+   skill after apply):
+
+   ```bash
+   sqlite3 .claude/state/events.db \
+     "SELECT COUNT(*) FROM events
+       WHERE skill = '<target-skill>'
+         AND kind IN ('dashboard','schedule')
+         AND ts > '<applied_at>'"
+   ```
+
+4. **Gather qualifying audits** per [[archetype-decision]] § Qualifying
+   audits (post-apply `overseer_completed_at`, lifecycle ran the target
+   skill, scope filter matches). For each NEW one (not already in
+   `validation_observations[].audit_id`), append an audit observation:
+   `{audit_id, observed_at, qualifies, metric_value, notes}`.
+
+5. **Decide:**
+   - **Window still open** AND no early-close → append one exposure
+     observation `{audit_id: null, observed_at: <now>, qualifies: false, runs_so_far: <N>, notes: "window open — closes <date>"}`
+     (skip if an identical-count exposure note was appended within 24h —
+     keep the log low-noise) and leave `pending`.
+   - **Early close** — qualifying audits ≥ 1 AND runs ≥
+     `min_qualifying_runs` AND the metric reading is unambiguous across
+     all qualifying audits → flip now (note `early: true` in the closing
+     observation).
+   - **Window closed** (`now ≥ applied_at + days`) → flip:
+     - ≥1 qualifying audit: evaluate `target_metric` across them —
+       `tag_frequency_decrease` / `pattern_absence`: every observed
+       `metric_value ≤ target` → `validated`; any `≥ baseline` →
+       `regressed`; mixed → `inconclusive`. `skill_score_increase`: mean
+       observed vs `target`/`baseline`, same mapping.
+     - 0 qualifying audits: `inconclusive` — reason
+       `insufficient exposure (<runs> runs < <min>)` when runs < min, else
+       `exposed but unobserved — <runs> runs produced no qualifying audits; consider a manual overseer audit`.
+     - No `target_metric` declared: `inconclusive — no target_metric`.
+
+6. **Write back** (surgical Edit, single-line JSON fields preserved):
+   `validation_result`, the appended `validation_observations[]` entries
+   (closing entry carries `window_closed: true`, the rationale, and
+   `runs_so_far`), and bump `updated`. NEVER reverse a terminal value a
+   human already set.
+
+7. **Include validation results in the step-14 report** (decisions swept /
+   flipped / still-pending) and in the step-13 event args
+   (`validations: [{id, result}]`).
 
 ## What this skill must NOT do
 

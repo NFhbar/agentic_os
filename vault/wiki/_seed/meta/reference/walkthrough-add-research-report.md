@@ -127,7 +127,7 @@ The research lifecycle accepts three input channels:
 
 ## Gotchas
 
-- **`research-write` is the canonical scaffolder.** The deprecated `meta-research-project` alias forwards to it; some legacy callers still name it by string. New invocations should use `research-write`.
+- **`research-write` is the canonical scaffolder.** The deleted `meta-research-project` alias forwards to it; some legacy callers still name it by string. New invocations should use `research-write`.
 - **Review verdict is reviewer-authored, not auto-generated.** The reviewer reads the draft + project context and writes a structured markdown verdict. Cost ≈ $1–3 per pass.
 - **Approving overrides reviewer caution.** The "Mark approved" escape hatch flips `review_status: request-changes → approved` without addressing the reviewer's concerns. Use deliberately; the audit trail records who did it and when.
 - **Materials are read-once.** The writer walks materials on first dispatch. To incorporate new materials post-draft, use `research-update` (not `research-write`) — it appends an `## Update N` block + may reset review_status.
