@@ -18,6 +18,7 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 
+import { parseFrontmatter } from '../../scripts/frontmatter.mjs';
 import { searchWiki } from './search.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -94,20 +95,6 @@ async function handleSearchWiki({ query, archetype, domain, limit = 10 }) {
   );
 }
 
-function parseFrontmatter(content) {
-  const m = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-  if (!m) return { frontmatter: null, body: content };
-  const fm = {};
-  for (const line of m[1].split('\n')) {
-    const eq = line.indexOf(':');
-    if (eq === -1) continue;
-    const key = line.slice(0, eq).trim();
-    const val = line.slice(eq + 1).trim();
-    fm[key] = val;
-  }
-  return { frontmatter: fm, body: m[2] };
-}
-
 function handleGetEntry({ id, path }) {
   let entry;
   if (id) {
@@ -124,7 +111,11 @@ function handleGetEntry({ id, path }) {
     throw new Error(`Entry file not found: ${entry.path}`);
   }
   const content = readFileSync(fullPath, 'utf8');
-  const { frontmatter, body } = parseFrontmatter(content);
+  // Shared real-YAML parser — the old colon-split here garbled any nested
+  // value (arrays, inline JSON, multi-line strings).
+  const parsed = parseFrontmatter(content);
+  const frontmatter = parsed.hasFrontmatter ? parsed.fm : null;
+  const body = parsed.body;
   return {
     id: entry.id ?? frontmatter?.id ?? null,
     path: entry.path,

@@ -37,41 +37,10 @@ function walk(dir) {
   return out;
 }
 
-function parseFrontmatter(content) {
-  const m = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-  if (!m) return { fm: {}, body: content };
-  const fm = {};
-  for (const raw of m[1].split('\n')) {
-    const line = raw.trimEnd();
-    if (!line || line.startsWith('#')) continue;
-    const kv = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*):\s*(.*)$/);
-    if (!kv) continue;
-    let v = kv[2].trim();
-    if (v.startsWith('[') && v.endsWith(']')) {
-      const inner = v.slice(1, -1).trim();
-      if (inner === '') {
-        v = [];
-      } else {
-        try {
-          v = JSON.parse(v.replace(/'/g, '"'));
-        } catch {
-          // Fallback: YAML-style unquoted comma list — split + strip quotes.
-          v = inner.split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, ''));
-        }
-      }
-    } else if (v === 'true') v = true;
-    else if (v === 'false') v = false;
-    // YAML null literals — `field: null` or `field: ~` (shorthand). Without
-    // this, the value was kept as the JS string "null", which masquerades as
-    // a real id across the entire downstream consumer surface (project,
-    // repo, parent_change, change_id, status, etc.). Downstream `typeof v
-    // === 'string'` checks would NOT filter these out, leading to silent
-    // false-positive references. See Task #420.
-    else if (v === 'null' || v === '~') v = null;
-    fm[kv[1]] = v;
-  }
-  return { fm, body: m[2] };
-}
+// Shared real-YAML parser (CORE_SCHEMA: timestamps stay strings, ~ → null,
+// duplicate keys → parseError). Replaces this hook's hand-rolled flat parser
+// — see scripts/frontmatter.mjs for the consolidation rationale.
+import { parseFrontmatter } from '../../scripts/frontmatter.mjs';
 
 function snippetOf(body) {
   return body
@@ -87,7 +56,12 @@ function backlinksIn(body) {
 
 const records = walk(WIKI_DIR).map((p) => {
   const content = readFileSync(p, 'utf8');
-  const { fm, body } = parseFrontmatter(content);
+  const { fm, body, parseError } = parseFrontmatter(content);
+  if (parseError) {
+    console.error(
+      `⚠ ${relative(REPO_ROOT, p)}: frontmatter parse error — ${parseError.split('\n')[0]}`
+    );
+  }
   return { body, entry: {
     path: relative(REPO_ROOT, p),
     id: fm.id ?? null,
@@ -201,11 +175,9 @@ const records = walk(WIKI_DIR).map((p) => {
         : typeof fm.update_count === 'string' && /^\d+$/.test(fm.update_count)
           ? parseInt(fm.update_count, 10)
           : null,
-    // The full `recommended_changes` array stays in the entry body for
-    // cheap manifest reads; only the count surfaces here. Guards against
-    // the flat parser silently dropping multi-line YAML — degrades to null
-    // when the field is unreadable rather than misreporting 0. See
-    // archetype-research-report § "Frontmatter caveats".
+    // Only the count surfaces here (the full array stays in the entry).
+    // Degrades to null when the field is absent or the entry's YAML failed
+    // to parse. See archetype-research-report § "Frontmatter caveats".
     recommended_changes_count: Array.isArray(fm.recommended_changes)
       ? fm.recommended_changes.length
       : null,

@@ -105,13 +105,13 @@ Skills that consume notes:
 
 ### Frontmatter caveats
 
-The flat-frontmatter parser in `.claude/hooks/rebuild-vault-index.mjs` does NOT handle nested YAML well. When `research-write` (or any future skill) writes a research-report entry:
+**Parsing is no longer the constraint** — every subsystem reads frontmatter through the shared real-YAML parser (`scripts/frontmatter.mjs`), which handles nested arrays/objects and multi-line YAML correctly. (Its flat predecessor silently shredded `recommended_changes`: one report's count read 51 instead of the true 8.)
 
-- `recommended_changes` MUST be emitted as a single-line JSON array (the same trick the parser uses for `tags` and `repos`). Multi-line YAML arrays of objects will be silently dropped — `fm.recommended_changes` will be `undefined`.
-- `dismissed_triggers` MUST likewise be a single-line JSON array.
-- `notes_log` MUST likewise be a single-line JSON array. The `POST /api/research/:id/notes` endpoint and any skill that appends a `considered_by` entry should use the same `replaceField` regex pattern documented for `recommended_changes`.
+**Writing still is.** Keep these fields as single-line JSON arrays:
 
-The `recommended_changes_count` manifest field gracefully degrades to `null` for entries the parser couldn't read, so a missing array isn't a hard failure — it just means the count won't be queryable until the parser is upgraded or the entry is rewritten with the inline form.
+- `recommended_changes`, `dismissed_triggers`, `notes_log` MUST each stay on ONE line — the surgical writeback tooling (`replaceField`-style anchored regexes in `research-scaffold-recommendations`, `POST /api/research/:id/notes`, and the route helpers) replaces the whole line via `^field:[^\n]*$` match. A multi-line value would be half-replaced and corrupt the entry.
+
+The `recommended_changes_count` manifest field degrades to `null` when the field is absent or the entry's YAML fails to parse (`parseError` — e.g. duplicate keys), so a missing array isn't a hard failure.
 
 ## Review-gate fields (managed by research-write / research-review / research-revise)
 

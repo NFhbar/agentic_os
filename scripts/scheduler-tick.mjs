@@ -12,7 +12,8 @@
 //   node scripts/scheduler-tick.mjs --list       list all schedules + next run
 //   node scripts/scheduler-tick.mjs --run-id ID  force-fire one schedule by id
 //
-// No npm dependencies — pure node built-ins so launchd can run it directly.
+// Requires the root `npm install` (js-yaml, via the shared frontmatter
+// parser) — install.sh runs it; everything else is node built-ins.
 
 import {
   appendFileSync,
@@ -36,30 +37,13 @@ const STATE_PATH = join(REPO_ROOT, '.claude', 'state', 'schedule-runs.json');
 const LOG_PATH = join(REPO_ROOT, 'vault', 'raw', 'scheduled-runs.jsonl');
 
 // ---------------------------------------------------------------------------
-// Frontmatter parser (flat key:value, sufficient for runbook frontmatter).
+// Frontmatter parsing — shared real-YAML parser (scripts/frontmatter.mjs).
+// The old flat parser here stripped only OUTER quotes, so single-quoted
+// prompts with doubled-apostrophe escapes (''running'') reached `claude -p`
+// still doubled. Real YAML unescapes them correctly.
 // ---------------------------------------------------------------------------
 
-function parseFrontmatter(content) {
-  const m = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-  if (!m) return { fm: {}, body: content };
-  const fm = {};
-  for (const raw of m[1].split('\n')) {
-    const line = raw.trimEnd();
-    if (!line || line.startsWith('#')) continue;
-    const kv = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*):\s*(.*)$/);
-    if (!kv) continue;
-    let v = kv[2].trim();
-    // Strip surrounding quotes (single or double) from string values.
-    if (
-      (v.startsWith('"') && v.endsWith('"')) ||
-      (v.startsWith("'") && v.endsWith("'"))
-    ) {
-      v = v.slice(1, -1);
-    }
-    fm[kv[1]] = v;
-  }
-  return { fm, body: m[2] };
-}
+import { parseFrontmatter } from './frontmatter.mjs';
 
 function walkMd(dir) {
   const out = [];

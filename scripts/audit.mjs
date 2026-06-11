@@ -27,6 +27,7 @@ import {
   PROJECT_SCOPED_SKILLS,
   REPORT_SCOPED_SKILLS,
 } from './extract-event-attribution.mjs';
+import { parseFrontmatter as sharedParseFrontmatter } from './frontmatter.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
@@ -36,49 +37,20 @@ const EVENTS_DB_PATH = join(REPO_ROOT, '.claude', 'state', 'events.db');
 // Frontmatter parser (flat, sufficient for what we audit).
 // ---------------------------------------------------------------------------
 
+// Adapter over the shared real-YAML parser (scripts/frontmatter.mjs).
+// Audit semantics preserved: fm === null means "no frontmatter fence at
+// all" (drives skill-frontmatter-missing); fm === {} with parseError set
+// means "fence present, YAML broken". Note the skill-frontmatter-parse-error
+// check was wired for parseError all along, but the old flat parser never
+// reported one — it's live for the first time.
 function parseFrontmatter(content) {
-  const m = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-  if (!m) return { fm: null, body: content, raw: '' };
-  const fm = {};
-  for (const raw of m[1].split('\n')) {
-    const line = raw.trimEnd();
-    if (!line || line.startsWith('#')) continue;
-    const kv = line.match(/^([a-zA-Z_][a-zA-Z0-9_-]*):\s*(.*)$/);
-    if (!kv) continue;
-    let v = kv[2].trim();
-    // Strip YAML inline comments (unquoted values only). `key: val  # hint` → `val`.
-    // Quoted values are left to the existing quote-strip below; a `#` inside
-    // quotes is data, not a comment.
-    if (!v.startsWith('"') && !v.startsWith("'")) {
-      v = v.replace(/\s+#.*$/, '').trim();
-    }
-    // Strip surrounding quotes for strings.
-    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
-      v = v.slice(1, -1);
-    } else if (v === 'true') v = true;
-    else if (v === 'false') v = false;
-    else if (v === 'null' || v === '~') v = null;
-    else if (v.startsWith('[') && v.endsWith(']')) {
-      const inner = v.slice(1, -1).trim();
-      // Inline JSON arrays (e.g. recommended_changes: [{...},{...}]) round-trip via
-      // JSON.parse to preserve object shape — naive comma-split would shred them.
-      if (inner.startsWith('{')) {
-        try { v = JSON.parse(v); }
-        catch { v = []; }
-      } else {
-        v = inner === '' ? [] : inner.split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, ''));
-      }
-    } else if (v.startsWith('{') && v.endsWith('}')) {
-      // Inline JSON object (e.g. project automation: {"enabled":true,...}).
-      // JSON is a subset of YAML flow style — round-trip via JSON.parse for
-      // a clean structured value. On parse failure, fall back to the raw
-      // string so the audit doesn't crash on malformed entries.
-      try { v = JSON.parse(v); }
-      catch { /* leave as raw string */ }
-    }
-    fm[kv[1]] = v;
-  }
-  return { fm, body: m[2], raw: m[1] };
+  const r = sharedParseFrontmatter(content);
+  return {
+    fm: r.hasFrontmatter ? r.fm : null,
+    body: r.body,
+    raw: r.raw,
+    parseError: r.parseError,
+  };
 }
 
 function walkMd(dir) {
