@@ -118,7 +118,12 @@ export function buildSubscriptionMap(
 }
 
 export async function createRule(
-  body: Partial<RuleListItem> & { domain: string; title: string; event_type: string; channel: ChannelId },
+  body: Partial<RuleListItem> & {
+    domain: string;
+    title: string;
+    event_type: string;
+    channel: ChannelId;
+  },
 ): Promise<{ ok: true; id: string; source_path: string } | ValidationError> {
   return postJson('/api/notifications/rules', body);
 }
@@ -149,7 +154,7 @@ import type { NotificationEvent } from '../../../server/routes/notifications.typ
 
 export async function listNotificationEvents(
   opts: { limit?: number; since?: string } = {},
-): Promise<{ events: NotificationEvent[] }> {
+): Promise<{ events: NotificationEvent[]; total: number }> {
   const params = new URLSearchParams();
   if (opts.limit != null) params.set('limit', String(opts.limit));
   if (opts.since) params.set('since', opts.since);

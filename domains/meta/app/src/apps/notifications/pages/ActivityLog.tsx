@@ -43,17 +43,24 @@ interface Props {
 export const ActivityLog: React.FC<Props> = ({ onOpenRule }) => {
   const navigate = useNavigate();
   const [events, setEvents] = useState<NotificationEvent[] | null>(null);
+  const [total, setTotal] = useState(0);
+  const [limit, setLimit] = useState(200);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
+    setLoading(true);
     try {
-      const r = await listNotificationEvents({ limit: 200 });
+      const r = await listNotificationEvents({ limit });
       setEvents(r.events);
+      setTotal(r.total);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
     }
-  }, []);
+  }, [limit]);
 
   useEffect(() => {
     refresh();
@@ -86,8 +93,8 @@ export const ActivityLog: React.FC<Props> = ({ onOpenRule }) => {
             style={{ padding: 0 }}
           >
             Rules
-          </button>
-          {' '}and fire its event (or use Test-send) to see activity here.
+          </button>{' '}
+          and fire its event (or use Test-send) to see activity here.
         </p>
       </div>
     );
@@ -116,9 +123,7 @@ export const ActivityLog: React.FC<Props> = ({ onOpenRule }) => {
                 </td>
                 <td style={{ padding: '8px 12px' }}>
                   <code className="tiny">{ev.event_type ?? '—'}</code>
-                  {ev.project && (
-                    <div className="tiny subtle">project: {ev.project}</div>
-                  )}
+                  {ev.project && <div className="tiny subtle">project: {ev.project}</div>}
                 </td>
                 <td style={{ padding: '8px 12px' }}>
                   {ev.rule_id ? (
@@ -151,6 +156,18 @@ export const ActivityLog: React.FC<Props> = ({ onOpenRule }) => {
           })}
         </tbody>
       </table>
+      {events && total > events.length && (
+        <div style={{ marginTop: 14, textAlign: 'center' }}>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => setLimit((n) => n + 200)}
+            disabled={loading}
+          >
+            Load 200 more (showing {events.length} of {total})
+          </button>
+        </div>
+      )}
     </div>
   );
 };
