@@ -12,6 +12,7 @@
 // tests/unit/automation/decideNextChangeStep.test.ts cover every row.
 
 import type { ChangeAutomationDecision } from './automation.types.js';
+import type { ChangeAutomationDispatchBaseline } from './changes.types.js';
 
 // Eligibility gate for the change-automation entry points (enable + start).
 // standard-automation-loop § Scope: automation runs the implementation, not
@@ -39,6 +40,57 @@ export function checkChangeAutomationEligibility(args: {
   };
 }
 
+// Caller-gathered facts about the change's artifacts at verification time.
+// The I/O layer (automation.ts) classifies the git read outcome:
+//   - 'ref-not-found' — repo + dir resolve but the branch ref doesn't exist
+//     (determinate: no commits on the change branch)
+//   - 'degraded' — entity missing / dir missing / git unavailable / spawn
+//     error / no branch configured (unknown — must never cause a false park)
+export interface ArtifactObservation {
+  head: string | null;
+  head_error: 'ref-not-found' | 'degraded' | null;
+  pr_url: string | null;
+  pass_count: number | null;
+  pr_review_path_set: boolean;
+}
+
+// Did the step's expected artifact move since the dispatch baseline?
+// Pure judgment over caller-gathered observations. Returns:
+//   true  — artifact moved (advance normally)
+//   false — determinate no-movement (clean exit was a refusal/no-op → park)
+//   null  — unknown (no baseline recorded, degraded read, or unknown step)
+//           → gate inert, existing behavior applies
+export function evaluateArtifactMovement(
+  step: string | null,
+  baseline: ChangeAutomationDispatchBaseline | null,
+  observed: ArtifactObservation,
+): boolean | null {
+  // No baseline → dispatched before the gate existed (or by a legacy state).
+  // Gate inert so in-flight automations are never falsely parked.
+  if (!baseline) return null;
+  switch (step) {
+    case 'execute':
+    case 'address-comments': {
+      if (observed.head_error === 'ref-not-found') return false;
+      if (observed.head_error === 'degraded') return null;
+      if (observed.head === null) return null;
+      return observed.head !== baseline.head_sha;
+    }
+    case 'open-pr':
+      return (
+        typeof observed.pr_url === 'string' &&
+        observed.pr_url !== '' &&
+        observed.pr_url !== baseline.pr_url
+      );
+    case 'pr-review':
+      return observed.pr_review_path_set && (observed.pass_count ?? 0) > (baseline.pass_count ?? 0);
+    default:
+      // Unknown step (forward-compat) — same conservative posture as the
+      // decider's default branch.
+      return null;
+  }
+}
+
 // Decide the next gesture given the change's current state + the outcome of
 // the most recent run. Pure function — no side effects, no I/O.
 export function decideNextChangeStep(args: {
@@ -58,6 +110,16 @@ export function decideNextChangeStep(args: {
   // instead so the user can triage. Null = unknown / pr_review_path not set;
   // treat as "no guard" and fall through to existing behavior.
   comments_to_address?: number | null;
+  // Artifact-verified advance (2026-06-12 incident). Result of
+  // evaluateArtifactMovement, computed by the caller: false = the run exited
+  // 0 but the step's expected artifact didn't move (skill refused / no-op) →
+  // park instead of advancing. true / null / omitted fall through to existing
+  // behavior — same back-compat pattern as comments_to_address.
+  artifact_moved?: boolean | null;
+  // Human-readable fact about the unmoved artifact (+ the refusing run's
+  // summary line when available). Composed by the caller; lands verbatim in
+  // the park reason.
+  artifact_detail?: string | null;
 }): ChangeAutomationDecision {
   // Failure → park. Captures both unexpected exit codes and the orphan-sweep
   // case (subprocess died with non-zero before writeback).
@@ -65,6 +127,16 @@ export function decideNextChangeStep(args: {
     return {
       action: 'park',
       reason: `skill-failure: ${args.current_step ?? '<unknown step>'} exited ${args.last_exit}`,
+    };
+  }
+  // Clean exit without artifact movement → the skill refused or no-opped.
+  // Advancing here is exactly the 2026-06-12 misfire (execute REFUSED →
+  // ghost open-pr → ghost pr-review). Failure keeps precedence above.
+  if (args.last_exit === 0 && args.artifact_moved === false) {
+    const detail = args.artifact_detail ?? null;
+    return {
+      action: 'park',
+      reason: `skill-refused: ${args.current_step ?? '<unknown step>'} exited 0 without artifact movement${detail ? ` — ${detail}` : ''}`,
     };
   }
   // Step-by-step transitions for the v1 loop.

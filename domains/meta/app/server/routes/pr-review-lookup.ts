@@ -21,6 +21,10 @@ export interface ReviewLookup {
   // Any GitHub review id captured on a comment header on the latest pass.
   // Used to build the deep link to the parent GitHub review.
   reviewGithubReviewId: number | null;
+  // Highest `## Pass <N>` number in the entry (0 when no passes). Feeds the
+  // automation orchestrator's artifact-verified advance: a pr-review step
+  // only counts as done when this number incremented past the baseline.
+  passCount: number;
 }
 
 export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
@@ -28,6 +32,7 @@ export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
     commentsToAddress: 0,
     reviewPublished: false,
     reviewGithubReviewId: null,
+    passCount: 0,
   };
   const abs = safePath(prReviewPath);
   if (!abs || !existsSync(abs)) return empty;
@@ -52,6 +57,7 @@ export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
   if (headers.length === 0) return { ...empty, reviewPublished };
   headers.sort((a, b) => a.n - b.n);
   const latest = headers[headers.length - 1];
+  const passCount = latest.n;
   const latestIdx = headers.indexOf(latest);
   const sectionEnd = latestIdx + 1 < headers.length ? headers[latestIdx + 1].start : body.length;
   const section = body.slice(latest.start, sectionEnd);
@@ -82,5 +88,10 @@ export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
     )
       count++;
   }
-  return { commentsToAddress: count, reviewPublished, reviewGithubReviewId: firstReviewId };
+  return {
+    commentsToAddress: count,
+    reviewPublished,
+    reviewGithubReviewId: firstReviewId,
+    passCount,
+  };
 }

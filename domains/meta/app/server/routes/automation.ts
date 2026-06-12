@@ -9,14 +9,18 @@
 // tick-on-run-terminate.
 
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import type { Dirent } from 'node:fs';
 import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import type { FastifyPluginAsync } from 'fastify';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { queryEvents } from '../../../../../scripts/events-db.mjs';
+// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
+import { getRun } from '../../../../../scripts/runs-db.mjs';
 import { rewriteFrontmatter } from '../frontmatter-rewrite.js';
 import { parseFrontmatter } from '../frontmatter.js';
+import { parseStreamJsonLine } from '../lib/stream-json.js';
 import { REPO_ROOT } from '../repo.js';
 import type {
   AutomationConfig,
@@ -30,7 +34,7 @@ import type {
   ChangeAutomationStatusResponse,
   ChangeAutomationStep,
 } from './automation.types.js';
-import type { ChangeAutomation } from './changes.types.js';
+import type { ChangeAutomation, ChangeAutomationDispatchBaseline } from './changes.types.js';
 import { startRun } from './runs.js';
 
 // Re-export wire-shape types for backward-compat. New consumers should import
@@ -730,6 +734,17 @@ function readChangeAutomationLocal(fm: Record<string, unknown>): ChangeAutomatio
     stateRaw.phase === 'running' || stateRaw.phase === 'paused' || stateRaw.phase === 'complete'
       ? stateRaw.phase
       : 'idle';
+  // Tolerant parse — absent/malformed baseline → null (legacy in-flight
+  // states dispatched before the artifact gate existed stay gate-inert).
+  let dispatch_baseline: ChangeAutomationDispatchBaseline | null = null;
+  if (stateRaw.dispatch_baseline && typeof stateRaw.dispatch_baseline === 'object') {
+    const b = stateRaw.dispatch_baseline as Record<string, unknown>;
+    dispatch_baseline = {
+      head_sha: typeof b.head_sha === 'string' ? b.head_sha : null,
+      pr_url: typeof b.pr_url === 'string' ? b.pr_url : null,
+      pass_count: typeof b.pass_count === 'number' ? b.pass_count : null,
+    };
+  }
   return {
     enabled: r.enabled === true,
     iteration_cap:
@@ -748,6 +763,7 @@ function readChangeAutomationLocal(fm: Record<string, unknown>): ChangeAutomatio
       last_transition:
         typeof stateRaw.last_transition === 'string' ? stateRaw.last_transition : null,
       last_run_id: typeof stateRaw.last_run_id === 'string' ? stateRaw.last_run_id : null,
+      dispatch_baseline,
     },
   };
 }
@@ -830,10 +846,140 @@ function buildChangeStepPrompt(step: ChangeAutomationStep, changeId: string): st
 // through the transitive graph (see tests/unit/automation/).
 export { decideNextChangeStep } from './automation-state-machine.js';
 import {
+  type ArtifactObservation,
   checkChangeAutomationEligibility,
   decideNextChangeStep,
+  evaluateArtifactMovement,
 } from './automation-state-machine.js';
 import { lookupLinkedReview } from './pr-review-lookup.js';
+
+// Resolve the change's repo entity → local_path. Mirrors the inline walk in
+// changes.ts's replay endpoint (that version lives inside a route handler and
+// isn't exported; duplicating locally beats coupling route modules).
+async function resolveRepoLocalPath(repoId: string | null): Promise<string | null> {
+  if (!repoId) return null;
+  const wikiDir = join(REPO_ROOT, 'vault', 'wiki');
+  const files = await walkMd(wikiDir);
+  for (const file of files) {
+    try {
+      const { fm, parseError } = parseFrontmatter(await readFile(file, 'utf8'));
+      if (parseError) continue;
+      if (fm.type !== 'entity' || fm.kind !== 'repo' || fm.id !== repoId) continue;
+      return typeof fm.local_path === 'string' ? fm.local_path : null;
+    } catch {
+      /* skip */
+    }
+  }
+  return null;
+}
+
+// Read the change branch's head SHA, classifying the outcome for
+// evaluateArtifactMovement:
+//   - head set            — ref resolved
+//   - 'ref-not-found'     — repo dir present, git ran, ref doesn't exist
+//                           (determinate: the branch has no commits)
+//   - 'degraded'          — no branch configured / dir missing / git or
+//                           spawn failure (unknown — gate must stay inert)
+function readBranchHead(
+  localPath: string | null,
+  branch: string | null,
+): { head: string | null; head_error: 'ref-not-found' | 'degraded' | null } {
+  if (!localPath || !branch) return { head: null, head_error: 'degraded' };
+  try {
+    if (!existsSync(localPath)) return { head: null, head_error: 'degraded' };
+    const res = spawnSync(
+      'git',
+      ['-C', localPath, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`],
+      { encoding: 'utf8' },
+    );
+    if (res.error) return { head: null, head_error: 'degraded' };
+    if (res.status === 0) {
+      const sha = (res.stdout ?? '').trim();
+      return sha ? { head: sha, head_error: null } : { head: null, head_error: 'degraded' };
+    }
+    // `--verify --quiet` exits 1 (silently) for a missing ref; other codes
+    // (128 = not a repo, etc.) are infrastructure failures.
+    if (res.status === 1) return { head: null, head_error: 'ref-not-found' };
+    return { head: null, head_error: 'degraded' };
+  } catch {
+    return { head: null, head_error: 'degraded' };
+  }
+}
+
+// Gather the caller-side facts evaluateArtifactMovement judges. I/O only —
+// the movement decision itself is the pure function in
+// automation-state-machine.ts.
+async function gatherArtifactObservation(
+  fm: Record<string, unknown>,
+): Promise<ArtifactObservation> {
+  const repo = typeof fm.repo === 'string' ? fm.repo : null;
+  const branch = typeof fm.branch === 'string' ? fm.branch : null;
+  const localPath = await resolveRepoLocalPath(repo);
+  const headRes = readBranchHead(localPath, branch);
+  const prReviewPath = typeof fm.pr_review_path === 'string' ? fm.pr_review_path : null;
+  return {
+    head: headRes.head,
+    head_error: headRes.head_error,
+    pr_url: typeof fm.pr_url === 'string' ? fm.pr_url : null,
+    pass_count: prReviewPath ? lookupLinkedReview(prReviewPath).passCount : null,
+    pr_review_path_set: prReviewPath !== null,
+  };
+}
+
+// Best-effort: last assistant text line of a run's stream-json output —
+// surfaces the skill's refusal summary in the park reason. Any failure → null
+// (the park proceeds without the quote).
+async function readRunSummaryLine(runId: string): Promise<string | null> {
+  try {
+    const run = getRun(runId) as { output_path?: string | null } | null;
+    const outputPath = run && typeof run.output_path === 'string' ? run.output_path : null;
+    if (!outputPath) return null;
+    const raw = await readFile(outputPath, 'utf8');
+    let lastText: string | null = null;
+    for (const line of raw.split('\n')) {
+      for (const parsed of parseStreamJsonLine(line)) {
+        if (parsed.kind === 'assistant-text' && parsed.text.trim() !== '') lastText = parsed.text;
+      }
+    }
+    if (!lastText) return null;
+    const firstLine = lastText
+      .split('\n')
+      .map((l) => l.trim())
+      .find((l) => l !== '');
+    if (!firstLine) return null;
+    return firstLine.length > 200 ? `${firstLine.slice(0, 200)}…` : firstLine;
+  } catch {
+    return null;
+  }
+}
+
+// Compose the human-readable no-movement fact for the park reason.
+function composeArtifactDetail(
+  step: string | null,
+  observed: ArtifactObservation,
+  branch: string | null,
+  runSummary: string | null,
+): string | null {
+  let detail: string | null = null;
+  if (step === 'execute' || step === 'address-comments') {
+    detail =
+      observed.head_error === 'ref-not-found'
+        ? `branch ${branch ?? '<unknown>'} has no commits (ref not found)`
+        : `no new commits on ${branch ?? '<unknown branch>'} (head still ${observed.head ? observed.head.slice(0, 7) : 'unknown'})`;
+  } else if (step === 'open-pr') {
+    detail = observed.pr_url
+      ? `pr_url unchanged (${observed.pr_url})`
+      : 'pr_url not set on the change entry';
+  } else if (step === 'pr-review') {
+    detail = observed.pr_review_path_set
+      ? `no new review pass (pass_count still ${observed.pass_count ?? 0})`
+      : 'no pr-review entry linked';
+  }
+  if (runSummary) {
+    detail = detail ? `${detail}; run summary: "${runSummary}"` : `run summary: "${runSummary}"`;
+  }
+  return detail;
+}
 
 // Dispatch a step's skill run for a change. Returns the new run_id on
 // success. Bumps `state.last_run_id` + `state.current_step` + `phase: running`
@@ -851,6 +997,17 @@ async function dispatchChangeStep(args: {
   const project = typeof fm.project === 'string' ? fm.project : null;
   const domain = typeof fm.domain === 'string' ? fm.domain : null;
   const repo = typeof fm.repo === 'string' ? fm.repo : null;
+  // Snapshot the artifact baseline BEFORE startRun so the dispatched skill's
+  // own work can't leak into its baseline. head_sha null is an expected
+  // pre-EXECUTE state (branch doesn't exist yet); a still-absent ref at
+  // verification time then reads as no movement.
+  const branch = typeof fm.branch === 'string' ? fm.branch : null;
+  const prReviewPath = typeof fm.pr_review_path === 'string' ? fm.pr_review_path : null;
+  const dispatchBaseline: ChangeAutomationDispatchBaseline = {
+    head_sha: readBranchHead(await resolveRepoLocalPath(repo), branch).head,
+    pr_url: typeof fm.pr_url === 'string' ? fm.pr_url : null,
+    pass_count: prReviewPath ? lookupLinkedReview(prReviewPath).passCount : null,
+  };
   const result = await startRun({
     prompt,
     title: `[automation] ${CHANGE_STEP_SKILLS[step]} ${changeId} (${step})`,
@@ -884,6 +1041,7 @@ async function dispatchChangeStep(args: {
       paused_at: null,
       last_transition: nowIso,
       last_run_id: result.run_id,
+      dispatch_baseline: dispatchBaseline,
     },
   };
   await writeChangeAutomation(changePath, nextAutomation);
@@ -1085,6 +1243,30 @@ export async function onChangeAutomationStepComplete(
     const comments_to_address = pr_review_path
       ? lookupLinkedReview(pr_review_path).commentsToAddress
       : null;
+    // Artifact-verified advance (2026-06-12 incident): a clean exit only
+    // advances when the step's expected artifact moved relative to the
+    // dispatch baseline. No baseline (legacy in-flight state) → gate inert.
+    let artifact_moved: boolean | null = null;
+    let artifact_detail: string | null = null;
+    if (effectiveExit === 0 && automation.state.dispatch_baseline) {
+      const fmRef = (refreshed ?? found).fm;
+      const observed = await gatherArtifactObservation(fmRef);
+      artifact_moved = evaluateArtifactMovement(
+        automation.state.current_step,
+        automation.state.dispatch_baseline,
+        observed,
+      );
+      if (artifact_moved === false) {
+        const branch = typeof fmRef.branch === 'string' ? fmRef.branch : null;
+        const summary = await readRunSummaryLine(runId);
+        artifact_detail = composeArtifactDetail(
+          automation.state.current_step,
+          observed,
+          branch,
+          summary,
+        );
+      }
+    }
     const decision = decideNextChangeStep({
       current_step: automation.state.current_step,
       iteration_count: automation.state.iteration_count,
@@ -1092,6 +1274,8 @@ export async function onChangeAutomationStepComplete(
       last_exit: effectiveExit,
       pr_review_status,
       comments_to_address,
+      artifact_moved,
+      artifact_detail,
     });
     if (decision.action === 'park') {
       // For iteration-cap-reached parks, enrich the audit args with pr_url
@@ -1106,6 +1290,9 @@ export async function onChangeAutomationStepComplete(
       // to act (triage status:new comments → accepted/dismissed) before
       // resuming.
       const isNeedsTriage = decision.reason.startsWith('needs-triage');
+      // skill-refused parks link back to the refusing run (mirrors the
+      // needs-triage extraArgs pattern) so the event row carries the run id.
+      const isRefused = decision.reason.startsWith('skill-refused');
       let extraArgs: Record<string, unknown> | undefined;
       if (isCap) {
         const fmRef = (refreshed ?? found).fm;
@@ -1129,6 +1316,8 @@ export async function onChangeAutomationStepComplete(
           pr_url: typeof fmRef.pr_url === 'string' ? fmRef.pr_url : null,
           pr_review_path: typeof fmRef.pr_review_path === 'string' ? fmRef.pr_review_path : null,
         };
+      } else if (isRefused) {
+        extraArgs = { run_id: runId, step: automation.state.current_step };
       }
       await parkChangeAutomation({
         changeId,
@@ -1731,19 +1920,47 @@ export const changeAutomationRoutes: FastifyPluginAsync = async (fastify) => {
     }
     // Decide the next step. First dispatch (current_step null) defaults to
     // execute. Subsequent restarts (post-Resume) re-evaluate the state
-    // machine assuming the previous step succeeded.
+    // machine assuming the previous step succeeded — but, when a dispatch
+    // baseline was recorded, verify the step's artifact actually moved so a
+    // skill-refused park can't be skipped past via Resume → Start.
     const pr_review_status =
       typeof found.fm.pr_review_status === 'string' ? found.fm.pr_review_status : null;
-    const decision: ChangeAutomationDecision =
-      current.state.current_step === null
-        ? { action: 'dispatch', step: 'execute' }
-        : decideNextChangeStep({
-            current_step: current.state.current_step,
-            iteration_count: current.state.iteration_count,
-            iteration_cap: current.iteration_cap,
-            last_exit: 0,
-            pr_review_status,
-          });
+    let decision: ChangeAutomationDecision;
+    if (current.state.current_step === null) {
+      decision = { action: 'dispatch', step: 'execute' };
+    } else {
+      let artifact_moved: boolean | null = null;
+      let artifact_detail: string | null = null;
+      if (current.state.dispatch_baseline) {
+        const observed = await gatherArtifactObservation(found.fm);
+        artifact_moved = evaluateArtifactMovement(
+          current.state.current_step,
+          current.state.dispatch_baseline,
+          observed,
+        );
+        if (artifact_moved === false) {
+          const branch = typeof found.fm.branch === 'string' ? found.fm.branch : null;
+          const summary = current.state.last_run_id
+            ? await readRunSummaryLine(current.state.last_run_id)
+            : null;
+          artifact_detail = composeArtifactDetail(
+            current.state.current_step,
+            observed,
+            branch,
+            summary,
+          );
+        }
+      }
+      decision = decideNextChangeStep({
+        current_step: current.state.current_step,
+        iteration_count: current.state.iteration_count,
+        iteration_cap: current.iteration_cap,
+        last_exit: 0,
+        pr_review_status,
+        artifact_moved,
+        artifact_detail,
+      });
+    }
     if (decision.action === 'park') {
       await parkChangeAutomation({
         changeId,
