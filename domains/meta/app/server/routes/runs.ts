@@ -635,7 +635,12 @@ function superviseSession(session: RunSession) {
   session.follower = setInterval(() => {
     followTick(session);
     if (session.finished || session.deadSettleScheduled) return;
-    if (isPidAlive(session.pid)) return;
+    // !mayStillSignal is dead-equivalent: result journaled + stream quiet
+    // means the work is over, yet a recycled PID can keep the liveness probe
+    // true forever — and the wall-cap sweep skips such sessions entirely.
+    // Without this, the row wedges in `running` until restart and the
+    // per-change concurrency gate 409-blocks new dispatches for the change.
+    if (isPidAlive(session.pid) && mayStillSignal(session)) return;
     session.deadSettleScheduled = true;
     setTimeout(() => {
       followTick(session);

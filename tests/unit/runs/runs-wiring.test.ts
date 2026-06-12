@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => ({
   inferTerminalState: vi.fn(),
   markRunning: vi.fn(),
   recordEvent: vi.fn(),
+  recoverUsageFromJournal: vi.fn((): Record<string, unknown> | null => null),
   setHooksFired: vi.fn(),
   spawnClaudeOrphaned: vi.fn(),
 }));
@@ -79,7 +80,7 @@ vi.mock('../../../scripts/runs-finalize.mjs', async (importOriginal) => {
     ...actual,
     artifactFresh: mocks.artifactFresh,
     inferTerminalState: mocks.inferTerminalState,
-    recoverUsageFromJournal: vi.fn(() => null),
+    recoverUsageFromJournal: mocks.recoverUsageFromJournal,
   };
 });
 
@@ -105,6 +106,7 @@ describe('runs.ts wiring — PID-dead settle + spawn-failure early-finalize', ()
     vi.clearAllMocks();
     mocks.createRun.mockImplementation((row: { id: string }) => ({ run_id: row.id }));
     mocks.artifactFresh.mockReturnValue(false);
+    mocks.recoverUsageFromJournal.mockReturnValue(null);
     vi.useFakeTimers();
   });
 
@@ -152,9 +154,60 @@ describe('runs.ts wiring — PID-dead settle + spawn-failure early-finalize', ()
     expect(mocks.setHooksFired).toHaveBeenCalledWith(row.id);
   });
 
+  it('recycled PID: result journaled + stream quiet → follower finalizes despite a live PID probe', async () => {
+    // process.pid is guaranteed alive — stands in for a recycled PID that
+    // keeps isPidAlive() true after the real child is long gone. Without
+    // the !mayStillSignal dead-equivalence in the follower, this session
+    // never finalizes: the wall-cap sweep skips it (recycled-PID guard) and
+    // the dead-PID path never fires, wedging the row in `running` and
+    // 409-blocking new dispatches for the change until a server restart.
+    mocks.spawnClaudeOrphaned.mockResolvedValue({ pid: process.pid });
+    const res = await startRun({ prompt: 'wiring test' });
+    expect(res.ok).toBe(true);
+    const row = createdRow();
+
+    writeFileSync(
+      row.output_path,
+      `${JSON.stringify({
+        type: 'result',
+        is_error: false,
+        total_cost_usd: 0.11,
+        duration_ms: 999,
+        usage: { input_tokens: 1, output_tokens: 2 },
+        modelUsage: { 'claude-test': {} },
+      })}\n`,
+    );
+
+    // First tick drains the result frame; the PID probe reads alive and the
+    // stream is not yet quiet, so the session stays open.
+    await vi.advanceTimersByTimeAsync(300);
+    expect(mocks.finishRun).not.toHaveBeenCalled();
+
+    // Past the 2 s quiet window the follower treats the session as dead:
+    // settle is scheduled on the next tick and finalization lands.
+    await vi.advanceTimersByTimeAsync(2_400);
+    expect(mocks.finishRun).toHaveBeenCalledTimes(1);
+    expect(mocks.finishRun).toHaveBeenCalledWith(
+      row.id,
+      expect.objectContaining({ state: 'done', exit_status: 0, cost_usd: 0.11 }),
+    );
+    expect(mocks.setHooksFired).toHaveBeenCalledWith(row.id);
+  });
+
   it('dead PID with no result + fresh linked entity → died-after-writeback', async () => {
     mocks.spawnClaudeOrphaned.mockResolvedValue({ pid: DEAD_PID });
     mocks.artifactFresh.mockReturnValue(true);
+    // Killed-run usage recovery: no result frame and no cost on the session,
+    // so the journal-tail lower bound must land on the row + insights event.
+    const recovered = {
+      costUsd: 0.07,
+      tokensIn: 11,
+      tokensOut: 22,
+      tokensCacheRead: 3,
+      tokensCacheWrite: 4,
+      model: 'claude-recovered',
+    };
+    mocks.recoverUsageFromJournal.mockReturnValue(recovered);
     await startRun({ prompt: 'wiring test', tags: { change_id: 'some-change' } });
     const row = createdRow();
 
@@ -178,6 +231,21 @@ describe('runs.ts wiring — PID-dead settle + spawn-failure early-finalize', ()
         exit_status: null,
         error: expect.stringContaining('work likely landed'),
       }),
+    );
+    expect(mocks.recoverUsageFromJournal).toHaveBeenCalledWith(row.output_path);
+    expect(mocks.finishRun).toHaveBeenCalledWith(
+      row.id,
+      expect.objectContaining({
+        cost_usd: 0.07,
+        tokens_in: 11,
+        tokens_out: 22,
+        tokens_cache_hit: 3,
+        tokens_cache_write: 4,
+        model: 'claude-recovered',
+      }),
+    );
+    expect(mocks.recordEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ cost_usd: 0.07, model: 'claude-recovered' }),
     );
   });
 
