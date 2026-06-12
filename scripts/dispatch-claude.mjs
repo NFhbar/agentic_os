@@ -23,7 +23,7 @@
 
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -228,4 +228,87 @@ export async function spawnClaude(
     detached,
   });
   return { child, args, effort, model };
+}
+
+// Spawn claude via the dispatch-holder trampoline so the child re-parents to
+// PID 1 — survives parent-pid tree-kills (`concurrently -k`, IDE task
+// runners) that detached spawn alone does not. The holder inherits
+// cwd: REPO_ROOT and the grandchild inherits it from the holder, so skill /
+// vault / settings resolution matches spawnClaude exactly. stdout/stderr go
+// straight to the journal files; the caller supervises by the returned PID.
+//
+// Resolves { pid, args, effort, model } on success, { pid: null, error } on
+// spawn failure — including the holder dying after reporting a pid, in which
+// case the reported pid is best-effort SIGKILLed so no unsupervised stray
+// survives.
+export async function spawnClaudeOrphaned(
+  prompt,
+  skillName,
+  { outputPath, stderrPath, logPrefix = 'dispatch', model: modelOverride = null },
+) {
+  const { args, effort, model } = await buildClaudeArgs(prompt, skillName, { model: modelOverride });
+  if (effort || model) {
+    console.error(
+      `${logPrefix}: spawning ${skillName ?? '(unknown skill)'}${effort ? ` --effort ${effort}` : ''}${model ? ` --model ${model}` : ''}`,
+    );
+  }
+  const abs = (p) => (isAbsolute(p) ? p : join(REPO_ROOT, p));
+  const holder = spawn(
+    process.execPath,
+    [
+      join(REPO_ROOT, 'scripts', 'dispatch-holder.mjs'),
+      '--out',
+      abs(outputPath),
+      '--err',
+      abs(stderrPath),
+      '--',
+      'claude',
+      ...args,
+    ],
+    { cwd: REPO_ROOT, stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  let stdout = '';
+  let stderr = '';
+  holder.stdout.on('data', (d) => {
+    stdout += d;
+  });
+  holder.stderr.on('data', (d) => {
+    stderr += d;
+  });
+  const exitCode = await new Promise((res) => {
+    holder.on('close', (code) => res(code));
+    holder.on('error', (e) => {
+      stderr += `holder spawn error: ${e.message}\n`;
+      res(-1);
+    });
+  });
+
+  let pid = null;
+  for (const line of stdout.split('\n')) {
+    if (!line) continue;
+    try {
+      const obj = JSON.parse(line);
+      if (typeof obj?.pid === 'number') {
+        pid = obj.pid;
+        break;
+      }
+    } catch {
+      /* not the pid line */
+    }
+  }
+
+  if (pid !== null && exitCode === 0) return { pid, args, effort, model };
+  if (pid !== null) {
+    // Spawn-failure-after-report: the holder reported a pid then exited
+    // non-zero — the grandchild may be alive but the caller will record the
+    // run as failed, so leave no live stray.
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      /* ESRCH — already gone */
+    }
+  }
+  const error =
+    stderr.trim() || `dispatch-holder exited ${exitCode}${pid !== null ? ' after reporting a pid' : ''}`;
+  return { pid: null, error };
 }
