@@ -26,6 +26,15 @@ import { useNavigation } from '../../lib/navigation';
 import { formatRelative } from '../../lib/time';
 import { Icons } from '../../shared';
 import { DecisionsPanel } from './DecisionsPanel';
+
+interface AuditCandidate {
+  change_id: string;
+  title: string;
+  project: string;
+  status: string;
+  merged_at: string | null;
+  updated: string | null;
+}
 import { PendingSuggestionsPanel } from './PendingSuggestionsPanel';
 import '../../shared/styles.css';
 
@@ -406,20 +415,49 @@ function EmptyState({
 function OverviewTab() {
   const [aggregate, setAggregate] = useState<AuditAggregate | null>(null);
   const [recent, setRecent] = useState<AuditSummary[] | null>(null);
+  const [candidates, setCandidates] = useState<AuditCandidate[]>([]);
+  const [auditing, setAuditing] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
+  const { startSkillRun } = useDispatch();
+
+  // Same dispatch the change detail page's "Audit lifecycle" button sends —
+  // the skill self-validates terminal state, audit opt-in, and 24h debounce.
+  async function auditChange(changeId: string) {
+    if (auditing.has(changeId)) return;
+    setAuditing((s) => new Set(s).add(changeId));
+    const prompt = [
+      `Run the meta-overseer-review skill to audit change "${changeId}".`,
+      'Read .claude/skills/meta-overseer-review/SKILL.md and follow its Procedure exactly.',
+      '',
+      'Inputs:',
+      `- change: ${JSON.stringify(changeId)}`,
+      '',
+      'IMPORTANT — headless dashboard-driven call:',
+      '- Do NOT use AskUserQuestion or any interactive prompt.',
+      "- Honor the skill's gates: terminal state required (status: merged or abandoned), project must have audit.enabled OR force: true.",
+      "- If the gate trips, exit with the skill's rejection message verbatim so the user can decide whether to re-run with force.",
+      '- On success, report the audit id + verdict + cost so the user can navigate to the Overseer audits tab.',
+    ].join('\n');
+    await startSkillRun(prompt, `Audit lifecycle: ${changeId}`, {
+      skill: 'meta-overseer-review',
+      change_id: changeId,
+    });
+  }
 
   useEffect(() => {
     let cancelled = false;
     Promise.all([
       getJson<AuditAggregate>('/api/audits/aggregate'),
       getJson<{ audits: AuditSummary[] }>('/api/audits'),
+      getJson<{ candidates: AuditCandidate[] }>('/api/audits/candidates'),
     ])
-      .then(([agg, list]) => {
+      .then(([agg, list, cand]) => {
         if (cancelled) return;
         setAggregate(agg);
         setRecent(list.audits.slice(0, 10));
+        setCandidates(cand.candidates);
         setLoading(false);
       })
       .catch((e) => {
@@ -687,6 +725,70 @@ function OverviewTab() {
           )}
         </section>
       </div>
+
+      {/* Un-audited lifecycles — the audit-dispatch affordance, surfaced where
+          operators actually look for it (this app), not only on the change
+          detail page. Candidates = terminal changes from audit-enabled
+          projects without a lifecycle-audit entry, newest first. */}
+      <section className="card" style={{ padding: 0 }}>
+        <div className="card-header" style={{ padding: '10px 14px' }}>
+          <h3 className="card-title">Un-audited lifecycles</h3>
+          <span className="tiny subtle">{candidates.length}</span>
+        </div>
+        {candidates.length === 0 ? (
+          <p className="subtle" style={{ padding: '10px 14px', margin: 0, fontSize: 12 }}>
+            Every terminal change from audit-enabled projects has a lifecycle audit.
+          </p>
+        ) : (
+          <ul style={{ listStyle: 'none', margin: 0, padding: '6px 8px' }}>
+            {candidates.map((c) => (
+              <li
+                key={c.change_id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  padding: '7px 6px',
+                  borderBottom: '1px solid var(--border)',
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => navigate(`/changes/${c.change_id}`)}
+                  className="link-quiet"
+                  style={{
+                    flex: 1,
+                    textAlign: 'left',
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontSize: 12.5,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                  title={c.change_id}
+                >
+                  {c.title}
+                </button>
+                <span className="tiny subtle">{c.project}</span>
+                <span className="tiny subtle" title={c.merged_at ?? undefined}>
+                  {c.merged_at ? formatRelative(c.merged_at) : c.status}
+                </span>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  disabled={auditing.has(c.change_id)}
+                  onClick={() => auditChange(c.change_id)}
+                  title="Dispatch meta-overseer-review for this lifecycle (tracked in the runs drawer)"
+                >
+                  <Icons.Eye size={11} /> {auditing.has(c.change_id) ? 'Dispatched' : 'Audit'}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
       {/* Footer: time range + rubric note */}
       <div className="tiny subtle" style={{ padding: '0 4px' }}>

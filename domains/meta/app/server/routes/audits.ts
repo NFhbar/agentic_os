@@ -394,6 +394,71 @@ export const auditsRoutes: FastifyPluginAsync = async (fastify) => {
 
   // GET /api/audits/aggregate[?project=<id>] — verdict distribution +
   // top tags + top tuning suggestions across the scoped audits.
+  // GET /api/audits/candidates — terminal changes from audit-enabled
+  // projects with no lifecycle-audit yet. Powers the Overview tab's
+  // "Un-audited lifecycles" card (the audit-dispatch affordance used to live
+  // ONLY on the change detail page — a discoverability gap; the Overseer app
+  // is where operators go looking for it). Newest activity first.
+  fastify.get('/candidates', async () => {
+    let entries: Array<Record<string, unknown>> = [];
+    try {
+      const manifest = JSON.parse(
+        await readFile(join(REPO_ROOT, 'vault', '.index', 'manifest.json'), 'utf8'),
+      );
+      entries = manifest.entries ?? [];
+    } catch {
+      return { candidates: [] };
+    }
+    // Audited change ids — audit files are named audit-<change-id>.md.
+    const audited = new Set<string>();
+    try {
+      for (const f of await readdir(AUDITS_DIR)) {
+        if (f.startsWith('audit-') && f.endsWith('.md')) {
+          audited.add(f.slice('audit-'.length, -'.md'.length));
+        }
+      }
+    } catch {
+      /* no audits dir yet */
+    }
+    // Projects that opted in (audit.enabled is not lifted to the manifest —
+    // read each project entry's frontmatter; projects are few).
+    const auditEnabled = new Set<string>();
+    for (const e of entries) {
+      if (e.type !== 'project' || typeof e.path !== 'string' || typeof e.id !== 'string') continue;
+      try {
+        const { fm } = parseFrontmatter(await readFile(join(REPO_ROOT, e.path), 'utf8'));
+        const audit = (fm as Record<string, unknown>).audit as { enabled?: boolean } | undefined;
+        if (audit?.enabled === true) auditEnabled.add(e.id);
+      } catch {
+        /* unreadable project — skip */
+      }
+    }
+    const candidates = entries
+      .filter(
+        (e) =>
+          e.type === 'change' &&
+          typeof e.id === 'string' &&
+          (e.status === 'merged' || e.status === 'abandoned') &&
+          typeof e.project === 'string' &&
+          auditEnabled.has(e.project) &&
+          !audited.has(e.id),
+      )
+      .map((e) => ({
+        change_id: e.id as string,
+        title: (e.title as string) ?? (e.id as string),
+        project: e.project as string,
+        status: e.status as string,
+        merged_at: (e.merged_at as string) ?? null,
+        updated: (e.updated as string) ?? null,
+      }))
+      .sort((a, b) =>
+        ((b.merged_at ?? b.updated ?? '') as string).localeCompare(
+          (a.merged_at ?? a.updated ?? '') as string,
+        ),
+      );
+    return { candidates };
+  });
+
   fastify.get<{ Querystring: { project?: string } }>('/aggregate', async (req) => {
     const projectFilter = req.query.project ?? null;
     const files = await walkMd(AUDITS_DIR);
