@@ -156,18 +156,23 @@ export const ActivityLog: React.FC<Props> = ({ onOpenRule }) => {
           })}
         </tbody>
       </table>
-      {events && total > events.length && (
-        <div style={{ marginTop: 14, textAlign: 'center' }}>
-          <button
-            type="button"
-            className="btn btn-ghost"
-            onClick={() => setLimit((n) => n + 200)}
-            disabled={loading}
-          >
-            Load 200 more (showing {events.length} of {total})
-          </button>
-        </div>
-      )}
+      {events &&
+        (total > events.length ? (
+          <div style={{ marginTop: 14, textAlign: 'center' }}>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => setLimit((n) => n + 200)}
+              disabled={loading}
+            >
+              Load 200 more (showing {events.length} of {total})
+            </button>
+          </div>
+        ) : (
+          <p className="subtle" style={{ marginTop: 14, textAlign: 'center', fontSize: 11.5 }}>
+            Showing all {events.length} deliveries.
+          </p>
+        ))}
     </div>
   );
 };

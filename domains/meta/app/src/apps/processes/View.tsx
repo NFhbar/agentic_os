@@ -231,18 +231,28 @@ export default function ProcessesView() {
           ))}
         </ul>
       )}
-      {total != null && total > runs.length && (
-        <div style={{ marginTop: 14, textAlign: 'center' }}>
-          <button
-            type="button"
-            className="btn btn-ghost"
-            onClick={() => setLimit((n) => n + 200)}
-            disabled={loadingMore}
+      {total != null &&
+        (total > runs.length ? (
+          <div style={{ marginTop: 14, textAlign: 'center' }}>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => setLimit((n) => n + 200)}
+              disabled={loadingMore}
+            >
+              Load 200 more (showing {runs.length} of {total})
+            </button>
+          </div>
+        ) : (
+          <p
+            className="subtle"
+            style={{ marginTop: 14, textAlign: 'center', fontSize: 11.5 }}
+            title="Completed runs beyond the newest 200 are evicted from the runs table (their JSONL journals are removed too). Queued/running runs are never evicted."
           >
-            Load 200 more (showing {runs.length} of {total})
-          </button>
-        </div>
-      )}
+            Showing all {runs.length} runs — older completed runs are evicted by the 200-run
+            retention cap.
+          </p>
+        ))}
     </div>
   );
 }
