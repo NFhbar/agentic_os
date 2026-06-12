@@ -105,6 +105,27 @@ export interface ChangeAutomationState {
   paused_at: string | null; // ISO 8601 UTC
   last_transition: string | null; // ISO 8601 UTC of last state mutation
   last_run_id: string | null; // most recent orchestrator-dispatched run id
+  // Artifact snapshot taken immediately before the most recent dispatch.
+  // Drives the artifact-verified advance gate: a step only advances when its
+  // expected artifact moved relative to this baseline. Absent/null on states
+  // written before the gate existed — the gate stays inert for those.
+  dispatch_baseline?: ChangeAutomationDispatchBaseline | null;
+}
+
+// What the world looked like just before the orchestrator dispatched the
+// current step. Snapshotted BEFORE startRun so the dispatched skill's own
+// work can't leak into its baseline.
+export interface ChangeAutomationDispatchBaseline {
+  head_sha: string | null; // change-branch head; null when the ref doesn't exist yet
+  // True when the head read was degraded (git/spawn failure, dir missing)
+  // rather than a determinate ref-not-found — head_sha null then means
+  // "unknown", not "branch absent". Verification treats such a baseline as
+  // unverifiable (park) instead of letting a non-null head read as movement.
+  // Optional: baselines written before this field existed read as not
+  // degraded and keep the pre-flag semantics.
+  head_degraded?: boolean;
+  pr_url: string | null; // change frontmatter pr_url at dispatch time
+  pass_count: number | null; // latest pass N on the linked pr-review entry
 }
 
 // File reference returned in change detail — null when the file doesn't exist.
