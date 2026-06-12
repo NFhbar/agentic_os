@@ -50,11 +50,15 @@ export default function ProcessesView() {
   const [limit, setLimit] = useState(200);
   const [deepRuns, setDeepRuns] = useState<RunRecord[] | null>(null);
   const [total, setTotal] = useState<number | null>(null);
+  const [retentionCap, setRetentionCap] = useState<number | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
 
   useEffect(() => {
-    getJson<{ n: number }>('/api/runs/count')
-      .then((r) => setTotal(r.n))
+    getJson<{ n: number; cap?: number }>('/api/runs/count')
+      .then((r) => {
+        setTotal(r.n);
+        setRetentionCap(r.cap ?? null);
+      })
       .catch(() => setTotal(null));
   }, []);
 
@@ -247,10 +251,12 @@ export default function ProcessesView() {
           <p
             className="subtle"
             style={{ marginTop: 14, textAlign: 'center', fontSize: 11.5 }}
-            title="Completed runs beyond the newest 200 are evicted from the runs table (their JSONL journals are removed too). Queued/running runs are never evicted."
+            title="Completed runs beyond the retention cap are evicted from the runs table (their JSONL journals are removed too). Queued/running runs are never evicted."
           >
-            Showing all {runs.length} runs — older completed runs are evicted by the 200-run
-            retention cap.
+            Showing all {runs.length} runs
+            {retentionCap != null &&
+              ` — older completed runs are evicted by the ${retentionCap}-run retention cap`}
+            .
           </p>
         ))}
     </div>

@@ -403,11 +403,17 @@ export function countRunningRuns() {
   }
 }
 
+// Retention: how many completed runs the table keeps (newest first). Evicted
+// rows lose their JSONL journals too — raising this trades disk for history.
+// The processes view pages past the 200-row poll window via load-more, so a
+// cap above 200 is actually reachable in the UI.
+export const RUNS_RETENTION_CAP = 500;
+
 /**
  * Evict completed runs beyond the cap. Never evicts queued/running. Returns
  * the evicted ids (caller is responsible for unlinking their JSONL files).
  */
-export function evictBeyondCap(cap = 200) {
+export function evictBeyondCap(cap = RUNS_RETENTION_CAP) {
   try {
     const db = getDb();
     const evict = db.prepare(`
