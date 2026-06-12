@@ -1095,18 +1095,16 @@ async function parkChangeAutomation(args: {
 // Mark a change's automation complete — terminal state. PR is open, locally
 // reviewed clean, awaiting human. No more dispatches.
 //
-// Also performs the equivalent of dev-mark-pr-ready inline: flips the
-// change's `pr_review_status: pending → ready-for-human` and stamps
-// `pr_ready_at` so the change exits automation in the canonical "human
-// takeover required" state, not the ambiguous "review ran, no blockers"
-// state. Vault-only — same semantic surface as the dev-mark-pr-ready skill,
-// which is itself vault-only (no GitHub side-effects). Fires the
-// `dashboard.mark-pr-ready` audit event so the lifecycle stepper + any
-// notification rules subscribed to that event light up.
-//
-// If dev-mark-pr-ready ever gains non-vault side effects (GitHub API call,
-// external notification, etc.), the orchestrator should switch to
-// dispatching the skill as a real step rather than inline-writing here.
+// Completion communicates "review clean, human triage pending" via the
+// `approved` loop-state: when the change's `pr_review_status` is still
+// `pending`, it's rewritten to `approved`. It does NOT flip
+// `ready-for-human`, stamp `pr_ready_at`, or fire the
+// `dashboard.mark-pr-ready` event — `ready-for-human` is exclusively the
+// human's Mark-ready action (dev-mark-pr-ready), which also enforces the
+// comment-disposition invariant (no `status: new` comments at merge).
+// Evidence: agentic_os#9's drive completed-on-pending and inline-flipped
+// ready-for-human with 5 open comments, which 3 manual review cycles
+// immediately staled.
 async function completeChangeAutomation(args: {
   changeId: string;
   changePath: string;
@@ -1115,12 +1113,11 @@ async function completeChangeAutomation(args: {
   const { changeId, changePath, automation } = args;
   const nowIso = new Date().toISOString();
 
-  // Read current change frontmatter to check pr_review_status before
-  // flipping. We only mark-ready when the current value is `pending`
-  // (= "review ran, no blockers"). For other values (needs-changes,
-  // ready-for-human already, null) we skip the flip and let the orchestrator
-  // close out normally. The marked event still fires so the audit trail
-  // is consistent.
+  // Read current change frontmatter to check pr_review_status. Only the
+  // legacy `pending` value (= "review ran, no blockers") is upgraded to the
+  // `approved` loop-state. Anything else (approved already written by
+  // dev-pr-review's roll-up, needs-changes, ready-for-human, null) is left
+  // untouched — complete as today.
   let content = await readFile(changePath, 'utf8');
   const { fm: cfm } = parseFrontmatter(content);
   const currentPrReviewStatus =
@@ -1129,8 +1126,8 @@ async function completeChangeAutomation(args: {
       : null;
 
   // Write the automation block via the existing writer first (which also
-  // bumps `updated`). Then surgically flip pr_review_status + pr_ready_at
-  // via direct frontmatter rewrite — keeps the diff focused.
+  // bumps `updated`). Then surgically rewrite pr_review_status via direct
+  // frontmatter rewrite — keeps the diff focused.
   const nextAutomation: ChangeAutomation = {
     ...automation,
     state: {
@@ -1143,16 +1140,15 @@ async function completeChangeAutomation(args: {
   };
   await writeChangeAutomation(changePath, nextAutomation);
 
-  let markedReady = false;
+  let prReviewStatusSet: string | null = null;
   if (currentPrReviewStatus === 'pending') {
     content = await readFile(changePath, 'utf8');
     const updated = rewriteFrontmatter(content, {
-      pr_review_status: 'ready-for-human',
-      pr_ready_at: nowIso,
+      pr_review_status: 'approved',
       updated: nowIso,
     });
     await writeFile(changePath, updated, 'utf8');
-    markedReady = true;
+    prReviewStatusSet = 'approved';
   }
 
   recordAudit(
@@ -1160,17 +1156,13 @@ async function completeChangeAutomation(args: {
     {
       change: changeId,
       iteration_count: nextAutomation.state.iteration_count,
-      marked_ready_for_human: markedReady,
+      // Kept (now always false) so event-trail consumers see an explicit
+      // signal rather than a vanished field.
+      marked_ready_for_human: false,
+      pr_review_status_set: prReviewStatusSet,
     },
     [relative(REPO_ROOT, changePath)],
   );
-  if (markedReady) {
-    recordAudit(
-      'mark-pr-ready',
-      { change: changeId, source: 'change-automation', override: false },
-      [relative(REPO_ROOT, changePath)],
-    );
-  }
 }
 
 // Auto-tick hook — called from runs.ts close handler when ANY run terminates.

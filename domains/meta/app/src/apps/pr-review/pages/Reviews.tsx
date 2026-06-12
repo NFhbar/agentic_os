@@ -267,6 +267,23 @@ function PrReviewStatusBadge({
       </span>
     );
   }
+  if (prReviewStatus === 'approved') {
+    return (
+      <span
+        className="badge"
+        title="Latest pass approved — accept/dismiss its comments, then Mark ready."
+        style={{
+          fontSize: 11,
+          gap: 4,
+          background: 'var(--success-bg, rgba(80,200,120,0.1))',
+          color: 'var(--success-text, #3fb950)',
+          border: '1px solid var(--success-border, rgba(80,200,120,0.35))',
+        }}
+      >
+        approved · triage
+      </span>
+    );
+  }
   return null;
 }
 

@@ -294,6 +294,15 @@ export function ReviewDetail({
   // Mirrors detail.comments_to_address that the changes API computes server
   // side — calculated client-side here from the same source of truth.
   const addressableCount = comments.filter((c) => c.state === 'accepted' && !c.actedOnAt).length;
+  // Untriaged = raw header `status: new` (not the collapsed `state`, which
+  // folds acted-on/published into 'accepted'). Comment disposition is a merge
+  // invariant — dev-mark-pr-ready refuses while any comment remains `new`.
+  const untriagedCount = comments.filter((c) => c.status === 'new').length;
+  const isLatestPass = passIdx === passes.length - 1;
+  const showTriageBanner =
+    (detail.result === 'approved' || detail.result === 'comment') &&
+    isLatestPass &&
+    untriagedCount > 0;
   const linkedChangeForReimplement = detail.linkedChange?.id ?? null;
   const [acceptingAll, setAcceptingAll] = useState(false);
 
@@ -450,16 +459,23 @@ export function ReviewDetail({
               <Icons.Code size={13} /> Re-implement ({addressableCount})
             </button>
           )}
-          {detail.linkedChange?.id && detail.linkedChange?.prReviewStatus === 'pending' && (
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={() => detail.linkedChange?.id && onMarkReady(detail.linkedChange.id)}
-              title={`Runs dev-mark-pr-ready against change ${detail.linkedChange.id}: flips pr_review_status to ready-for-human and stamps pr_ready_at. Vault-only — NO GitHub calls. Same action as the Mark Ready button on the change's PR tab. Merge the PR on GitHub yourself after.`}
-            >
-              <Icons.Check size={13} /> Mark ready
-            </button>
-          )}
+          {detail.linkedChange?.id &&
+            (detail.linkedChange?.prReviewStatus === 'pending' ||
+              detail.linkedChange?.prReviewStatus === 'approved') && (
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => detail.linkedChange?.id && onMarkReady(detail.linkedChange.id)}
+                disabled={untriagedCount > 0}
+                title={
+                  untriagedCount > 0
+                    ? `${untriagedCount} comment${untriagedCount !== 1 ? 's' : ''} on the latest pass ${untriagedCount !== 1 ? 'are' : 'is'} still status: new — Accept or Dismiss each first (dev-mark-pr-ready refuses while untriaged comments remain).`
+                    : `Runs dev-mark-pr-ready against change ${detail.linkedChange.id}: flips pr_review_status to ready-for-human and stamps pr_ready_at. Vault-only — NO GitHub calls. Same action as the Mark Ready button on the change's PR tab. Merge the PR on GitHub yourself after.`
+                }
+              >
+                <Icons.Check size={13} /> Mark ready
+              </button>
+            )}
           {detail.linkedChange?.prReviewStatus === 'ready-for-human' && (
             <span
               className="badge success"
@@ -506,6 +522,27 @@ export function ReviewDetail({
           <span className="mono tiny" style={{ color: 'var(--accent-text)' }}>
             {retrigProgress}%
           </span>
+        </div>
+      )}
+
+      {showTriageBanner && (
+        <div
+          style={{
+            marginBottom: 14,
+            padding: '10px 12px',
+            border: '1px solid var(--accent-border)',
+            background: 'var(--accent-soft)',
+            borderRadius: 8,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+          }}
+        >
+          <Icons.Check size={14} style={{ color: 'var(--accent-text)', flexShrink: 0 }} />
+          <div style={{ fontSize: 13, color: 'var(--accent-text)' }}>
+            Approved with {untriagedCount} untriaged comment{untriagedCount !== 1 ? 's' : ''} —
+            Accept or Dismiss each, then Mark ready (or Re-review after changes).
+          </div>
         </div>
       )}
 

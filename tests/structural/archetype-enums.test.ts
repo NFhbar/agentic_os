@@ -49,7 +49,7 @@ const ENUMS: EnumMap = new Map([
       ],
       // PR review status (post dev-pr-review or dev-mark-pr-ready).
       // archetype-change § PR review fields.
-      ['pr_review_status', new Set(['pending', 'needs-changes', 'ready-for-human'])],
+      ['pr_review_status', new Set(['pending', 'approved', 'needs-changes', 'ready-for-human'])],
       // CI rollup state (managed by runbook-pr-ci-monitor).
       ['ci_state', new Set(['running', 'pass', 'fail', 'none'])],
     ]),

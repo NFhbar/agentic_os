@@ -130,6 +130,7 @@ Updates the project entry's `reporting.last_sent` and `reporting.next_due` so th
     - `status: abandoned` → `Abandoned` (terminal)
     - `pr_review_status: ready-for-human` → `Awaiting human merge`
     - `pr_review_status: needs-changes` → `Review wants changes`
+    - `pr_review_status: approved` → `Approved — triage review comments, then Mark ready`
     - `pr_review_path` set AND `pr_review_status: pending` → `In PR review (verdict pending)`
     - `status: in-review` AND `pr_url` set → `PR open, review pending`
     - `status: in-progress` → `Code written, awaiting PR`

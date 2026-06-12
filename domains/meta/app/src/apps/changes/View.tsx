@@ -155,6 +155,9 @@ interface ChangeDetail {
   // ADDRESS-COMMENTS phase of dev-write-change would re-implement. 0 when
   // no linked review or no qualifying comments.
   comments_to_address: number;
+  // Count of latest-pass comments still `status: new` (untriaged). Gates the
+  // Mark-ready affordance — comment disposition is a merge invariant.
+  untriaged_comments: number;
   // Phase 4 reflection — true when the linked pr-review entry's frontmatter
   // carries `published: true` (i.e. dev-pr-review-publish has fired). Drives
   // the "Published to GitHub" indicator on the PR card.
@@ -1486,6 +1489,7 @@ function DetailTabs({
         <PullRequestTab
           change={c}
           commentsToAddress={detail.comments_to_address ?? 0}
+          untriagedCount={detail.untriaged_comments ?? 0}
           reviewPublished={detail.pr_review_published ?? false}
           reviewGithubReviewId={detail.pr_review_github_review_id ?? null}
           reviewPublishedAt={detail.pr_review_published_at ?? null}
@@ -2153,6 +2157,8 @@ function badgeClassForPrReview(v: string | null): string {
   switch (v) {
     case 'ready-for-human':
       return 'badge accent';
+    case 'approved':
+      return 'badge success';
     case 'needs-changes':
       return 'badge warning';
     case 'pending':
@@ -3713,6 +3719,7 @@ type PrFetchResponse = PrSyncResponse;
 function PullRequestTab({
   change,
   commentsToAddress,
+  untriagedCount,
   reviewPublished,
   reviewGithubReviewId,
   reviewPublishedAt,
@@ -3724,6 +3731,9 @@ function PullRequestTab({
   // Phase 5 — count from ChangeDetail.comments_to_address. Renders the
   // "N to address" indicator inside the PrReviewSummaryCard.
   commentsToAddress: number;
+  // From ChangeDetail.untriaged_comments — latest-pass comments still
+  // `status: new`. Blocks Mark ready until each is accepted or dismissed.
+  untriagedCount: number;
   // Phase 4 reflection on the linked review's published state.
   reviewPublished: boolean;
   // GitHub review id for the deep link, when set.
@@ -4033,6 +4043,7 @@ function PullRequestTab({
           readyAt={change.pr_ready_at}
           mergedAt={change.merged_at ?? null}
           commentsToAddress={commentsToAddress}
+          untriagedCount={untriagedCount}
           reviewPublished={reviewPublished}
           reviewGithubReviewId={reviewGithubReviewId}
           reviewPublishedAt={reviewPublishedAt}
@@ -4126,6 +4137,7 @@ function PrReviewSummaryCard({
   readyAt,
   mergedAt,
   commentsToAddress,
+  untriagedCount,
   reviewPublished,
   reviewGithubReviewId,
   reviewPublishedAt,
@@ -4148,6 +4160,9 @@ function PrReviewSummaryCard({
   // latest pass. Rendered as a "N to address" indicator so the user can see
   // re-implementation work at a glance.
   commentsToAddress: number;
+  // Latest-pass comments still `status: new`. Blocks Mark ready (mirrors the
+  // dev-mark-pr-ready skill-side refusal) until each is accepted or dismissed.
+  untriagedCount: number;
   // Phase 4 reflection — true when the linked pr-review has been published.
   reviewPublished: boolean;
   // GitHub review id for the deep-link on the published indicator.
@@ -4169,11 +4184,11 @@ function PrReviewSummaryCard({
   const reviewId = path.split('/').pop()?.replace(/\.md$/, '') ?? '';
   // Map to the same color tokens the lifecycle stepper / status badges use:
   // pending = muted (neutral, awaiting action), needs-changes = warn (action
-  // required), ready-for-human / merged = success (cleared to ship / shipped).
+  // required), approved / ready-for-human / merged = success.
   const statusColor =
     statusLabel === 'needs-changes'
       ? 'var(--warn-text)'
-      : statusLabel === 'ready-for-human' || statusLabel === 'merged'
+      : statusLabel === 'approved' || statusLabel === 'ready-for-human' || statusLabel === 'merged'
         ? 'var(--success-text)'
         : 'var(--muted)';
 
@@ -4182,24 +4197,44 @@ function PrReviewSummaryCard({
   // - hidden when already ready — there's nothing to do
   // - hidden when the change is merged — the lifecycle is terminal
   // - visible+disabled when needs-changes — the latest review blocks shipping
-  // - visible+enabled when pending — the canonical happy path
-  const canMarkReady = !isMerged && status === 'pending';
-  const showMarkReady = !isMerged && (status === 'pending' || status === 'needs-changes');
+  // - visible+disabled while untriaged comments remain — comment disposition
+  //   is a merge invariant (dev-mark-pr-ready refuses while any are `new`)
+  // - visible+enabled when pending or approved with zero untriaged
+  const canMarkReady =
+    !isMerged && (status === 'pending' || status === 'approved') && untriagedCount === 0;
+  const showMarkReady =
+    !isMerged && (status === 'pending' || status === 'approved' || status === 'needs-changes');
   const markReadyTooltip =
     statusLabel === 'needs-changes'
       ? 'Latest review has blockers — address comments and re-review first.'
-      : commentsToAddress > 0
-        ? `Runs dev-mark-pr-ready: flips pr_review_status to ready-for-human (vault-only — you still merge on GitHub). NOTE: ${commentsToAddress} comment${
-            commentsToAddress !== 1 ? 's' : ''
-          } in the latest review ${
-            commentsToAddress !== 1 ? "haven't" : "hasn't"
-          } been re-implemented yet — consider clicking "Re-implement" first so the review is actually addressed in code.`
-        : 'Runs dev-mark-pr-ready: flips pr_review_status to ready-for-human and stamps pr_ready_at. Vault-only — no GitHub calls. You review and merge the PR on GitHub yourself.';
+      : untriagedCount > 0
+        ? `${untriagedCount} comment${untriagedCount !== 1 ? 's' : ''} on the latest pass ${
+            untriagedCount !== 1 ? 'are' : 'is'
+          } still status: new — Accept or Dismiss each first (dev-mark-pr-ready refuses while untriaged comments remain).`
+        : commentsToAddress > 0
+          ? `Runs dev-mark-pr-ready: flips pr_review_status to ready-for-human (vault-only — you still merge on GitHub). NOTE: ${commentsToAddress} comment${
+              commentsToAddress !== 1 ? 's' : ''
+            } in the latest review ${
+              commentsToAddress !== 1 ? "haven't" : "hasn't"
+            } been re-implemented yet — consider clicking "Re-implement" first so the review is actually addressed in code.`
+          : 'Runs dev-mark-pr-ready: flips pr_review_status to ready-for-human and stamps pr_ready_at. Vault-only — no GitHub calls. You review and merge the PR on GitHub yourself.';
 
   return (
     <div className="card" style={{ padding: 0 }}>
       <div className="card-header">
-        <h4 style={{ margin: 0, fontSize: 13, fontWeight: 600 }}>Latest PR review</h4>
+        <h4 style={{ margin: 0, fontSize: 13, fontWeight: 600 }}>
+          Latest PR review
+          <span style={{ fontWeight: 500, color: statusColor, marginLeft: 8 }}>
+            {passes != null ? `pass ${passes}: ` : ''}
+            {statusLabel}
+            {untriagedCount > 0 && !isMerged && (
+              <span style={{ color: 'var(--warn-text, var(--accent-text))' }}>
+                {' '}
+                · {untriagedCount} comment{untriagedCount !== 1 ? 's' : ''} untriaged
+              </span>
+            )}
+          </span>
+        </h4>
         <div style={{ display: 'flex', gap: 8 }}>
           {showMarkReady && (
             <button

@@ -25,6 +25,10 @@ export interface ReviewLookup {
   // automation orchestrator's artifact-verified advance: a pr-review step
   // only counts as done when this number incremented past the baseline.
   passCount: number;
+  // Count of latest-pass comments still `status: new` — untriaged. Comment
+  // disposition is a merge invariant (new → acted-on | dismissed); this count
+  // gates the Mark-ready affordances.
+  untriagedCount: number;
 }
 
 export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
@@ -33,6 +37,7 @@ export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
     reviewPublished: false,
     reviewGithubReviewId: null,
     passCount: 0,
+    untriagedCount: 0,
   };
   const abs = safePath(prReviewPath);
   if (!abs || !existsSync(abs)) return empty;
@@ -70,6 +75,7 @@ export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
     cm = commentRe.exec(section);
   }
   let count = 0;
+  let untriaged = 0;
   let firstReviewId: number | null = null;
   for (let i = 0; i < commentStarts.length; i++) {
     const start = commentStarts[i];
@@ -82,6 +88,7 @@ export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
     const actedOn = /^- acted_on_at:\s*\S/m.test(header);
     const ghReviewM = header.match(/^- github_review_id:\s*(\d+)/m);
     if (ghReviewM && firstReviewId == null) firstReviewId = Number(ghReviewM[1]);
+    if (status === 'new') untriaged++;
     if (
       !actedOn &&
       (status === 'accepted' || status === 'published' || status === 'published-as-body')
@@ -93,5 +100,6 @@ export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
     reviewPublished,
     reviewGithubReviewId: firstReviewId,
     passCount,
+    untriagedCount: untriaged,
   };
 }

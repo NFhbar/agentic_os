@@ -147,6 +147,17 @@ describe('decideNextChangeStep — pr-review verdict branching', () => {
     expect(d).toEqual({ action: 'complete' });
   });
 
+  it('pr_review_status: approved → complete (no blockers, human triage pending)', () => {
+    const d = decideNextChangeStep({
+      current_step: 'pr-review',
+      iteration_count: 1,
+      iteration_cap: 4,
+      last_exit: 0,
+      pr_review_status: 'approved',
+    });
+    expect(d).toEqual({ action: 'complete' });
+  });
+
   it('pr_review_status: ready-for-human → complete', () => {
     const d = decideNextChangeStep({
       current_step: 'pr-review',

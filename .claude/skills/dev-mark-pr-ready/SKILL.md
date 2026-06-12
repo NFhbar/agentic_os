@@ -15,7 +15,7 @@ inputs:
     type: boolean
     required: false
     default: false
-    description: 'Bypass the strict gate. When true, skips the requirement that `pr_review_status` be `pending` — lets the user mark ready despite a `needs-changes` status or a missing review. Recorded in the event with `override: true` for audit. Use sparingly; the normal flow expects a clean review first.'
+    description: 'Bypass the strict gate. When true, skips the requirement that `pr_review_status` be `pending` or `approved` — lets the user mark ready despite a `needs-changes` status, a missing review, or untriaged (`status: new`) comments on the latest review pass. Recorded in the event with `override: true` for audit. Use sparingly; the normal flow expects a clean, fully-triaged review first.'
 outputs:
   - kind: file
     path: vault/wiki/{{domain}}/change/{{input.change}}.md
@@ -32,7 +32,7 @@ Vault-only by design — no GitHub calls, no PR mutations. The user reviews and 
 
 This skill is the symmetric counterpart of [[dev-pr-review]]:
 
-- `dev-pr-review` writes `pr_review_status: pending` or `needs-changes` based on the model's verdict
+- `dev-pr-review` writes `pr_review_status: pending`, `approved`, or `needs-changes` based on the model's verdict
 - `dev-mark-pr-ready` (this skill) writes `pr_review_status: ready-for-human` based on the **user's** verdict (a button click in the dashboard or a CLI invocation)
 
 Only one direction is supported — there's no `dev-unmark-pr-ready`. If a later commit warrants more review, run `dev-pr-review` again (it will bump `pr_review_status` based on the new pass) or hand-edit the change entry.
@@ -49,16 +49,17 @@ Only one direction is supported — there's no `dev-unmark-pr-ready`. If a later
 
 2. **Parse the entry's frontmatter** (read the file, split on `---\n`, parse the YAML block).
 
-3. **Validate the gate** — read three fields:
+3. **Validate the gate** — read the change fields, and when `pr_review_path` is set, the linked pr-review entry:
 
-   | check                                    | failure mode                                                                                                                                                                             |
-   | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-   | `pr_url` is set                          | reject: `Change \`<change>\` has no pr_url — open a PR first via dev-open-pr.`                                                                                                           |
-   | `pr_review_status` is set                | reject (unless `override: true`): `Change \`<change>\` has no pr_review_status — run dev-pr-review first.`                                                                               |
-   | `pr_review_status !== 'needs-changes'`   | reject (unless `override: true`): `Change \`<change>\` has pr_review_status: needs-changes — address comments and re-review first. (Pass override: true to bypass.)`                     |
-   | `pr_review_status !== 'ready-for-human'` | **idempotent stop** (not an error): `Change \`<change>\` is already marked ready-for-human (since <pr_ready_at>). Nothing to do.`Skip steps 4–5; still record an event with`noop: true`. |
+   | check                                    | failure mode                                                                                                                                                                                                                                                                                                                                                                                                                  |
+   | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+   | `pr_url` is set                          | reject: `Change \`<change>\` has no pr_url — open a PR first via dev-open-pr.`                                                                                                                                                                                                                                                                                                                                                |
+   | `pr_review_status` is set                | reject (unless `override: true`): `Change \`<change>\` has no pr_review_status — run dev-pr-review first.` (`pending`and`approved` are both normal, non-override prior statuses.)                                                                                                                                                                                                                                             |
+   | `pr_review_status !== 'needs-changes'`   | reject (unless `override: true`): `Change \`<change>\` has pr_review_status: needs-changes — address comments and re-review first. (Pass override: true to bypass.)`                                                                                                                                                                                                                                                          |
+   | no untriaged comments on the latest pass | when `pr_review_path` is set: read the linked pr-review entry, find its highest-N `## Pass N` section, count comments whose header `status:` is `new`. If > 0, reject (unless `override: true`): `Change \`<change>\` has <n> untriaged comment(s) on the latest review pass — Accept or Dismiss each (terminal states: acted-on \| dismissed) before marking ready. (Pass override: true to bypass; recorded in the event.)` |
+   | `pr_review_status !== 'ready-for-human'` | **idempotent stop** (not an error): `Change \`<change>\` is already marked ready-for-human (since <pr_ready_at>). Nothing to do.`Skip steps 4–5; still record an event with`noop: true`.                                                                                                                                                                                                                                      |
 
-   Treat `override: true` as a permission slip — it skips the second + third checks but is recorded verbatim in the event payload.
+   Treat `override: true` as a permission slip — it skips the second, third, and fourth checks but is recorded verbatim in the event payload. Reading the linked pr-review entry for the untriaged-comments count is allowed; writing to it remains forbidden (see "What this skill must NOT do").
 
 4. **Compute the writes:**
    - `pr_review_status: ready-for-human`
@@ -78,13 +79,13 @@ Only one direction is supported — there's no `dev-unmark-pr-ready`. If a later
    node scripts/record-dashboard-action.mjs \
      --action mark-pr-ready \
      --skill dev-mark-pr-ready \
-     --args '{"change":"<change>","pr":"<pr_url>","override":<true|false>,"prior_status":"<prior_pr_review_status>","noop":<true|false>}' \
+     --args '{"change":"<change>","pr":"<pr_url>","override":<true|false>,"prior_status":"<prior_pr_review_status>","untriaged_count":<n from the step-3 latest-pass count, 0 when no pr_review_path>,"noop":<true|false>}' \
      --files-touched '<["vault/wiki/<domain>/change/<change>.md"] when step 5 wrote, else []>' \
      --exit-status 0
    ```
 
    Notes:
-   - `prior_status` is the value read in step 3 (`pending`, `needs-changes`, `ready-for-human`, or `null`). Captures what state the change was in immediately before the click — useful for audit (who marked ready despite needs-changes?).
+   - `prior_status` is the value read in step 3 (`pending`, `approved`, `needs-changes`, `ready-for-human`, or `null`). Captures what state the change was in immediately before the click — useful for audit (who marked ready despite needs-changes?).
    - `noop: true` only when step 3 hit the idempotent-stop branch. In that case `files_touched` is `[]` since nothing was written.
    - The shared event-attribution helper picks up `change_id` from `args.change`, so this event lands on the change's lifecycle timeline automatically.
 
@@ -121,7 +122,7 @@ Only one direction is supported — there's no `dev-unmark-pr-ready`. If a later
 ## What this skill must NOT do
 
 - **Call GitHub.** No `gh` CLI, no github MCP, no PR mutations, no draft → ready flips, no labels, no comments. The user owns the GitHub-side workflow. (A future `dev-mark-pr-ready-github` could layer that on top; this skill stays pure.)
-- **Touch the linked pr-review entry.** Comment state lives on the pr-review entry's body and is mutated by `dev-pr-review` (or the per-comment dashboard endpoint). This skill operates exclusively on the change entry.
+- **Write to the linked pr-review entry.** Comment state lives on the pr-review entry's body and is mutated by `dev-pr-review` (or the per-comment dashboard endpoint). Step 3 reads the entry to count untriaged comments, but this skill's writes target the change entry exclusively.
 - **Open a new review pass.** Re-running this skill on an already-ready change is a no-op, not a re-review trigger. Use `dev-pr-review` to re-review.
 - **Modify `status`.** The change's top-level `status` stays `in-review` (the human hasn't merged yet). It transitions to `merged` later, via a future `dev-close-change` skill (planned in `domains/development/playbook.md` § "Planned for v1.5") or a manual hand-off, when GitHub confirms the merge.
 
@@ -131,6 +132,7 @@ Only one direction is supported — there's no `dev-unmark-pr-ready`. If a later
 - `Change \`<change>\` has no pr_url — open a PR first via dev-open-pr.` — chronological precondition; cannot mark ready before a PR exists.
 - `Change \`<change>\` has no pr_review_status — run dev-pr-review first.`— pass`override: true` to bypass if you intentionally want to ship without an OS-side review.
 - `Change \`<change>\` has pr_review_status: needs-changes — address comments and re-review first.` — same override available, but recorded loudly in the event.
+- `Change \`<change>\` has <n> untriaged comment(s) on the latest review pass — Accept or Dismiss each (terminal states: acted-on | dismissed) before marking ready.`— comment disposition is a merge invariant;`override: true` bypasses and is recorded with the count.
 
 ## See also
 
