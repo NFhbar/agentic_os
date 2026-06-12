@@ -13,6 +13,32 @@
 
 import type { ChangeAutomationDecision } from './automation.types.js';
 
+// Eligibility gate for the change-automation entry points (enable + start).
+// standard-automation-loop § Scope: automation runs the implementation, not
+// the judgment — the plan must exist and be signed off before the loop may
+// arm or dispatch.
+export function checkChangeAutomationEligibility(args: {
+  review_status: string | null;
+  plan_path: string | null;
+}): { eligible: true } | { eligible: false; reason: string } {
+  const statusOk =
+    args.review_status === 'approved' ||
+    args.review_status === 'not-required' ||
+    args.review_status === 'overridden';
+  const planOk = typeof args.plan_path === 'string' && args.plan_path.trim() !== '';
+  if (statusOk && planOk) return { eligible: true };
+  // Next-action depends on what's missing: an ineligible review_status needs
+  // the full PLAN + review cycle; an eligible (e.g. not-required) status with
+  // no plan only needs PLAN.
+  const nextAction = statusOk
+    ? 'Run write-change (PLAN) first.'
+    : 'Run write-change (PLAN) + review-change first.';
+  return {
+    eligible: false,
+    reason: `not eligible for automation: review_status must be one of approved | not-required | overridden (got "${args.review_status ?? 'null'}") and plan_path must be set — automation runs the implementation, not the judgment (standard-automation-loop § Scope). ${nextAction}`,
+  };
+}
+
 // Decide the next gesture given the change's current state + the outcome of
 // the most recent run. Pure function — no side effects, no I/O.
 export function decideNextChangeStep(args: {

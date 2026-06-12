@@ -3,14 +3,14 @@ id: standard-automation-loop
 type: reference
 domain: meta
 created: 2026-06-02T01:30:00Z
-updated: 2026-06-02T01:30:00Z
+updated: 2026-06-12T00:00:00Z
 tags: [standard, automation, orchestrator, change-lifecycle]
 source: vault/wiki/development/change/change-automation-phase-2-orchestrator.md
 private: false
 title: Standard — change-automation loop (v1)
 url: internal://standard/automation-loop
 kind: standard
-last_verified: 2026-06-02
+last_verified: 2026-06-12
 ---
 
 # Standard — change-automation loop (v1)
@@ -22,8 +22,10 @@ The canonical loop the per-change orchestrator drives. Single source of truth fo
 Applies to changes with:
 
 - `automation.enabled === true`
-- `review_status === 'approved'` (OR `'not-required'`, `'overridden'`) — the human has signed off on the plan; automation runs the _implementation_, not the _judgment_
+- `review_status === 'approved'` (OR `'not-required'`, `'overridden'`) AND `plan_path` set — the human has signed off on the plan; automation runs the _implementation_, not the _judgment_
 - `automation.state.phase ∈ {idle, running}`
+
+**Enforced, not just prose (since 2026-06-12).** Both `enable` and `start` reject (HTTP 400, reason carries this section's wording) when `review_status ∉ {approved, not-required, overridden}` OR `plan_path` is unset — via `checkChangeAutomationEligibility` in `automation-state-machine.ts`. The `plan_path` conjunct is deliberate: an eligible review_status (e.g. `not-required`) with no plan still has nothing for EXECUTE to follow.
 
 **Why review_status, not status.** PLAN and plan-review stay manual by design (the human reads the auto-drafted plan + decides whether the approach is sound). Once the plan is approved, `status` is still `planning` — the change hasn't started executing yet. The orchestrator's first step (EXECUTE) is what transitions `status: planning → in-progress`. So gating on `status: in-progress` would make automation impossible to start; the gate is `review_status: approved` instead.
 

@@ -829,7 +829,10 @@ function buildChangeStepPrompt(step: ChangeAutomationStep, changeId: string): st
 // so vitest can exercise the transition rules without pulling node:sqlite
 // through the transitive graph (see tests/unit/automation/).
 export { decideNextChangeStep } from './automation-state-machine.js';
-import { decideNextChangeStep } from './automation-state-machine.js';
+import {
+  checkChangeAutomationEligibility,
+  decideNextChangeStep,
+} from './automation-state-machine.js';
 import { lookupLinkedReview } from './pr-review-lookup.js';
 
 // Dispatch a step's skill run for a change. Returns the new run_id on
@@ -1563,6 +1566,16 @@ export const changeAutomationRoutes: FastifyPluginAsync = async (fastify) => {
       reply.code(404);
       return { ok: false, error: `change "${changeId}" not found` };
     }
+    // Eligibility gate (2026-06-12 incident): an ineligible change cannot
+    // even be armed — standard-automation-loop § Scope, now enforced.
+    const eligibility = checkChangeAutomationEligibility({
+      review_status: typeof found.fm.review_status === 'string' ? found.fm.review_status : null,
+      plan_path: typeof found.fm.plan_path === 'string' ? found.fm.plan_path : null,
+    });
+    if (!eligibility.eligible) {
+      reply.code(400);
+      return { ok: false, error: eligibility.reason };
+    }
     const current = readChangeAutomationLocal(found.fm);
     const next: ChangeAutomation = current
       ? {
@@ -1705,6 +1718,16 @@ export const changeAutomationRoutes: FastifyPluginAsync = async (fastify) => {
     if (current.state.phase === 'complete') {
       reply.code(400);
       return { ok: false, error: 'automation is complete — call reset to restart' };
+    }
+    // Eligibility gate (2026-06-12 incident): stop already-armed legacy
+    // blocks on ineligible changes at the dispatch moment too.
+    const eligibility = checkChangeAutomationEligibility({
+      review_status: typeof found.fm.review_status === 'string' ? found.fm.review_status : null,
+      plan_path: typeof found.fm.plan_path === 'string' ? found.fm.plan_path : null,
+    });
+    if (!eligibility.eligible) {
+      reply.code(400);
+      return { ok: false, error: eligibility.reason };
     }
     // Decide the next step. First dispatch (current_step null) defaults to
     // execute. Subsequent restarts (post-Resume) re-evaluate the state
