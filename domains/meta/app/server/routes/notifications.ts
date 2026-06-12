@@ -5,12 +5,12 @@
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync } from 'node:fs';
-import { readFile, readdir, stat, unlink, writeFile, mkdir } from 'node:fs/promises';
+import { mkdir, readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { FastifyPluginAsync } from 'fastify';
-import { parseFrontmatter } from '../frontmatter.js';
 import { rewriteFrontmatter, serializeYamlValue } from '../frontmatter-rewrite.js';
+import { parseFrontmatter } from '../frontmatter.js';
 import { subscribeDesktopClient } from '../notifications/adapters/desktop.js';
 import { detectSlackMode } from '../notifications/adapters/slack.js';
 import { dispatchForTest } from '../notifications/dispatcher.js';
@@ -257,7 +257,10 @@ function validateBody(body: any, ctx: ValidationContext): ValidationError | null
     }
     const ch = body.channel;
     if (ch === 'slack') {
-      if (typeof body.delivery.slack_channel !== 'string' || body.delivery.slack_channel.trim() === '') {
+      if (
+        typeof body.delivery.slack_channel !== 'string' ||
+        body.delivery.slack_channel.trim() === ''
+      ) {
         return {
           ok: false,
           error: 'slack delivery requires non-empty slack_channel',
@@ -285,10 +288,7 @@ function validateBody(body: any, ctx: ValidationContext): ValidationError | null
         }
       }
     } else if (ch === 'desktop') {
-      if (
-        body.delivery.urgency !== undefined &&
-        !VALID_URGENCIES.includes(body.delivery.urgency)
-      ) {
+      if (body.delivery.urgency !== undefined && !VALID_URGENCIES.includes(body.delivery.urgency)) {
         return {
           ok: false,
           error: `desktop delivery.urgency must be one of: ${VALID_URGENCIES.join(', ')}`,
@@ -302,10 +302,7 @@ function validateBody(body: any, ctx: ValidationContext): ValidationError | null
     if (typeof body.filter !== 'object' || body.filter === null) {
       return { ok: false, error: 'filter must be an object', field: 'filter' };
     }
-    if (
-      body.filter.severity !== undefined &&
-      !VALID_SEVERITIES.includes(body.filter.severity)
-    ) {
+    if (body.filter.severity !== undefined && !VALID_SEVERITIES.includes(body.filter.severity)) {
       return {
         ok: false,
         error: `filter.severity must be one of: ${VALID_SEVERITIES.join(', ')}`,
@@ -337,11 +334,7 @@ function validateBody(body: any, ctx: ValidationContext): ValidationError | null
 }
 
 // Record an audit event for a mutating notification-rule action.
-function recordAudit(
-  action: string,
-  args: Record<string, unknown>,
-  filesTouched: string[],
-): void {
+function recordAudit(action: string, args: Record<string, unknown>, filesTouched: string[]): void {
   try {
     spawnSync(
       'node',
@@ -490,7 +483,8 @@ export const notificationsRoutes: FastifyPluginAsync = async (fastify) => {
       enabled: body.enabled ?? true,
     };
     if (body.filter && Object.keys(body.filter).length > 0) frontmatter.filter = body.filter;
-    if (body.delivery && Object.keys(body.delivery).length > 0) frontmatter.delivery = body.delivery;
+    if (body.delivery && Object.keys(body.delivery).length > 0)
+      frontmatter.delivery = body.delivery;
     if (body.rate_limit) frontmatter.rate_limit = body.rate_limit;
 
     const fmLines: string[] = [];
@@ -548,11 +542,9 @@ export const notificationsRoutes: FastifyPluginAsync = async (fastify) => {
     }
     const newContent = rewriteFrontmatter(content, updates);
     await writeFile(filePath, newContent, 'utf8');
-    recordAudit(
-      'notification-rule-update',
-      { id: existing.id, fields: Object.keys(updates) },
-      [existing.source_path],
-    );
+    recordAudit('notification-rule-update', { id: existing.id, fields: Object.keys(updates) }, [
+      existing.source_path,
+    ]);
     return { ok: true, id: existing.id };
   });
 
@@ -597,9 +589,9 @@ export const notificationsRoutes: FastifyPluginAsync = async (fastify) => {
       action,
       source: null,
       skill: null,
-      project: (existing.filter as Record<string, unknown>).project as string | null ?? null,
+      project: ((existing.filter as Record<string, unknown>).project as string | null) ?? null,
       change_id: null,
-      domain: (existing.filter as Record<string, unknown>).domain as string | null ?? null,
+      domain: ((existing.filter as Record<string, unknown>).domain as string | null) ?? null,
       report_id: null,
       model: null,
       tokens_in: null,
@@ -632,11 +624,9 @@ export const notificationsRoutes: FastifyPluginAsync = async (fastify) => {
       rate_limit: existing.rate_limit as unknown as Record<string, unknown> | null,
     };
     const result = await dispatchForTest(synthEvent, rule);
-    recordAudit(
-      'notification-rule-test-send',
-      { id: existing.id, channel: existing.channel },
-      [existing.source_path],
-    );
+    recordAudit('notification-rule-test-send', { id: existing.id, channel: existing.channel }, [
+      existing.source_path,
+    ]);
     return {
       ok: true,
       rendered: result.rendered,
@@ -651,79 +641,83 @@ export const notificationsRoutes: FastifyPluginAsync = async (fastify) => {
   // Returns empty list when events.db is absent (fresh clone). Source values
   // shaped 'rule:<id>' or 'rule:<id>:test' — :test suffix preserved verbatim
   // so the Activity log can distinguish real dispatches from test-sends.
-  fastify.get<{ Querystring: { limit?: string; since?: string } }>(
-    '/events',
-    async (req) => {
-      const limit = Math.min(Math.max(Number.parseInt(req.query.limit ?? '200', 10) || 200, 1), 1000);
-      const since = typeof req.query.since === 'string' && req.query.since.length > 0 ? req.query.since : null;
-      if (!existsSync(EVENTS_DB_PATH)) return { events: [] };
-      let rows: Array<{
-        id: number;
-        ts: string;
-        source: string | null;
-        action: string;
-        status: string | null;
-        description: string | null;
-        project: string | null;
-        change_id: string | null;
-        skill: string | null;
-      }> = [];
+  fastify.get<{ Querystring: { limit?: string; since?: string } }>('/events', async (req) => {
+    const limit = Math.min(Math.max(Number.parseInt(req.query.limit ?? '200', 10) || 200, 1), 1000);
+    const since =
+      typeof req.query.since === 'string' && req.query.since.length > 0 ? req.query.since : null;
+    if (!existsSync(EVENTS_DB_PATH)) return { events: [], total: 0 };
+    let rows: Array<{
+      id: number;
+      ts: string;
+      source: string | null;
+      action: string;
+      status: string | null;
+      description: string | null;
+      project: string | null;
+      change_id: string | null;
+      skill: string | null;
+    }> = [];
+    let total = 0;
+    try {
+      const db = new DatabaseSync(EVENTS_DB_PATH, { readOnly: true });
       try {
-        const db = new DatabaseSync(EVENTS_DB_PATH, { readOnly: true });
-        try {
-          const query = since
-            ? `SELECT id, ts, source, action, status, description, project, change_id, skill
+        const query = since
+          ? `SELECT id, ts, source, action, status, description, project, change_id, skill
                FROM events
                WHERE kind = 'notification' AND ts > ?
                ORDER BY ts DESC LIMIT ?`
-            : `SELECT id, ts, source, action, status, description, project, change_id, skill
+          : `SELECT id, ts, source, action, status, description, project, change_id, skill
                FROM events
                WHERE kind = 'notification'
                ORDER BY ts DESC LIMIT ?`;
-          const stmt = db.prepare(query);
-          rows = since
-            ? (stmt.all(since, limit) as typeof rows)
-            : (stmt.all(limit) as typeof rows);
-        } finally {
-          db.close();
-        }
-      } catch {
-        return { events: [] };
+        const stmt = db.prepare(query);
+        rows = since ? (stmt.all(since, limit) as typeof rows) : (stmt.all(limit) as typeof rows);
+        const countQuery = since
+          ? `SELECT COUNT(*) AS n FROM events WHERE kind = 'notification' AND ts > ?`
+          : `SELECT COUNT(*) AS n FROM events WHERE kind = 'notification'`;
+        const countRow = (
+          since ? db.prepare(countQuery).get(since) : db.prepare(countQuery).get()
+        ) as { n: number };
+        total = countRow.n;
+      } finally {
+        db.close();
       }
-      // Cross-reference rule ids → channel so the UI doesn't have to fetch
-      // every rule separately. Rule lookups are tens of entries — cheap.
-      const rulesById = new Map((await listAllRules()).map((r) => [r.id, r]));
-      const events = rows.map((r) => {
-        let ruleId: string | null = null;
-        let isTest = false;
-        if (r.source?.startsWith('rule:')) {
-          const rest = r.source.slice('rule:'.length);
-          if (rest.endsWith(':test')) {
-            ruleId = rest.slice(0, -':test'.length);
-            isTest = true;
-          } else {
-            ruleId = rest;
-          }
+    } catch {
+      return { events: [], total: 0 };
+    }
+    // Cross-reference rule ids → channel so the UI doesn't have to fetch
+    // every rule separately. Rule lookups are tens of entries — cheap.
+    const rulesById = new Map((await listAllRules()).map((r) => [r.id, r]));
+    const events = rows.map((r) => {
+      let ruleId: string | null = null;
+      let isTest = false;
+      if (r.source?.startsWith('rule:')) {
+        const rest = r.source.slice('rule:'.length);
+        if (rest.endsWith(':test')) {
+          ruleId = rest.slice(0, -':test'.length);
+          isTest = true;
+        } else {
+          ruleId = rest;
         }
-        const rule = ruleId ? rulesById.get(ruleId) : undefined;
-        return {
-          id: r.id,
-          ts: r.ts,
-          rule_id: ruleId,
-          rule_title: rule?.title ?? null,
-          rule_exists: !!rule,
-          channel: rule?.channel ?? null,
-          event_type: rule?.event_type ?? null,
-          action: r.action,
-          status: r.status,
-          description: r.description,
-          project: r.project,
-          change_id: r.change_id,
-          skill: r.skill,
-          is_test: isTest,
-        };
-      });
-      return { events };
-    },
-  );
+      }
+      const rule = ruleId ? rulesById.get(ruleId) : undefined;
+      return {
+        id: r.id,
+        ts: r.ts,
+        rule_id: ruleId,
+        rule_title: rule?.title ?? null,
+        rule_exists: !!rule,
+        channel: rule?.channel ?? null,
+        event_type: rule?.event_type ?? null,
+        action: r.action,
+        status: r.status,
+        description: r.description,
+        project: r.project,
+        change_id: r.change_id,
+        skill: r.skill,
+        is_test: isTest,
+      };
+    });
+    return { events, total };
+  });
 };

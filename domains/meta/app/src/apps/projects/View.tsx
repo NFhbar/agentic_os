@@ -12,7 +12,7 @@ import { useNavigation } from '../../lib/navigation';
 import { type SkillSummary, fetchSkills, findSkill } from '../../lib/skills';
 import { formatLocal, formatRelative } from '../../lib/time';
 import { type ManifestEntry, fetchEntry, fetchManifest } from '../../lib/vault';
-import { Icons, Stepper } from '../../shared';
+import { Icons, SectionToggleRow, Stepper, useCollapsedFlag } from '../../shared';
 import '../../shared/styles.css';
 import {
   type EventCatalogEntry,
@@ -579,6 +579,59 @@ export default function Projects() {
 
 // Full-width tabular projects list. Replaces the narrow stacked-card picker.
 // Columns scan well left-to-right; click any row to open the detail.
+// Owned-changes list wrapper: in-flight items render normally; terminal ones
+// (merged / abandoned) collapse behind a toggle, newest-first by updated.
+// Exists so the collapse hook has a component boundary — the row JSX stays a
+// closure at the call site (it captures navigate/manifest context).
+function OwnedChangesList({
+  items,
+  renderItem,
+}: {
+  items: ProjectDetail['owned_changes'];
+  renderItem: (ch: ProjectDetail['owned_changes'][number]) => React.ReactNode;
+}) {
+  const IN_FLIGHT = new Set(['planning', 'in-progress', 'in-review']);
+  const active = items.filter((ch) => !ch.status || IN_FLIGHT.has(ch.status));
+  const terminal = items
+    .filter((ch) => ch.status && !IN_FLIGHT.has(ch.status))
+    .sort((a, b) => (b.updated ?? '').localeCompare(a.updated ?? ''));
+  const [collapsed, toggle] = useCollapsedFlag('project:owned-changes:terminal');
+  return (
+    <>
+      {active.map(renderItem)}
+      {terminal.length > 0 && (
+        <li style={{ listStyle: 'none' }}>
+          <button
+            type="button"
+            onClick={toggle}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              width: '100%',
+              padding: '8px 12px',
+              fontSize: 10.5,
+              color: 'var(--text-3)',
+              textTransform: 'uppercase',
+              letterSpacing: 0.6,
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+            }}
+          >
+            <span style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+            <span>
+              {collapsed ? '▸' : '▾'} Terminal ({terminal.length})
+            </span>
+            <span style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+          </button>
+        </li>
+      )}
+      {!collapsed && terminal.map(renderItem)}
+    </>
+  );
+}
+
 function ProjectsTable({
   list,
   onOpen,
@@ -586,6 +639,73 @@ function ProjectsTable({
   list: ProjectSummary[];
   onOpen: (id: string) => void;
 }) {
+  // Active work owns the table; completed/cancelled projects collapse behind
+  // a toggle row (newest-first within each segment — server sorts updated DESC).
+  const TERMINAL = new Set(['completed', 'cancelled']);
+  const active = list.filter((p) => !(p.status && TERMINAL.has(p.status)));
+  const done = list.filter((p) => p.status && TERMINAL.has(p.status));
+  const [collapsed, toggle] = useCollapsedFlag('projects:completed');
+  const renderRow = (p: ProjectSummary) => {
+    const urgency = deadlineUrgency(p.deadline);
+    // Prefer the derived lifecycle stage (computed server-side from
+    // owned-change counts). Falls back to frontmatter when null.
+    const lifecycle = p.lifecycle_stage_derived ?? p.lifecycle_stage;
+    const agg = p.changes;
+    const inFlight = agg ? agg.planning + agg.in_progress + agg.in_review : 0;
+    const changesLabel = agg
+      ? agg.total === 0
+        ? '—'
+        : inFlight > 0
+          ? `${inFlight} in flight · ${agg.merged}/${agg.total} merged`
+          : `${agg.merged}/${agg.total} merged${agg.abandoned > 0 ? ` · ${agg.abandoned} abandoned` : ''}`
+      : '—';
+    return (
+      <tr
+        key={p.path}
+        onClick={() => p.id && onOpen(p.id)}
+        style={{ cursor: p.id ? 'pointer' : 'default' }}
+        title={p.id ?? undefined}
+      >
+        <td style={{ whiteSpace: 'nowrap' }}>
+          {p.status && <span className={projectStatusBadge(p.status)}>{p.status}</span>}
+        </td>
+        <td style={{ fontWeight: 500 }}>{p.title}</td>
+        <td>
+          {lifecycle && (
+            <span className="badge muted" style={{ fontSize: 10.5 }}>
+              {lifecycle}
+            </span>
+          )}
+        </td>
+        <td className="mono tiny" title={p.repos.join(', ') || undefined}>
+          {p.repos.length === 0
+            ? '—'
+            : p.repos.length === 1
+              ? p.repos[0]
+              : `${p.repos[0]} +${p.repos.length - 1}`}
+        </td>
+        <td
+          className="tiny"
+          title={
+            agg
+              ? `${agg.planning} planning · ${agg.in_progress} in-progress · ${agg.in_review} in-review · ${agg.merged} merged${agg.abandoned > 0 ? ` · ${agg.abandoned} abandoned` : ''}`
+              : undefined
+          }
+        >
+          {changesLabel}
+        </td>
+        <td className="tiny" title={p.deadline ?? undefined}>
+          {p.deadline ? (
+            <span className={deadlineBadge(urgency)} style={{ fontSize: 10.5 }}>
+              {deadlineRelative(p.deadline)}
+            </span>
+          ) : (
+            '—'
+          )}
+        </td>
+      </tr>
+    );
+  };
   return (
     <table className="data-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
       <thead>
@@ -599,67 +719,17 @@ function ProjectsTable({
         </tr>
       </thead>
       <tbody>
-        {list.map((p) => {
-          const urgency = deadlineUrgency(p.deadline);
-          // Prefer the derived lifecycle stage (computed server-side from
-          // owned-change counts). Falls back to frontmatter when null.
-          const lifecycle = p.lifecycle_stage_derived ?? p.lifecycle_stage;
-          const agg = p.changes;
-          const inFlight = agg ? agg.planning + agg.in_progress + agg.in_review : 0;
-          const changesLabel = agg
-            ? agg.total === 0
-              ? '—'
-              : inFlight > 0
-                ? `${inFlight} in flight · ${agg.merged}/${agg.total} merged`
-                : `${agg.merged}/${agg.total} merged${agg.abandoned > 0 ? ` · ${agg.abandoned} abandoned` : ''}`
-            : '—';
-          return (
-            <tr
-              key={p.path}
-              onClick={() => p.id && onOpen(p.id)}
-              style={{ cursor: p.id ? 'pointer' : 'default' }}
-              title={p.id ?? undefined}
-            >
-              <td style={{ whiteSpace: 'nowrap' }}>
-                {p.status && <span className={projectStatusBadge(p.status)}>{p.status}</span>}
-              </td>
-              <td style={{ fontWeight: 500 }}>{p.title}</td>
-              <td>
-                {lifecycle && (
-                  <span className="badge muted" style={{ fontSize: 10.5 }}>
-                    {lifecycle}
-                  </span>
-                )}
-              </td>
-              <td className="mono tiny" title={p.repos.join(', ') || undefined}>
-                {p.repos.length === 0
-                  ? '—'
-                  : p.repos.length === 1
-                    ? p.repos[0]
-                    : `${p.repos[0]} +${p.repos.length - 1}`}
-              </td>
-              <td
-                className="tiny"
-                title={
-                  agg
-                    ? `${agg.planning} planning · ${agg.in_progress} in-progress · ${agg.in_review} in-review · ${agg.merged} merged${agg.abandoned > 0 ? ` · ${agg.abandoned} abandoned` : ''}`
-                    : undefined
-                }
-              >
-                {changesLabel}
-              </td>
-              <td className="tiny" title={p.deadline ?? undefined}>
-                {p.deadline ? (
-                  <span className={deadlineBadge(urgency)} style={{ fontSize: 10.5 }}>
-                    {deadlineRelative(p.deadline)}
-                  </span>
-                ) : (
-                  '—'
-                )}
-              </td>
-            </tr>
-          );
-        })}
+        {active.map(renderRow)}
+        {done.length > 0 && (
+          <SectionToggleRow
+            colSpan={6}
+            label="Completed"
+            count={done.length}
+            collapsed={collapsed}
+            onToggle={toggle}
+          />
+        )}
+        {!collapsed && done.map(renderRow)}
       </tbody>
     </table>
   );
@@ -1132,42 +1202,10 @@ function ProjectDetailPane({
                 gap: 4,
               }}
             >
-              {detail.owned_changes.map((ch, i, arr) => {
-                // Insert a small divider when transitioning from in-flight
-                // status (planning / in-progress / in-review) to terminal
-                // status (merged / abandoned). The server sorts terminal
-                // after in-flight, so the boundary is a clean cut.
-                const IN_FLIGHT = new Set(['planning', 'in-progress', 'in-review']);
-                const prev = arr[i - 1];
-                const isFirstTerminal =
-                  i > 0 &&
-                  prev &&
-                  ch.status &&
-                  !IN_FLIGHT.has(ch.status) &&
-                  prev.status &&
-                  IN_FLIGHT.has(prev.status);
-                return (
+              <OwnedChangesList
+                items={detail.owned_changes}
+                renderItem={(ch) => (
                   <React.Fragment key={ch.path}>
-                    {isFirstTerminal && (
-                      <li
-                        aria-hidden="true"
-                        style={{
-                          listStyle: 'none',
-                          padding: '8px 12px',
-                          fontSize: 10.5,
-                          color: 'var(--text-3)',
-                          textTransform: 'uppercase',
-                          letterSpacing: 0.6,
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 10,
-                        }}
-                      >
-                        <span style={{ flex: 1, height: 1, background: 'var(--border)' }} />
-                        <span>Terminal</span>
-                        <span style={{ flex: 1, height: 1, background: 'var(--border)' }} />
-                      </li>
-                    )}
                     <li>
                       <button
                         type="button"
@@ -1269,8 +1307,8 @@ function ProjectDetailPane({
                       </button>
                     </li>
                   </React.Fragment>
-                );
-              })}
+                )}
+              />
             </ul>
           )}
         </Section>

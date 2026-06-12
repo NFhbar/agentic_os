@@ -36,7 +36,7 @@ import { countRuns } from '../../../../../scripts/runs-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { createRun } from '../../../../../scripts/runs-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
-import { evictBeyondCap } from '../../../../../scripts/runs-db.mjs';
+import { RUNS_RETENTION_CAP, evictBeyondCap } from '../../../../../scripts/runs-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { finishRun } from '../../../../../scripts/runs-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
@@ -234,7 +234,7 @@ export async function startRun(input: StartRunOptions): Promise<StartRunResult> 
     return { ok: false, error: created.error };
   }
 
-  const evicted = evictBeyondCap(200) as Array<{ id: string; output_path: string }>;
+  const evicted = evictBeyondCap() as Array<{ id: string; output_path: string }>;
   for (const ev of evicted) unlinkOutput(ev.output_path);
 
   // Detached + file-redirected stdio: the child is its own process-group
@@ -835,7 +835,7 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
       repo: q.repo || undefined,
       domain: q.domain || undefined,
     }) as number;
-    return { n };
+    return { n, cap: RUNS_RETENTION_CAP as number };
   });
 
   // -------- GET /api/runs/:id --------

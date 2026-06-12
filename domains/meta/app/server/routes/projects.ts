@@ -284,6 +284,7 @@ function toSummary(fm: any, filePath: string): ProjectSummary {
     domain: typeof fm.domain === 'string' ? fm.domain : null,
     status: typeof fm.status === 'string' ? fm.status : null,
     deadline: typeof fm.deadline === 'string' ? fm.deadline : null,
+    updated: typeof fm.updated === 'string' ? fm.updated : null,
     stakeholders: Array.isArray(fm.stakeholders) ? fm.stakeholders : [],
     lifecycle_stage: typeof fm.lifecycle_stage === 'string' ? fm.lifecycle_stage : null,
     lifecycle_stage_derived: null, // computed once `changes` is attached
@@ -792,10 +793,19 @@ export const projectsRoutes: FastifyPluginAsync = async (fastify) => {
       p.lifecycle_stage_derived = deriveLifecycleStage(p.lifecycle_stage, p.changes);
     }
 
+    // Newest activity first (UI/UX refresh: every list reads newest → oldest;
+    // deadline urgency stays visible as a column + row badge, not the sort).
+    // Activity = the project entry's own update OR its most recently updated
+    // owned change, whichever is fresher — change work bubbles the project up.
+    const activityOf = (p: ProjectSummary) => {
+      const own = p.updated ?? '';
+      const change = p.changes?.latest_change_updated ?? '';
+      return change > own ? change : own;
+    };
     out.sort((a, b) => {
-      if (a.deadline && b.deadline) return a.deadline.localeCompare(b.deadline);
-      if (a.deadline) return -1;
-      if (b.deadline) return 1;
+      const aa = activityOf(a);
+      const ba = activityOf(b);
+      if (aa !== ba) return ba.localeCompare(aa);
       return a.title.localeCompare(b.title);
     });
 

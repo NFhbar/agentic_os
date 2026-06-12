@@ -5,7 +5,82 @@
 // design system, standard-app-architecture.md for how apps consume this module.
 
 import type React from 'react';
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
+
+// ── Collapsed sections ───────────────────────────────────────────────────────
+// Terminal/completed items (merged changes, completed projects, …) render
+// behind a collapsed-by-default toggle so active work owns the viewport.
+// Persisted per surface in localStorage; pass a stable storageKey.
+
+export function useCollapsedFlag(
+  storageKey: string,
+  defaultCollapsed = true,
+): [boolean, () => void] {
+  const key = `agentic-os/section-collapsed:${storageKey}`;
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw === null ? defaultCollapsed : raw === '1';
+    } catch {
+      return defaultCollapsed;
+    }
+  });
+  const toggle = () => {
+    setCollapsed((c) => {
+      try {
+        localStorage.setItem(key, c ? '0' : '1');
+      } catch {
+        /* private mode */
+      }
+      return !c;
+    });
+  };
+  return [collapsed, toggle];
+}
+
+// In-table section toggle — replaces the old static "Terminal" divider rows.
+// Same visual weight as the divider it succeeds; click expands/collapses the
+// rows that follow it (callers render those conditionally).
+export function SectionToggleRow({
+  colSpan,
+  label,
+  count,
+  collapsed,
+  onToggle,
+}: {
+  colSpan: number;
+  label: string;
+  count: number;
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <tr aria-expanded={!collapsed}>
+      <td colSpan={colSpan} style={{ padding: 0, borderTop: '1px solid var(--border)' }}>
+        <button
+          type="button"
+          onClick={onToggle}
+          style={{
+            display: 'block',
+            width: '100%',
+            textAlign: 'left',
+            padding: '6px 12px',
+            fontSize: 10.5,
+            color: 'var(--text-3)',
+            textTransform: 'uppercase',
+            letterSpacing: 0.6,
+            background: 'var(--bg-2)',
+            border: 'none',
+            cursor: 'pointer',
+            userSelect: 'none',
+          }}
+        >
+          {collapsed ? '▸' : '▾'} {label} ({count})
+        </button>
+      </td>
+    </tr>
+  );
+}
 
 // ── Icon ─────────────────────────────────────────────────────────────────────
 // Lucide-style: 24x24 viewBox, 1.5 stroke, currentColor. Default render is 16px.

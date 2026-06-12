@@ -58,6 +58,7 @@ export interface ProjectSummary {
   domain: string | null;
   status: string | null;
   deadline: string | null;
+  updated: string | null;
   stakeholders: string[];
   // Optional workflow fields. `lifecycle_stage` is the value as written on
   // disk (frontmatter); `lifecycle_stage_derived` is the live read derived

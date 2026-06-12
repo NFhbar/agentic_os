@@ -15,7 +15,7 @@ import { type RunRecord, listRuns } from '../../lib/runs';
 import { type SkillSummary, fetchSkills, findSkill } from '../../lib/skills';
 import { formatRelative } from '../../lib/time';
 import { fetchEntry } from '../../lib/vault';
-import { Icons, Stepper } from '../../shared';
+import { Icons, SectionToggleRow, Stepper, useCollapsedFlag } from '../../shared';
 import '../../shared/styles.css';
 import {
   type EventCatalogEntry,
@@ -2850,6 +2850,66 @@ function ChangesTable({
   list: ChangeSummary[];
   onOpen: (id: string) => void;
 }) {
+  // Terminal changes (merged / abandoned) collapse behind a toggle row —
+  // active work owns the table. Terminal segment re-sorts newest-first by
+  // updated (the server's status-priority order is for the active segment).
+  const IN_FLIGHT = new Set(['planning', 'in-progress', 'in-review']);
+  const active = list.filter((c) => !c.status || IN_FLIGHT.has(c.status));
+  const terminal = list
+    .filter((c) => c.status && !IN_FLIGHT.has(c.status))
+    .sort((a, b) => (b.updated ?? '').localeCompare(a.updated ?? ''));
+  const [collapsed, toggle] = useCollapsedFlag('changes:terminal');
+  const renderRow = (c: ChangeSummary) => (
+    <React.Fragment key={c.path}>
+      <tr
+        onClick={() => c.id && onOpen(c.id)}
+        style={{ cursor: c.id ? 'pointer' : 'default' }}
+        title={c.id ?? undefined}
+      >
+        <td style={{ whiteSpace: 'nowrap' }}>
+          {c.status && (
+            <span className={statusBadgeClass(c.status)}>
+              {STATUS_LABELS[c.status] ?? c.status}
+            </span>
+          )}
+        </td>
+        <td style={{ fontWeight: 500 }}>
+          {stepPrefix(c) && (
+            <span
+              className="mono"
+              style={{ color: 'var(--accent-text)', fontSize: 11.5, marginRight: 6 }}
+              title={
+                c.derived_from_report ? `Scaffolded from "${c.derived_from_report}"` : undefined
+              }
+            >
+              {stepPrefix(c).trim()}
+            </span>
+          )}
+          {c.title}
+        </td>
+        <td className="mono tiny">{c.repo ?? '—'}</td>
+        <td className="mono tiny">{c.branch ?? '—'}</td>
+        <td className="tiny">{c.project ?? '—'}</td>
+        <td className="tiny">
+          {c.pr_url ? (
+            <a
+              href={c.pr_url}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
+            >
+              #{c.pr_url.split('/').pop()}
+            </a>
+          ) : (
+            '—'
+          )}
+        </td>
+        <td className="tiny subtle" title={c.updated ?? undefined}>
+          {c.updated ? formatRelative(c.updated) : '—'}
+        </td>
+      </tr>
+    </React.Fragment>
+  );
   return (
     <table className="data-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
       <thead>
@@ -2864,92 +2924,17 @@ function ChangesTable({
         </tr>
       </thead>
       <tbody>
-        {list.map((c, i, arr) => {
-          // Insert a divider row when transitioning from in-flight statuses
-          // (planning / in-progress / in-review) to terminal (merged / abandoned).
-          // Server already sorts terminal after in-flight, so the boundary is
-          // a clean cut.
-          const IN_FLIGHT = new Set(['planning', 'in-progress', 'in-review']);
-          const prev = arr[i - 1];
-          const isFirstTerminal =
-            i > 0 &&
-            prev &&
-            c.status &&
-            !IN_FLIGHT.has(c.status) &&
-            prev.status &&
-            IN_FLIGHT.has(prev.status);
-          return (
-            <React.Fragment key={c.path}>
-              {isFirstTerminal && (
-                <tr aria-hidden="true">
-                  <td
-                    colSpan={7}
-                    style={{
-                      padding: '6px 12px',
-                      fontSize: 10.5,
-                      color: 'var(--text-3)',
-                      textTransform: 'uppercase',
-                      letterSpacing: 0.6,
-                      borderTop: '1px solid var(--border)',
-                      background: 'var(--bg-2)',
-                    }}
-                  >
-                    Terminal
-                  </td>
-                </tr>
-              )}
-              <tr
-                onClick={() => c.id && onOpen(c.id)}
-                style={{ cursor: c.id ? 'pointer' : 'default' }}
-                title={c.id ?? undefined}
-              >
-                <td style={{ whiteSpace: 'nowrap' }}>
-                  {c.status && (
-                    <span className={statusBadgeClass(c.status)}>
-                      {STATUS_LABELS[c.status] ?? c.status}
-                    </span>
-                  )}
-                </td>
-                <td style={{ fontWeight: 500 }}>
-                  {stepPrefix(c) && (
-                    <span
-                      className="mono"
-                      style={{ color: 'var(--accent-text)', fontSize: 11.5, marginRight: 6 }}
-                      title={
-                        c.derived_from_report
-                          ? `Scaffolded from "${c.derived_from_report}"`
-                          : undefined
-                      }
-                    >
-                      {stepPrefix(c).trim()}
-                    </span>
-                  )}
-                  {c.title}
-                </td>
-                <td className="mono tiny">{c.repo ?? '—'}</td>
-                <td className="mono tiny">{c.branch ?? '—'}</td>
-                <td className="tiny">{c.project ?? '—'}</td>
-                <td className="tiny">
-                  {c.pr_url ? (
-                    <a
-                      href={c.pr_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      #{c.pr_url.split('/').pop()}
-                    </a>
-                  ) : (
-                    '—'
-                  )}
-                </td>
-                <td className="tiny subtle" title={c.updated ?? undefined}>
-                  {c.updated ? formatRelative(c.updated) : '—'}
-                </td>
-              </tr>
-            </React.Fragment>
-          );
-        })}
+        {active.map(renderRow)}
+        {terminal.length > 0 && (
+          <SectionToggleRow
+            colSpan={7}
+            label="Terminal"
+            count={terminal.length}
+            collapsed={collapsed}
+            onToggle={toggle}
+          />
+        )}
+        {!collapsed && terminal.map(renderRow)}
       </tbody>
     </table>
   );
@@ -3479,11 +3464,27 @@ export function KanbanBoard({
     if (!byStatus.has(k)) byStatus.set(k, []);
     byStatus.get(k)?.push(c);
   }
+  // Terminal columns (merged / abandoned) start collapsed to narrow rails —
+  // the board is for in-flight work. Click the rail to expand. Items inside
+  // terminal columns sort newest-first by updated.
+  const TERMINAL_COLUMNS = new Set(['merged', 'abandoned']);
+  for (const status of TERMINAL_COLUMNS) {
+    byStatus.get(status)?.sort((a, b) => (b.updated ?? '').localeCompare(a.updated ?? ''));
+  }
+  const [mergedCollapsed, toggleMerged] = useCollapsedFlag('changes:kanban:merged');
+  const [abandonedCollapsed, toggleAbandoned] = useCollapsedFlag('changes:kanban:abandoned');
+  const collapsedFor = (status: string) =>
+    status === 'merged' ? mergedCollapsed : status === 'abandoned' ? abandonedCollapsed : false;
+  const toggleFor = (status: string) =>
+    status === 'merged' ? toggleMerged : status === 'abandoned' ? toggleAbandoned : undefined;
+  const gridCols = KANBAN_COLUMNS.map((col) =>
+    collapsedFor(col.status) ? '44px' : 'minmax(220px, 1fr)',
+  ).join(' ');
   return (
     <div
       style={{
         display: 'grid',
-        gridTemplateColumns: `repeat(${KANBAN_COLUMNS.length}, minmax(220px, 1fr))`,
+        gridTemplateColumns: gridCols,
         gap: 12,
         padding: 16,
         overflow: 'auto',
@@ -3493,6 +3494,43 @@ export function KanbanBoard({
     >
       {KANBAN_COLUMNS.map((col) => {
         const items = byStatus.get(col.status) ?? [];
+        const isCollapsed = collapsedFor(col.status);
+        const onToggle = toggleFor(col.status);
+        if (isCollapsed && onToggle) {
+          return (
+            <button
+              key={col.status}
+              type="button"
+              className="card"
+              onClick={onToggle}
+              title={`Expand ${col.label} (${items.length})`}
+              style={{
+                padding: '10px 4px',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 8,
+                cursor: 'pointer',
+                border: '1px solid var(--border)',
+                background: 'var(--bg-2)',
+              }}
+            >
+              <span
+                style={{
+                  writingMode: 'vertical-rl',
+                  fontSize: 11,
+                  fontWeight: 600,
+                  textTransform: 'uppercase',
+                  letterSpacing: 0.6,
+                  color: 'var(--text-3)',
+                }}
+              >
+                {col.label}
+              </span>
+              <span className="tiny">{items.length}</span>
+            </button>
+          );
+        }
         return (
           <div
             key={col.status}
@@ -3516,7 +3554,29 @@ export function KanbanBoard({
               >
                 {col.label}
               </h4>
-              <span className="tiny">{items.length}</span>
+              <span
+                className="tiny"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}
+              >
+                {items.length}
+                {toggleFor(col.status) && (
+                  <button
+                    type="button"
+                    onClick={toggleFor(col.status)}
+                    title={`Collapse ${col.label}`}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      cursor: 'pointer',
+                      color: 'var(--text-3)',
+                      padding: 0,
+                      fontSize: 11,
+                    }}
+                  >
+                    ◂
+                  </button>
+                )}
+              </span>
             </div>
             <ul
               style={{

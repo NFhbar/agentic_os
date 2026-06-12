@@ -5,8 +5,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { RunRow } from '../../components/RunRow';
+import { getJson } from '../../lib/api';
 import { useDispatch } from '../../lib/dispatch';
-import { type RunRecord, type RunState, getRun } from '../../lib/runs';
+import { type RunRecord, type RunState, getRun, listRuns } from '../../lib/runs';
 import '../../shared/styles.css';
 
 // URL filter taxonomy: /processes (all), /processes/running, /processes/done,
@@ -45,7 +46,46 @@ export default function ProcessesView() {
   const navigate = useNavigate();
   const params = useParams();
   const splat = params['*'];
-  const { runs } = useDispatch();
+  const { runs: polledRuns } = useDispatch();
+  const [limit, setLimit] = useState(200);
+  const [deepRuns, setDeepRuns] = useState<RunRecord[] | null>(null);
+  const [total, setTotal] = useState<number | null>(null);
+  const [retentionCap, setRetentionCap] = useState<number | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  useEffect(() => {
+    getJson<{ n: number; cap?: number }>('/api/runs/count')
+      .then((r) => {
+        setTotal(r.n);
+        setRetentionCap(r.cap ?? null);
+      })
+      .catch(() => setTotal(null));
+  }, []);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: polledRuns is deliberately a dependency — the deep snapshot re-syncs on every poll tick so expanded views stay live.
+  useEffect(() => {
+    if (limit <= 200) {
+      setDeepRuns(null);
+      return;
+    }
+    let cancelled = false;
+    setLoadingMore(true);
+    listRuns({ limit })
+      .then(({ runs: deep }) => {
+        if (!cancelled) setDeepRuns(deep);
+      })
+      .catch(() => {
+        if (!cancelled) setDeepRuns(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingMore(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [limit, polledRuns]);
+
+  const runs = deepRuns ?? polledRuns;
   const filter = useMemo(() => parseFilter(splat), [splat]);
 
   // Auto-expand a row when its id is in the URL hash (#r_abc123). Used by
@@ -195,6 +235,30 @@ export default function ProcessesView() {
           ))}
         </ul>
       )}
+      {total != null &&
+        (total > runs.length ? (
+          <div style={{ marginTop: 14, textAlign: 'center' }}>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => setLimit((n) => n + 200)}
+              disabled={loadingMore}
+            >
+              Load 200 more (showing {runs.length} of {total})
+            </button>
+          </div>
+        ) : (
+          <p
+            className="subtle"
+            style={{ marginTop: 14, textAlign: 'center', fontSize: 11.5 }}
+            title="Completed runs beyond the retention cap are evicted from the runs table (their JSONL journals are removed too). Queued/running runs are never evicted."
+          >
+            Showing all {runs.length} runs
+            {retentionCap != null &&
+              ` — older completed runs are evicted by the ${retentionCap}-run retention cap`}
+            .
+          </p>
+        ))}
     </div>
   );
 }

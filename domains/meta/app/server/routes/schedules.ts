@@ -182,6 +182,15 @@ export const schedulesRoutes: FastifyPluginAsync = async (fastify) => {
       last_run: s.id && lastById.has(s.id) ? extractLastRun(lastById.get(s.id) as RunEntry) : null,
     }));
 
+    // Most recently fired first; never-fired schedules sort last (newest →
+    // oldest like every other list), title as the stable tiebreak.
+    annotated.sort((a, b) => {
+      const at = a.last_run?.ts ?? '';
+      const bt = b.last_run?.ts ?? '';
+      if (at !== bt) return bt.localeCompare(at);
+      return a.title.localeCompare(b.title);
+    });
+
     // Status summary — what Overview's Scheduler card needs at a glance.
     // Count only `fired` entries (or legacy entries with no outcome field):
     // skipped runs are healthy precondition-gates, not failures. Without this

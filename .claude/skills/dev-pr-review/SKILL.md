@@ -232,6 +232,15 @@ The review is a **single-model, single-call** review: one prompt that asks the m
 
     Use the import graph as blast-radius context: when a touched file is imported by many others, review the changed behavior with extra care for backwards compatibility. When a touched file is itself a hub, treat that as a prompt to consider every downstream caller's assumptions. Tests adjacent to a touched file are the natural place to verify behavior — if the PR doesn't update those tests, flag it.
 
+    PERSISTENT-STATE RULE: when the diff introduces persistent state (CREATE
+    TABLE statements, a new on-disk file format, or a new long-lived in-memory
+    cache with non-trivial lifetime), explicitly check what the codebase's
+    existing rewind, migration, reorg, snapshot, and checkpoint machinery
+    expect of persistent state, and whether the new state correctly extends
+    those invariants. Surface the interaction in a comment even when the
+    answer is "compatible" — silent compatibility assumptions are how
+    rewind gaps ship.
+
     FOCUS AREAS: <comma-joined focus_areas from config>
     COMMENT STYLE: <comment_style from config>
     CUSTOM INSTRUCTIONS:
