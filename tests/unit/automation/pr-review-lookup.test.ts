@@ -10,8 +10,8 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { lookupLinkedReview } from '../../../domains/meta/app/server/routes/pr-review-lookup.js';
 import { REPO_ROOT } from '../../../domains/meta/app/server/repo.js';
+import { lookupLinkedReview } from '../../../domains/meta/app/server/routes/pr-review-lookup.js';
 
 // safePath resolves relative to REPO_ROOT, so fixtures must live inside the
 // repo. A throwaway dir under tests/ keeps them out of the vault manifest.
@@ -32,8 +32,13 @@ function writeFixture(body: string): string {
   return relative(REPO_ROOT, abs);
 }
 
-function comment(n: number, headerLines: string[], body = 'Comment body.'): string {
-  return `#### Comment ${n}: logic · bug\n${headerLines.join('\n')}\n\n${body}\n`;
+function comment(
+  n: number,
+  headerLines: string[],
+  body = 'Comment body.',
+  severity = 'bug',
+): string {
+  return `#### Comment ${n}: logic · ${severity}\n${headerLines.join('\n')}\n\n${body}\n`;
 }
 
 describe('lookupLinkedReview — untriagedCount', () => {
@@ -89,6 +94,56 @@ describe('lookupLinkedReview — untriagedCount', () => {
       reviewGithubReviewId: null,
       passCount: 0,
       untriagedCount: 0,
+      standingBlockerCount: 0,
     });
+  });
+});
+
+describe('lookupLinkedReview — standingBlockerCount', () => {
+  it('counts blocker/bug comments whose status is still standing, latest pass only', () => {
+    const rel = writeFixture(
+      [
+        '## Pass 1',
+        '',
+        // Older pass: a standing blocker — must be ignored by the latest-pass scope.
+        comment(1, ['- file: src/a.ts', '- line: 1', '- status: new'], 'Body.', 'blocker'),
+        '## Pass 2',
+        '',
+        comment(1, ['- file: src/a.ts', '- line: 10', '- status: new'], 'Body.', 'bug'),
+        comment(2, ['- file: src/b.ts', '- line: 20', '- status: accepted'], 'Body.', 'blocker'),
+        comment(3, ['- file: src/c.ts', '- line: 30', '- status: resolved'], 'Body.', 'bug'),
+        comment(4, ['- file: src/d.ts', '- line: 40', '- status: dismissed'], 'Body.', 'bug'),
+        comment(
+          5,
+          [
+            '- file: src/e.ts',
+            '- line: 50',
+            '- status: acted-on',
+            '- acted_on_at: 2026-06-12T00:00:00Z',
+          ],
+          'Body.',
+          'bug',
+        ),
+        // Non-blocker severities never count, whatever their status.
+        comment(6, ['- file: src/f.ts', '- line: 60', '- status: new'], 'Body.', 'nit'),
+        comment(7, ['- file: src/g.ts', '- line: 70', '- status: new'], 'Body.', 'suggestion'),
+      ].join('\n'),
+    );
+    // Standing: #1 (bug, new) + #2 (blocker, accepted). Not standing:
+    // resolved/dismissed/acted-on. Nit/suggestion excluded by severity.
+    expect(lookupLinkedReview(rel).standingBlockerCount).toBe(2);
+  });
+
+  it('is 0 when every blocker/bug is resolved, dismissed, or acted-on (orchestrator may upgrade pending → approved)', () => {
+    const rel = writeFixture(
+      [
+        '## Pass 1',
+        '',
+        comment(1, ['- file: src/a.ts', '- line: 10', '- status: resolved'], 'Body.', 'blocker'),
+        comment(2, ['- file: src/b.ts', '- line: 20', '- status: dismissed'], 'Body.', 'bug'),
+        comment(3, ['- file: src/c.ts', '- line: 30', '- status: new'], 'Body.', 'suggestion'),
+      ].join('\n'),
+    );
+    expect(lookupLinkedReview(rel).standingBlockerCount).toBe(0);
   });
 });

@@ -299,6 +299,12 @@ export function ReviewDetail({
   // invariant — dev-mark-pr-ready refuses while any comment remains `new`.
   const untriagedCount = comments.filter((c) => c.status === 'new').length;
   const isLatestPass = passIdx === passes.length - 1;
+  // The Mark-ready gate keys off the LATEST pass regardless of which pass is
+  // being viewed; the viewed-pass count above drives the banner only.
+  const latestPassUntriagedCount =
+    passes.length > 0
+      ? passes[passes.length - 1].comments.filter((c) => c.status === 'new').length
+      : 0;
   const showTriageBanner =
     (detail.result === 'approved' || detail.result === 'comment') &&
     isLatestPass &&
@@ -466,10 +472,10 @@ export function ReviewDetail({
                 type="button"
                 className="btn btn-primary"
                 onClick={() => detail.linkedChange?.id && onMarkReady(detail.linkedChange.id)}
-                disabled={untriagedCount > 0}
+                disabled={latestPassUntriagedCount > 0}
                 title={
-                  untriagedCount > 0
-                    ? `${untriagedCount} comment${untriagedCount !== 1 ? 's' : ''} on the latest pass ${untriagedCount !== 1 ? 'are' : 'is'} still status: new — Accept or Dismiss each first (dev-mark-pr-ready refuses while untriaged comments remain).`
+                  latestPassUntriagedCount > 0
+                    ? `${latestPassUntriagedCount} comment${latestPassUntriagedCount !== 1 ? 's' : ''} on the latest pass ${latestPassUntriagedCount !== 1 ? 'are' : 'is'} still status: new — Accept or Dismiss each first (dev-mark-pr-ready refuses while untriaged comments remain).`
                     : `Runs dev-mark-pr-ready against change ${detail.linkedChange.id}: flips pr_review_status to ready-for-human and stamps pr_ready_at. Vault-only — NO GitHub calls. Same action as the Mark Ready button on the change's PR tab. Merge the PR on GitHub yourself after.`
                 }
               >
@@ -540,8 +546,9 @@ export function ReviewDetail({
         >
           <Icons.Check size={14} style={{ color: 'var(--accent-text)', flexShrink: 0 }} />
           <div style={{ fontSize: 13, color: 'var(--accent-text)' }}>
-            Approved with {untriagedCount} untriaged comment{untriagedCount !== 1 ? 's' : ''} —
-            Accept or Dismiss each, then Mark ready (or Re-review after changes).
+            {detail.result === 'comment' ? 'Review complete' : 'Approved'} with {untriagedCount}{' '}
+            untriaged comment{untriagedCount !== 1 ? 's' : ''} — Accept or Dismiss each, then Mark
+            ready (or Re-review after changes).
           </div>
         </div>
       )}

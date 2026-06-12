@@ -29,6 +29,12 @@ export interface ReviewLookup {
   // disposition is a merge invariant (new → acted-on | dismissed); this count
   // gates the Mark-ready affordances.
   untriagedCount: number;
+  // Count of latest-pass comments with severity blocker|bug whose status is
+  // still standing (not resolved/dismissed/acted-on). Mirrors dev-pr-review's
+  // step-14 roll-up rule for `pr_review_status: approved`; gates the
+  // orchestrator's pending → approved upgrade at completion so a
+  // standing-bug `pending` is never relabeled as clean.
+  standingBlockerCount: number;
 }
 
 export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
@@ -38,6 +44,7 @@ export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
     reviewGithubReviewId: null,
     passCount: 0,
     untriagedCount: 0,
+    standingBlockerCount: 0,
   };
   const abs = safePath(prReviewPath);
   if (!abs || !existsSync(abs)) return empty;
@@ -76,6 +83,7 @@ export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
   }
   let count = 0;
   let untriaged = 0;
+  let standingBlockers = 0;
   let firstReviewId: number | null = null;
   for (let i = 0; i < commentStarts.length; i++) {
     const start = commentStarts[i];
@@ -83,12 +91,22 @@ export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
     const block = section.slice(start, end);
     const blankIdx = block.search(/\n\s*\n/);
     const header = blankIdx >= 0 ? block.slice(0, blankIdx) : block;
+    // Severity lives in the heading line: `#### Comment N: <category> · <severity>`.
+    const severityM = header.match(/^#### Comment \d+:\s*[\w-]+\s*·\s*([\w-]+)/);
+    const severity = severityM ? severityM[1] : null;
     const statusM = header.match(/^- status:\s*([\w-]+)/m);
     const status = statusM ? statusM[1] : 'new';
     const actedOn = /^- acted_on_at:\s*\S/m.test(header);
     const ghReviewM = header.match(/^- github_review_id:\s*(\d+)/m);
     if (ghReviewM && firstReviewId == null) firstReviewId = Number(ghReviewM[1]);
     if (status === 'new') untriaged++;
+    if (
+      (severity === 'blocker' || severity === 'bug') &&
+      status !== 'resolved' &&
+      status !== 'dismissed' &&
+      status !== 'acted-on'
+    )
+      standingBlockers++;
     if (
       !actedOn &&
       (status === 'accepted' || status === 'published' || status === 'published-as-body')
@@ -101,5 +119,6 @@ export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
     reviewGithubReviewId: firstReviewId,
     passCount,
     untriagedCount: untriaged,
+    standingBlockerCount: standingBlockers,
   };
 }

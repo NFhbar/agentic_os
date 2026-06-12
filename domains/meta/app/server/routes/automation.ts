@@ -1097,7 +1097,9 @@ async function parkChangeAutomation(args: {
 //
 // Completion communicates "review clean, human triage pending" via the
 // `approved` loop-state: when the change's `pr_review_status` is still
-// `pending`, it's rewritten to `approved`. It does NOT flip
+// `pending` AND the linked review's latest pass has no standing blocker/bug
+// comment (`pending` deliberately covers that case — see lookupLinkedReview's
+// standingBlockerCount), it's rewritten to `approved`. It does NOT flip
 // `ready-for-human`, stamp `pr_ready_at`, or fire the
 // `dashboard.mark-pr-ready` event — `ready-for-human` is exclusively the
 // human's Mark-ready action (dev-mark-pr-ready), which also enforces the
@@ -1114,15 +1116,22 @@ async function completeChangeAutomation(args: {
   const nowIso = new Date().toISOString();
 
   // Read current change frontmatter to check pr_review_status. Only the
-  // legacy `pending` value (= "review ran, no blockers") is upgraded to the
-  // `approved` loop-state. Anything else (approved already written by
-  // dev-pr-review's roll-up, needs-changes, ready-for-human, null) is left
-  // untouched — complete as today.
+  // legacy `pending` value is upgraded to the `approved` loop-state, and only
+  // when the linked review verifiably has no standing blocker/bug comment on
+  // its latest pass — under the new vocabulary, dev-pr-review's roll-up keeps
+  // `pending` precisely for that standing-bug case, which `approved` is
+  // documented to exclude (archetype-change § PR review fields). Anything
+  // else (approved already written by the roll-up, needs-changes,
+  // ready-for-human, null) is left untouched — complete as today.
   let content = await readFile(changePath, 'utf8');
   const { fm: cfm } = parseFrontmatter(content);
   const currentPrReviewStatus =
     typeof (cfm as Record<string, unknown>).pr_review_status === 'string'
       ? ((cfm as Record<string, unknown>).pr_review_status as string)
+      : null;
+  const linkedReviewPath =
+    typeof (cfm as Record<string, unknown>).pr_review_path === 'string'
+      ? ((cfm as Record<string, unknown>).pr_review_path as string)
       : null;
 
   // Write the automation block via the existing writer first (which also
@@ -1141,7 +1150,11 @@ async function completeChangeAutomation(args: {
   await writeChangeAutomation(changePath, nextAutomation);
 
   let prReviewStatusSet: string | null = null;
-  if (currentPrReviewStatus === 'pending') {
+  if (
+    currentPrReviewStatus === 'pending' &&
+    linkedReviewPath !== null &&
+    lookupLinkedReview(linkedReviewPath).standingBlockerCount === 0
+  ) {
     content = await readFile(changePath, 'utf8');
     const updated = rewriteFrontmatter(content, {
       pr_review_status: 'approved',
