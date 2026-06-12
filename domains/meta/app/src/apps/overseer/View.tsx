@@ -26,6 +26,12 @@ import { useNavigation } from '../../lib/navigation';
 import { formatRelative } from '../../lib/time';
 import { Icons } from '../../shared';
 import { DecisionsPanel } from './DecisionsPanel';
+import { PendingSuggestionsPanel } from './PendingSuggestionsPanel';
+import '../../shared/styles.css';
+
+// Lightweight type mirrors of server's audits.types.ts. Inlined here as
+// narrow projections to keep this file's import surface small; update both
+// when the wire shape changes.
 
 interface AuditCandidate {
   change_id: string;
@@ -35,12 +41,6 @@ interface AuditCandidate {
   merged_at: string | null;
   updated: string | null;
 }
-import { PendingSuggestionsPanel } from './PendingSuggestionsPanel';
-import '../../shared/styles.css';
-
-// Lightweight type mirrors of server's audits.types.ts. Inlined here as
-// narrow projections to keep this file's import surface small; update both
-// when the wire shape changes.
 
 type AuditStatus = 'pending' | 'provisional' | 'final';
 type VerdictOverall = 'good' | 'mixed' | 'poor';
@@ -417,6 +417,7 @@ function OverviewTab() {
   const [recent, setRecent] = useState<AuditSummary[] | null>(null);
   const [candidates, setCandidates] = useState<AuditCandidate[]>([]);
   const [auditing, setAuditing] = useState<Set<string>>(new Set());
+  const [auditError, setAuditError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
@@ -427,6 +428,17 @@ function OverviewTab() {
   async function auditChange(changeId: string) {
     if (auditing.has(changeId)) return;
     setAuditing((s) => new Set(s).add(changeId));
+    setAuditError(null);
+    // Dispatch failure must re-enable the button — same blocked/error
+    // surfacing as the changes app's dispatchSkill helper.
+    const fail = (message: string) => {
+      setAuditing((s) => {
+        const next = new Set(s);
+        next.delete(changeId);
+        return next;
+      });
+      setAuditError(message);
+    };
     const prompt = [
       `Run the meta-overseer-review skill to audit change "${changeId}".`,
       'Read .claude/skills/meta-overseer-review/SKILL.md and follow its Procedure exactly.',
@@ -440,10 +452,21 @@ function OverviewTab() {
       "- If the gate trips, exit with the skill's rejection message verbatim so the user can decide whether to re-run with force.",
       '- On success, report the audit id + verdict + cost so the user can navigate to the Overseer audits tab.',
     ].join('\n');
-    await startSkillRun(prompt, `Audit lifecycle: ${changeId}`, {
-      skill: 'meta-overseer-review',
-      change_id: changeId,
-    });
+    try {
+      const res = await startSkillRun(prompt, `Audit lifecycle: ${changeId}`, {
+        skill: 'meta-overseer-review',
+        change_id: changeId,
+      });
+      if ('blocked' in res && res.blocked) {
+        fail(
+          `Already running on this change: ${res.blocking.skill ?? 'unknown skill'} (${res.blocking.run_id}). Cancel or wait.`,
+        );
+      } else if ('error' in res && res.error) {
+        fail(`Dispatch failed: ${res.error}`);
+      }
+    } catch (e) {
+      fail(`Dispatch failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   useEffect(() => {
@@ -735,6 +758,15 @@ function OverviewTab() {
           <h3 className="card-title">Un-audited lifecycles</h3>
           <span className="tiny subtle">{candidates.length}</span>
         </div>
+        {auditError && (
+          <p
+            className="tiny"
+            role="alert"
+            style={{ padding: '8px 14px', margin: 0, color: 'var(--danger-text)' }}
+          >
+            ✗ {auditError}
+          </p>
+        )}
         {candidates.length === 0 ? (
           <p className="subtle" style={{ padding: '10px 14px', margin: 0, fontSize: 12 }}>
             Every terminal change from audit-enabled projects has a lifecycle audit.

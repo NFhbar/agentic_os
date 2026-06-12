@@ -67,11 +67,11 @@ EXECUTE  ──▶  OPEN-PR  ──▶  PR-REVIEW  ──┬─ no blockers ─�
 
 **Artifact-verified advance (since 2026-06-12).** A clean exit alone is not proof of progress — a skill can REFUSE and still exit 0 (the 2026-06-12 incident: EXECUTE refused on a state mismatch, the orchestrator advanced to a ghost open-pr → pr-review). Each dispatch snapshots a baseline (`state.dispatch_baseline`: branch `head_sha`, `pr_url`, review `pass_count`); at verification time (auto-tick AND `start`'s re-evaluate path) the orchestrator gathers observations and the pure `evaluateArtifactMovement(step, baseline, observed)` judges movement per step:
 
-| step                           | artifact that must move                                                                  |
-| ------------------------------ | ---------------------------------------------------------------------------------------- |
-| `execute` / `address-comments` | new commits on the change branch (head ≠ baseline; absent ref = determinate no-movement) |
-| `open-pr`                      | `pr_url` newly set on the change entry                                                   |
-| `pr-review`                    | a new `## Pass <N>` on the linked pr-review entry                                        |
+| step                           | artifact that must move                                                                                                                                                                    |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `execute` / `address-comments` | new commits on the change branch (head ≠ baseline; absent ref = determinate no-movement)                                                                                                   |
+| `open-pr`                      | `pr_url` set on the change entry (already-set counts: `dev-open-pr` is idempotent — a linked PR is the satisfied postcondition, so Reset → Start on a change with an existing PR advances) |
+| `pr-review`                    | a new `## Pass <N>` on the linked pr-review entry                                                                                                                                          |
 
 Degraded reads (repo entity missing, dir missing, git/spawn failure, no `branch:` configured) yield _unknown_ — the gate stays inert rather than false-parking on infrastructure hiccups. Absent baseline (states written before the gate existed) is also inert.
 

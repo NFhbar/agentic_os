@@ -77,11 +77,13 @@ export function evaluateArtifactMovement(
       return observed.head !== baseline.head_sha;
     }
     case 'open-pr':
-      return (
-        typeof observed.pr_url === 'string' &&
-        observed.pr_url !== '' &&
-        observed.pr_url !== baseline.pr_url
-      );
+      // dev-open-pr is idempotent: when pr_url is already set it exits 0
+      // without mutating anything. The step's artifact is "a PR exists and
+      // is linked", so any non-empty pr_url satisfies the postcondition —
+      // even when equal to the baseline. Requiring movement here would make
+      // open-pr impassable on Reset → Start for a change whose PR exists
+      // (the standard's own documented skill-refused recovery).
+      return typeof observed.pr_url === 'string' && observed.pr_url !== '';
     case 'pr-review':
       return observed.pr_review_path_set && (observed.pass_count ?? 0) > (baseline.pass_count ?? 0);
     default:
@@ -89,6 +91,35 @@ export function evaluateArtifactMovement(
       // decider's default branch.
       return null;
   }
+}
+
+// Compose the human-readable no-movement fact for the park reason. Pure —
+// lives here (not automation.ts) so the wording is unit-testable.
+export function composeArtifactDetail(
+  step: string | null,
+  observed: ArtifactObservation,
+  branch: string | null,
+  runSummary: string | null,
+): string | null {
+  let detail: string | null = null;
+  if (step === 'execute' || step === 'address-comments') {
+    detail =
+      observed.head_error === 'ref-not-found'
+        ? `branch ${branch ?? '<unknown>'} has no commits (ref not found)`
+        : `no new commits on ${branch ?? '<unknown branch>'} (head still ${observed.head ? observed.head.slice(0, 7) : 'unknown'})`;
+  } else if (step === 'open-pr') {
+    // Only reachable when pr_url is unset — a set pr_url satisfies the
+    // open-pr postcondition in evaluateArtifactMovement.
+    detail = 'pr_url not set on the change entry';
+  } else if (step === 'pr-review') {
+    detail = observed.pr_review_path_set
+      ? `no new review pass (pass_count still ${observed.pass_count ?? 0})`
+      : 'no pr-review entry linked';
+  }
+  if (runSummary) {
+    detail = detail ? `${detail}; run summary: "${runSummary}"` : `run summary: "${runSummary}"`;
+  }
+  return detail;
 }
 
 // Decide the next gesture given the change's current state + the outcome of

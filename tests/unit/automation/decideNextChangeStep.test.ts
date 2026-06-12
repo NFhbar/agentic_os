@@ -15,6 +15,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   type ArtifactObservation,
+  composeArtifactDetail,
   decideNextChangeStep,
   evaluateArtifactMovement,
 } from '../../../domains/meta/app/server/routes/automation-state-machine.js';
@@ -413,7 +414,10 @@ describe('evaluateArtifactMovement', () => {
     expect(m).toBe(false);
   });
 
-  it('open-pr + pr_url unchanged → false', () => {
+  it('open-pr + pr_url unchanged (already linked) → true — the artifact exists, idempotent no-op is satisfied', () => {
+    // dev-open-pr stops politely (exit 0, no mutation) when pr_url is set.
+    // The postcondition is "a PR exists and is linked", not "pr_url moved" —
+    // requiring movement would make open-pr impassable on re-drives.
     const withPr: ChangeAutomationDispatchBaseline = {
       ...baseline,
       pr_url: 'https://github.com/x/y/pull/1',
@@ -423,7 +427,7 @@ describe('evaluateArtifactMovement', () => {
       withPr,
       obs({ pr_url: 'https://github.com/x/y/pull/1' }),
     );
-    expect(m).toBe(false);
+    expect(m).toBe(true);
   });
 
   it('open-pr + pr_url newly set → true', () => {
@@ -473,6 +477,79 @@ describe('evaluateArtifactMovement', () => {
   it('unknown step → null (forward-compat, same posture as the decider default branch)', () => {
     const m = evaluateArtifactMovement('deploy', baseline, obs({ head: 'fff9999aaa' }));
     expect(m).toBe(null);
+  });
+});
+
+describe('composeArtifactDetail — park-reason wording', () => {
+  // Pure wording composer for the skill-refused park reason. Pinned directly
+  // (not just via the artifact_detail plumbing row) now that it lives in the
+  // zero-I/O state-machine module.
+
+  function obs(partial: Partial<ArtifactObservation>): ArtifactObservation {
+    return {
+      head: null,
+      head_error: null,
+      pr_url: null,
+      pass_count: null,
+      pr_review_path_set: false,
+      ...partial,
+    };
+  }
+
+  it('execute + ref-not-found → "branch <x> has no commits (ref not found)"', () => {
+    const d = composeArtifactDetail('execute', obs({ head_error: 'ref-not-found' }), 'feat/x', null);
+    expect(d).toBe('branch feat/x has no commits (ref not found)');
+  });
+
+  it('execute + head unchanged → short-sha wording', () => {
+    const d = composeArtifactDetail('execute', obs({ head: 'abc1234def5678' }), 'feat/x', null);
+    expect(d).toBe('no new commits on feat/x (head still abc1234)');
+  });
+
+  it('address-comments follows the same wording as execute', () => {
+    const d = composeArtifactDetail('address-comments', obs({ head: null }), null, null);
+    expect(d).toBe('no new commits on <unknown branch> (head still unknown)');
+  });
+
+  it('open-pr → pr_url-not-set wording (the only reachable no-movement case)', () => {
+    const d = composeArtifactDetail('open-pr', obs({}), 'feat/x', null);
+    expect(d).toBe('pr_url not set on the change entry');
+  });
+
+  it('pr-review + linked entry → stale pass_count wording', () => {
+    const d = composeArtifactDetail(
+      'pr-review',
+      obs({ pr_review_path_set: true, pass_count: 1 }),
+      null,
+      null,
+    );
+    expect(d).toBe('no new review pass (pass_count still 1)');
+  });
+
+  it('pr-review + no linked entry → no-entry wording', () => {
+    const d = composeArtifactDetail('pr-review', obs({}), null, null);
+    expect(d).toBe('no pr-review entry linked');
+  });
+
+  it('appends the run summary when available', () => {
+    const d = composeArtifactDetail(
+      'execute',
+      obs({ head_error: 'ref-not-found' }),
+      'feat/x',
+      '✗ EXECUTE refused — state mismatch',
+    );
+    expect(d).toBe(
+      'branch feat/x has no commits (ref not found); run summary: "✗ EXECUTE refused — state mismatch"',
+    );
+  });
+
+  it('unknown step + run summary → summary-only detail', () => {
+    const d = composeArtifactDetail('deploy', obs({}), null, 'refused');
+    expect(d).toBe('run summary: "refused"');
+  });
+
+  it('unknown step + no summary → null', () => {
+    expect(composeArtifactDetail('deploy', obs({}), null, null)).toBe(null);
   });
 });
 
@@ -593,6 +670,36 @@ describe('decideNextChangeStep — artifact-verified advance (skill-refused park
       expect(d.reason).toContain('no new commits on feat/x');
       expect(d.reason).toContain('EXECUTE refused — state mismatch');
     }
+  });
+
+  it('Reset → Start with existing PR: open-pr idempotent no-op advances to pr-review, does not park forever', () => {
+    // Pass-1 comment 1 regression. A change whose PR already exists (e.g. an
+    // execute refusal parked the loop post-open-pr, operator did Reset →
+    // Start) re-runs open-pr; dev-open-pr no-ops with exit 0 and pr_url
+    // unchanged. The satisfied postcondition (a linked PR exists) must
+    // advance the loop, not re-park skill-refused every cycle.
+    const prUrl = 'https://github.com/x/y/pull/8';
+    const artifact_moved = evaluateArtifactMovement(
+      'open-pr',
+      { head_sha: 'abc1234def', pr_url: prUrl, pass_count: null },
+      {
+        head: 'abc1234def',
+        head_error: null,
+        pr_url: prUrl,
+        pass_count: null,
+        pr_review_path_set: false,
+      },
+    );
+    expect(artifact_moved).toBe(true);
+    const d = decideNextChangeStep({
+      current_step: 'open-pr',
+      iteration_count: 0,
+      iteration_cap: 4,
+      last_exit: 0,
+      pr_review_status: null,
+      artifact_moved,
+    });
+    expect(d).toEqual({ action: 'dispatch', step: 'pr-review' });
   });
 
   it('start re-evaluate: execute + baseline present + no movement → park, NOT dispatch open-pr (blocker-2 pin)', () => {

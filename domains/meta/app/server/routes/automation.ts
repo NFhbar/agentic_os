@@ -9,10 +9,11 @@
 // tick-on-run-terminate.
 
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import type { Dirent } from 'node:fs';
 import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
+import { createInterface } from 'node:readline';
 import type { FastifyPluginAsync } from 'fastify';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { queryEvents } from '../../../../../scripts/events-db.mjs';
@@ -848,6 +849,7 @@ export { decideNextChangeStep } from './automation-state-machine.js';
 import {
   type ArtifactObservation,
   checkChangeAutomationEligibility,
+  composeArtifactDetail,
   decideNextChangeStep,
   evaluateArtifactMovement,
 } from './automation-state-machine.js';
@@ -934,9 +936,14 @@ async function readRunSummaryLine(runId: string): Promise<string | null> {
     const run = getRun(runId) as { output_path?: string | null } | null;
     const outputPath = run && typeof run.output_path === 'string' ? run.output_path : null;
     if (!outputPath) return null;
-    const raw = await readFile(outputPath, 'utf8');
+    // Line-stream rather than readFile — long runs produce multi-MB
+    // transcripts and only the last assistant text line matters.
     let lastText: string | null = null;
-    for (const line of raw.split('\n')) {
+    const rl = createInterface({
+      input: createReadStream(outputPath, { encoding: 'utf8' }),
+      crlfDelay: Number.POSITIVE_INFINITY,
+    });
+    for await (const line of rl) {
       for (const parsed of parseStreamJsonLine(line)) {
         if (parsed.kind === 'assistant-text' && parsed.text.trim() !== '') lastText = parsed.text;
       }
@@ -951,34 +958,6 @@ async function readRunSummaryLine(runId: string): Promise<string | null> {
   } catch {
     return null;
   }
-}
-
-// Compose the human-readable no-movement fact for the park reason.
-function composeArtifactDetail(
-  step: string | null,
-  observed: ArtifactObservation,
-  branch: string | null,
-  runSummary: string | null,
-): string | null {
-  let detail: string | null = null;
-  if (step === 'execute' || step === 'address-comments') {
-    detail =
-      observed.head_error === 'ref-not-found'
-        ? `branch ${branch ?? '<unknown>'} has no commits (ref not found)`
-        : `no new commits on ${branch ?? '<unknown branch>'} (head still ${observed.head ? observed.head.slice(0, 7) : 'unknown'})`;
-  } else if (step === 'open-pr') {
-    detail = observed.pr_url
-      ? `pr_url unchanged (${observed.pr_url})`
-      : 'pr_url not set on the change entry';
-  } else if (step === 'pr-review') {
-    detail = observed.pr_review_path_set
-      ? `no new review pass (pass_count still ${observed.pass_count ?? 0})`
-      : 'no pr-review entry linked';
-  }
-  if (runSummary) {
-    detail = detail ? `${detail}; run summary: "${runSummary}"` : `run summary: "${runSummary}"`;
-  }
-  return detail;
 }
 
 // Dispatch a step's skill run for a change. Returns the new run_id on
