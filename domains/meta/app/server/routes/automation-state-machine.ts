@@ -58,13 +58,18 @@ export interface ArtifactObservation {
 // Pure judgment over caller-gathered observations. Returns:
 //   true  — artifact moved (advance normally)
 //   false — determinate no-movement (clean exit was a refusal/no-op → park)
-//   null  — unknown (no baseline recorded, degraded read, or unknown step)
-//           → gate inert, existing behavior applies
+//   'verification-unavailable' — the baseline snapshot itself was degraded,
+//           so movement can't be established → park (never silently advance
+//           past an unverifiable step)
+//   null  — unknown (no baseline recorded, degraded read at verification
+//           time, or unknown step) → gate inert, existing behavior applies
+export type ArtifactMovement = boolean | 'verification-unavailable' | null;
+
 export function evaluateArtifactMovement(
   step: string | null,
   baseline: ChangeAutomationDispatchBaseline | null,
   observed: ArtifactObservation,
-): boolean | null {
+): ArtifactMovement {
   // No baseline → dispatched before the gate existed (or by a legacy state).
   // Gate inert so in-flight automations are never falsely parked.
   if (!baseline) return null;
@@ -73,6 +78,11 @@ export function evaluateArtifactMovement(
     case 'address-comments': {
       if (observed.head_error === 'ref-not-found') return false;
       if (observed.head_error === 'degraded') return null;
+      // A degraded baseline can't anchor the comparison: its null head_sha
+      // could mean "branch absent at dispatch" OR "git read failed", so a
+      // non-null observed head would read as movement even for a refusing
+      // run (silent fail-open). Surface it as unverifiable instead.
+      if (baseline.head_degraded) return 'verification-unavailable';
       if (observed.head === null) return null;
       return observed.head !== baseline.head_sha;
     }
@@ -100,9 +110,12 @@ export function composeArtifactDetail(
   observed: ArtifactObservation,
   branch: string | null,
   runSummary: string | null,
+  movement: false | 'verification-unavailable' = false,
 ): string | null {
   let detail: string | null = null;
-  if (step === 'execute' || step === 'address-comments') {
+  if (movement === 'verification-unavailable') {
+    detail = `dispatch baseline for ${branch ?? '<unknown branch>'} was degraded (head read failed at dispatch) — movement cannot be established`;
+  } else if (step === 'execute' || step === 'address-comments') {
     detail =
       observed.head_error === 'ref-not-found'
         ? `branch ${branch ?? '<unknown>'} has no commits (ref not found)`
@@ -144,9 +157,12 @@ export function decideNextChangeStep(args: {
   // Artifact-verified advance (2026-06-12 incident). Result of
   // evaluateArtifactMovement, computed by the caller: false = the run exited
   // 0 but the step's expected artifact didn't move (skill refused / no-op) →
-  // park instead of advancing. true / null / omitted fall through to existing
-  // behavior — same back-compat pattern as comments_to_address.
-  artifact_moved?: boolean | null;
+  // park instead of advancing. 'verification-unavailable' = the dispatch
+  // baseline was degraded so movement can't be established → park (never
+  // silently advance an unverifiable step). true / null / omitted fall
+  // through to existing behavior — same back-compat pattern as
+  // comments_to_address.
+  artifact_moved?: ArtifactMovement;
   // Human-readable fact about the unmoved artifact (+ the refusing run's
   // summary line when available). Composed by the caller; lands verbatim in
   // the park reason.
@@ -168,6 +184,18 @@ export function decideNextChangeStep(args: {
     return {
       action: 'park',
       reason: `skill-refused: ${args.current_step ?? '<unknown step>'} exited 0 without artifact movement${detail ? ` — ${detail}` : ''}`,
+    };
+  }
+  // Degraded dispatch baseline → the artifact check is unanswerable. Park
+  // with a reason distinct from skill-refused (the gate, not the skill, is
+  // what stopped the loop) — silently advancing here would reopen the
+  // fail-open the gate exists to close. Recovery: Reset → Start re-snapshots
+  // a fresh baseline.
+  if (args.last_exit === 0 && args.artifact_moved === 'verification-unavailable') {
+    const detail = args.artifact_detail ?? null;
+    return {
+      action: 'park',
+      reason: `verification-unavailable: cannot verify ${args.current_step ?? '<unknown step>'} artifact movement${detail ? ` — ${detail}` : ''}`,
     };
   }
   // Step-by-step transitions for the v1 loop.

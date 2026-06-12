@@ -117,6 +117,13 @@ export interface ChangeAutomationState {
 // work can't leak into its baseline.
 export interface ChangeAutomationDispatchBaseline {
   head_sha: string | null; // change-branch head; null when the ref doesn't exist yet
+  // True when the head read was degraded (git/spawn failure, dir missing)
+  // rather than a determinate ref-not-found — head_sha null then means
+  // "unknown", not "branch absent". Verification treats such a baseline as
+  // unverifiable (park) instead of letting a non-null head read as movement.
+  // Optional: baselines written before this field existed read as not
+  // degraded and keep the pre-flag semantics.
+  head_degraded?: boolean;
   pr_url: string | null; // change frontmatter pr_url at dispatch time
   pass_count: number | null; // latest pass N on the linked pr-review entry
 }

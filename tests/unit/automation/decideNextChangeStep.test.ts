@@ -474,6 +474,73 @@ describe('evaluateArtifactMovement', () => {
     },
   );
 
+  describe('degraded baseline snapshot (pass-2 comment 1 regression)', () => {
+    // The dispatch-time head read failed (git/spawn hiccup), so head_sha null
+    // means "unknown", not "branch absent". Pre-fix, a later non-null head
+    // read as movement and a refusing run silently advanced (fail-open).
+    const degradedBaseline: ChangeAutomationDispatchBaseline = {
+      head_sha: null,
+      head_degraded: true,
+      pr_url: null,
+      pass_count: null,
+    };
+
+    it.each(['execute', 'address-comments'])(
+      '%s + degraded baseline + observed head set → verification-unavailable, NOT true',
+      (step) => {
+        const m = evaluateArtifactMovement(step, degradedBaseline, obs({ head: 'fff9999aaa' }));
+        expect(m).toBe('verification-unavailable');
+        expect(m).not.toBe(true);
+      },
+    );
+
+    it('observed ref-not-found wins over a degraded baseline (determinate: no commits now)', () => {
+      const m = evaluateArtifactMovement(
+        'execute',
+        degradedBaseline,
+        obs({ head_error: 'ref-not-found' }),
+      );
+      expect(m).toBe(false);
+    });
+
+    it('degraded on BOTH sides → null (e.g. no branch configured — gate stays inert)', () => {
+      const m = evaluateArtifactMovement(
+        'execute',
+        degradedBaseline,
+        obs({ head_error: 'degraded' }),
+      );
+      expect(m).toBe(null);
+    });
+
+    it('open-pr / pr-review ignore head_degraded (their artifacts are not the branch head)', () => {
+      expect(
+        evaluateArtifactMovement(
+          'open-pr',
+          degradedBaseline,
+          obs({ pr_url: 'https://github.com/x/y/pull/2' }),
+        ),
+      ).toBe(true);
+      expect(
+        evaluateArtifactMovement(
+          'pr-review',
+          { ...degradedBaseline, pass_count: 1 },
+          obs({ pr_review_path_set: true, pass_count: 2 }),
+        ),
+      ).toBe(true);
+    });
+
+    it('head_degraded false (or absent — legacy baselines) keeps the plain comparison', () => {
+      expect(
+        evaluateArtifactMovement(
+          'execute',
+          { head_sha: 'abc1234def', head_degraded: false, pr_url: null, pass_count: null },
+          obs({ head: 'fff9999aaa' }),
+        ),
+      ).toBe(true);
+      expect(evaluateArtifactMovement('execute', baseline, obs({ head: 'fff9999aaa' }))).toBe(true);
+    });
+  });
+
   it('unknown step → null (forward-compat, same posture as the decider default branch)', () => {
     const m = evaluateArtifactMovement('deploy', baseline, obs({ head: 'fff9999aaa' }));
     expect(m).toBe(null);
@@ -550,6 +617,32 @@ describe('composeArtifactDetail — park-reason wording', () => {
 
   it('unknown step + no summary → null', () => {
     expect(composeArtifactDetail('deploy', obs({}), null, null)).toBe(null);
+  });
+
+  it('verification-unavailable → degraded-baseline wording (observation facts not asserted)', () => {
+    const d = composeArtifactDetail(
+      'execute',
+      obs({ head: 'fff9999aaa' }),
+      'feat/x',
+      null,
+      'verification-unavailable',
+    );
+    expect(d).toBe(
+      'dispatch baseline for feat/x was degraded (head read failed at dispatch) — movement cannot be established',
+    );
+  });
+
+  it('verification-unavailable + summary appends the run summary like the no-movement path', () => {
+    const d = composeArtifactDetail(
+      'address-comments',
+      obs({ head: 'fff9999aaa' }),
+      null,
+      'follow-up pushed',
+      'verification-unavailable',
+    );
+    expect(d).toBe(
+      'dispatch baseline for <unknown branch> was degraded (head read failed at dispatch) — movement cannot be established; run summary: "follow-up pushed"',
+    );
   });
 });
 
@@ -700,6 +793,72 @@ describe('decideNextChangeStep — artifact-verified advance (skill-refused park
       artifact_moved,
     });
     expect(d).toEqual({ action: 'dispatch', step: 'pr-review' });
+  });
+
+  it('verification-unavailable + exit 0 → park with a distinct verification-unavailable reason', () => {
+    const d = decideNextChangeStep({
+      current_step: 'execute',
+      iteration_count: 0,
+      iteration_cap: 4,
+      last_exit: 0,
+      pr_review_status: null,
+      artifact_moved: 'verification-unavailable',
+      artifact_detail:
+        'dispatch baseline for feat/x was degraded (head read failed at dispatch) — movement cannot be established',
+    });
+    expect(d.action).toBe('park');
+    expect(d).not.toEqual({ action: 'dispatch', step: 'open-pr' });
+    if (d.action === 'park') {
+      expect(d.reason).toMatch(/^verification-unavailable:/);
+      expect(d.reason).toContain('cannot verify execute artifact movement');
+      expect(d.reason).toContain('dispatch baseline for feat/x was degraded');
+    }
+  });
+
+  it('skill-failure takes precedence over verification-unavailable', () => {
+    const d = decideNextChangeStep({
+      current_step: 'execute',
+      iteration_count: 0,
+      iteration_cap: 4,
+      last_exit: 3,
+      pr_review_status: null,
+      artifact_moved: 'verification-unavailable',
+    });
+    expect(d.action).toBe('park');
+    if (d.action === 'park') {
+      expect(d.reason).toMatch(/^skill-failure:/);
+    }
+  });
+
+  it('degraded-baseline replay end-to-end: refusing run can no longer silently advance (pass-2 comment 1 pin)', () => {
+    // Incident shape: dispatch-time git hiccup → baseline {head_sha: null,
+    // head_degraded: true}; branch actually had commits, the dispatched run
+    // refused (exit 0, head unchanged). Pre-fix: head ≠ null read as moved →
+    // advance. Post-fix: park as unverifiable.
+    const artifact_moved = evaluateArtifactMovement(
+      'execute',
+      { head_sha: null, head_degraded: true, pr_url: null, pass_count: null },
+      {
+        head: 'abc1234def',
+        head_error: null,
+        pr_url: null,
+        pass_count: null,
+        pr_review_path_set: false,
+      },
+    );
+    const d = decideNextChangeStep({
+      current_step: 'execute',
+      iteration_count: 0,
+      iteration_cap: 4,
+      last_exit: 0,
+      pr_review_status: null,
+      artifact_moved,
+    });
+    expect(d.action).toBe('park');
+    expect(d).not.toEqual({ action: 'dispatch', step: 'open-pr' });
+    if (d.action === 'park') {
+      expect(d.reason).toMatch(/^verification-unavailable:/);
+    }
   });
 
   it('start re-evaluate: execute + baseline present + no movement → park, NOT dispatch open-pr (blocker-2 pin)', () => {

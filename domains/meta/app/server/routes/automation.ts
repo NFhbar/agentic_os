@@ -742,6 +742,7 @@ function readChangeAutomationLocal(fm: Record<string, unknown>): ChangeAutomatio
     const b = stateRaw.dispatch_baseline as Record<string, unknown>;
     dispatch_baseline = {
       head_sha: typeof b.head_sha === 'string' ? b.head_sha : null,
+      head_degraded: b.head_degraded === true,
       pr_url: typeof b.pr_url === 'string' ? b.pr_url : null,
       pass_count: typeof b.pass_count === 'number' ? b.pass_count : null,
     };
@@ -847,6 +848,7 @@ function buildChangeStepPrompt(step: ChangeAutomationStep, changeId: string): st
 // through the transitive graph (see tests/unit/automation/).
 export { decideNextChangeStep } from './automation-state-machine.js';
 import {
+  type ArtifactMovement,
   type ArtifactObservation,
   checkChangeAutomationEligibility,
   composeArtifactDetail,
@@ -979,11 +981,15 @@ async function dispatchChangeStep(args: {
   // Snapshot the artifact baseline BEFORE startRun so the dispatched skill's
   // own work can't leak into its baseline. head_sha null is an expected
   // pre-EXECUTE state (branch doesn't exist yet); a still-absent ref at
-  // verification time then reads as no movement.
+  // verification time then reads as no movement. A degraded read is flagged
+  // so verification parks as unverifiable instead of mistaking "unknown"
+  // for "branch absent" and reading any later head as movement.
   const branch = typeof fm.branch === 'string' ? fm.branch : null;
   const prReviewPath = typeof fm.pr_review_path === 'string' ? fm.pr_review_path : null;
+  const baselineHead = readBranchHead(await resolveRepoLocalPath(repo), branch);
   const dispatchBaseline: ChangeAutomationDispatchBaseline = {
-    head_sha: readBranchHead(await resolveRepoLocalPath(repo), branch).head,
+    head_sha: baselineHead.head,
+    head_degraded: baselineHead.head_error === 'degraded',
     pr_url: typeof fm.pr_url === 'string' ? fm.pr_url : null,
     pass_count: prReviewPath ? lookupLinkedReview(prReviewPath).passCount : null,
   };
@@ -1225,7 +1231,7 @@ export async function onChangeAutomationStepComplete(
     // Artifact-verified advance (2026-06-12 incident): a clean exit only
     // advances when the step's expected artifact moved relative to the
     // dispatch baseline. No baseline (legacy in-flight state) → gate inert.
-    let artifact_moved: boolean | null = null;
+    let artifact_moved: ArtifactMovement = null;
     let artifact_detail: string | null = null;
     if (effectiveExit === 0 && automation.state.dispatch_baseline) {
       const fmRef = (refreshed ?? found).fm;
@@ -1235,7 +1241,7 @@ export async function onChangeAutomationStepComplete(
         automation.state.dispatch_baseline,
         observed,
       );
-      if (artifact_moved === false) {
+      if (artifact_moved === false || artifact_moved === 'verification-unavailable') {
         const branch = typeof fmRef.branch === 'string' ? fmRef.branch : null;
         const summary = await readRunSummaryLine(runId);
         artifact_detail = composeArtifactDetail(
@@ -1243,6 +1249,7 @@ export async function onChangeAutomationStepComplete(
           observed,
           branch,
           summary,
+          artifact_moved,
         );
       }
     }
@@ -1269,9 +1276,12 @@ export async function onChangeAutomationStepComplete(
       // to act (triage status:new comments → accepted/dismissed) before
       // resuming.
       const isNeedsTriage = decision.reason.startsWith('needs-triage');
-      // skill-refused parks link back to the refusing run (mirrors the
-      // needs-triage extraArgs pattern) so the event row carries the run id.
-      const isRefused = decision.reason.startsWith('skill-refused');
+      // skill-refused + verification-unavailable parks link back to the
+      // triggering run (mirrors the needs-triage extraArgs pattern) so the
+      // event row carries the run id.
+      const isRefused =
+        decision.reason.startsWith('skill-refused') ||
+        decision.reason.startsWith('verification-unavailable');
       let extraArgs: Record<string, unknown> | undefined;
       if (isCap) {
         const fmRef = (refreshed ?? found).fm;
@@ -1861,8 +1871,8 @@ export const changeAutomationRoutes: FastifyPluginAsync = async (fastify) => {
   //   - phase: paused    → transition idle in-memory, then dispatch
   //   - phase: idle      → dispatch the next step
   //   current_step null  → first dispatch ever; default to 'execute'
-  //   current_step set   → re-evaluate decideNextChangeStep assuming the
-  //                        previous step succeeded
+  //   current_step set   → re-evaluate decideNextChangeStep with the
+  //                        previous run's recorded exit status
   fastify.post<{ Params: { id: string } }>('/:id/automation/start', async (req, reply) => {
     const changeId = req.params.id;
     const found = await findChange(changeId);
@@ -1899,7 +1909,7 @@ export const changeAutomationRoutes: FastifyPluginAsync = async (fastify) => {
     }
     // Decide the next step. First dispatch (current_step null) defaults to
     // execute. Subsequent restarts (post-Resume) re-evaluate the state
-    // machine assuming the previous step succeeded — but, when a dispatch
+    // machine with the previous run's recorded exit — and, when a dispatch
     // baseline was recorded, verify the step's artifact actually moved so a
     // skill-refused park can't be skipped past via Resume → Start.
     const pr_review_status =
@@ -1908,16 +1918,29 @@ export const changeAutomationRoutes: FastifyPluginAsync = async (fastify) => {
     if (current.state.current_step === null) {
       decision = { action: 'dispatch', step: 'execute' };
     } else {
-      let artifact_moved: boolean | null = null;
+      // Thread the recorded exit of the run being re-evaluated rather than
+      // asserting 0 — a re-driven skill-failure park should report the exit
+      // the run actually produced. Best-effort: no run record / no recorded
+      // exit falls back to 0 (the pre-existing "assume it succeeded" posture).
+      let last_exit = 0;
+      if (current.state.last_run_id) {
+        try {
+          const run = getRun(current.state.last_run_id) as { exit_status?: number | null } | null;
+          if (run && typeof run.exit_status === 'number') last_exit = run.exit_status;
+        } catch {
+          /* best-effort — default 0 preserves prior behavior */
+        }
+      }
+      let artifact_moved: ArtifactMovement = null;
       let artifact_detail: string | null = null;
-      if (current.state.dispatch_baseline) {
+      if (last_exit === 0 && current.state.dispatch_baseline) {
         const observed = await gatherArtifactObservation(found.fm);
         artifact_moved = evaluateArtifactMovement(
           current.state.current_step,
           current.state.dispatch_baseline,
           observed,
         );
-        if (artifact_moved === false) {
+        if (artifact_moved === false || artifact_moved === 'verification-unavailable') {
           const branch = typeof found.fm.branch === 'string' ? found.fm.branch : null;
           const summary = current.state.last_run_id
             ? await readRunSummaryLine(current.state.last_run_id)
@@ -1927,6 +1950,7 @@ export const changeAutomationRoutes: FastifyPluginAsync = async (fastify) => {
             observed,
             branch,
             summary,
+            artifact_moved,
           );
         }
       }
@@ -1934,7 +1958,7 @@ export const changeAutomationRoutes: FastifyPluginAsync = async (fastify) => {
         current_step: current.state.current_step,
         iteration_count: current.state.iteration_count,
         iteration_cap: current.iteration_cap,
-        last_exit: 0,
+        last_exit,
         pr_review_status,
         artifact_moved,
         artifact_detail,
