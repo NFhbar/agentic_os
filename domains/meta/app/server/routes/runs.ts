@@ -644,6 +644,11 @@ function superviseSession(session: RunSession) {
     session.deadSettleScheduled = true;
     setTimeout(() => {
       followTick(session);
+      if (isPidAlive(session.pid)) {
+        console.warn(
+          `runs: finalized ${session.id} while pid ${session.pid} still probes alive — lingering flush or recycled pid; not signaling`,
+        );
+      }
       finishAndRecord(session);
     }, 150);
   }, FOLLOW_INTERVAL_MS);
