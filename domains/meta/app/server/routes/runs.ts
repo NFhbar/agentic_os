@@ -7,7 +7,6 @@
 //
 // See vault/wiki/development/change/runs-as-process.md for the change context.
 
-import type { ChildProcess } from 'node:child_process';
 import {
   closeSync,
   createReadStream,
@@ -22,7 +21,9 @@ import { dirname } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
-import { resolveWallTimeCapMs, spawnClaude } from '../../../../../scripts/dispatch-claude.mjs';
+import { resolveWallTimeCapMs } from '../../../../../scripts/dispatch-claude.mjs';
+// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
+import { spawnClaudeOrphaned } from '../../../../../scripts/dispatch-claude.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { recordEvent } from '../../../../../scripts/events-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
@@ -59,6 +60,10 @@ import { stderrPathFor } from '../../../../../scripts/runs-db.mjs';
 import { unlinkOutput } from '../../../../../scripts/runs-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { artifactFresh } from '../../../../../scripts/runs-finalize.mjs';
+// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
+import { inferTerminalState } from '../../../../../scripts/runs-finalize.mjs';
+// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
+import { recoverUsageFromJournal } from '../../../../../scripts/runs-finalize.mjs';
 import { parseStreamJsonLine } from '../lib/stream-json.js';
 import { safePath } from '../repo.js';
 import { onAutomationStepComplete, onChangeAutomationStepComplete } from './automation.js';
@@ -82,7 +87,11 @@ interface StartBody {
 // In-memory per-run state. Lives only while the child is running.
 interface RunSession {
   id: string;
-  child: ChildProcess;
+  // The orphaned child's PID — the only handle we hold. The child is spawned
+  // through the dispatch-holder trampoline and re-parents to PID 1, so there
+  // is no ChildProcess object and no 'exit' event; liveness, completion, and
+  // kills all go through process.kill(pid, …).
+  pid: number | null;
   subscribers: Set<FastifyReply>;
   cancelled: boolean;
   startedMs: number;
@@ -102,6 +111,12 @@ interface RunSession {
   costUsd: number | null;
   claudeDurationMs: number | null;
   isError: boolean;
+  // True once a stream-json result frame was parsed from the journal — the
+  // terminal-state evidence inferTerminalState keys on (no exit code exists
+  // for a PID-1-reaped child).
+  resultReceived: boolean;
+  // Guards the dead-PID settle timer against double scheduling.
+  deadSettleScheduled: boolean;
   combinedText: string;
   stderrAll: string;
   // Set by the wall-time-cap watchdog (sweepWallTimeCap below) when the
@@ -237,34 +252,24 @@ export async function startRun(input: StartRunOptions): Promise<StartRunResult> 
   const evicted = evictBeyondCap() as Array<{ id: string; output_path: string }>;
   for (const ev of evicted) unlinkOutput(ev.output_path);
 
-  // Detached + file-redirected stdio: the child is its own process-group
-  // leader writing straight to disk, so a dashboard restart no longer kills
-  // it (pipes would EPIPE the child when the parent dies). Supervision of
-  // children we can no longer see lives in scripts/runs-supervisor.mjs.
+  // Orphaned + file-redirected stdio: the child is spawned through the
+  // dispatch-holder trampoline, re-parents to PID 1, and writes straight to
+  // disk — it survives both a server death (pipes would EPIPE it) AND a
+  // parent-pid tree-kill (`concurrently -k`), which detached spawn alone
+  // does not. Supervision of children we can no longer see lives in
+  // scripts/runs-supervisor.mjs.
   const errPath = stderrPathFor(output_path) as string;
   const wallCapMs = (await resolveWallTimeCapMs(skill)) as number;
   mkdirSync(dirname(output_path), { recursive: true });
-  const outFd = openSync(output_path, 'a');
-  const errFd = openSync(errPath, 'a');
-  let child: ChildProcess;
-  try {
-    ({ child } = (await spawnClaude(prompt, skill, {
-      logPrefix: 'runs',
-      stdio: ['ignore', outFd, errFd],
-      detached: true,
-    })) as { child: ChildProcess });
-  } finally {
-    // Parent's fd copies — the child holds its own descriptors.
-    closeSync(outFd);
-    closeSync(errFd);
-  }
-  child.unref();
-
-  markRunning(id, child.pid ?? null);
+  const spawned = (await spawnClaudeOrphaned(prompt, skill, {
+    outputPath: output_path,
+    stderrPath: errPath,
+    logPrefix: 'runs',
+  })) as { pid: number | null; error?: string };
 
   const session: RunSession = {
     id,
-    child,
+    pid: spawned.pid,
     subscribers: new Set(),
     cancelled: false,
     startedMs,
@@ -283,6 +288,8 @@ export async function startRun(input: StartRunOptions): Promise<StartRunResult> 
     costUsd: null,
     claudeDurationMs: null,
     isError: false,
+    resultReceived: false,
+    deadSettleScheduled: false,
     combinedText: '',
     stderrAll: '',
     killedReason: null,
@@ -298,6 +305,19 @@ export async function startRun(input: StartRunOptions): Promise<StartRunResult> 
     wallCapMs,
   };
   sessions.set(id, session);
+
+  if (spawned.pid == null) {
+    // Spawn failure (no pid, or holder died after reporting one — the
+    // grandchild was already SIGKILLed by spawnClaudeOrphaned). Finalize
+    // failed immediately; still ok:true so the client renders the failure.
+    const note = `spawn error: ${spawned.error ?? 'unknown'}\n`;
+    appendChunk(id, 'stderr', note);
+    session.stderrAll = note;
+    finishAndRecord(session);
+    return { ok: true, run_id: id };
+  }
+
+  markRunning(id, spawned.pid);
   superviseSession(session);
 
   return { ok: true, run_id: id };
@@ -410,6 +430,7 @@ function consumeJournalLine(session: RunSession, line: string) {
       session.combinedText += p.text;
       broadcast(session, { chunk: p.text });
     } else if (p.kind === 'result') {
+      session.resultReceived = true;
       session.model = p.model;
       session.tokensIn = p.tokensIn;
       session.tokensOut = p.tokensOut;
@@ -443,7 +464,7 @@ function followTick(session: RunSession) {
   }
 }
 
-function finishAndRecord(session: RunSession, code: number | null) {
+function finishAndRecord(session: RunSession) {
   if (session.finished) return;
   session.finished = true;
   if (session.follower) {
@@ -452,32 +473,49 @@ function finishAndRecord(session: RunSession, code: number | null) {
   }
   const { id } = session;
   const durationMs = Date.now() - session.startedMs;
-  const exit = typeof code === 'number' ? code : null;
-  let state: RunRow['state'] = session.cancelled
-    ? 'cancelled'
-    : exit === 0 && !session.isError
-      ? 'done'
-      : 'failed';
+  // No observable exit code for a PID-1-reaped orphan — terminal state is
+  // inferred from on-disk evidence via the same decision table the
+  // off-server finalizer applies (runs-finalize.mjs). Deliberate semantic
+  // shift vs the old exit-event path: a kill that lands AFTER the result
+  // frame was journaled finalizes done (the result wins over the `killed:`
+  // marker), matching the off-server finalizer instead of forking on the
+  // same evidence. The cancel marker still wins over everything.
+  const fresh = session.resultReceived
+    ? false
+    : (artifactFresh({
+        change_id: session.change_id,
+        project: session.project,
+        started_at: session.ts,
+      }) as boolean);
+  const { state, exit_status: exit } = inferTerminalState({
+    result: session.resultReceived ? { isError: session.isError } : null,
+    fresh,
+    errorMarker: session.cancelled ? 'cancelled by user' : session.killedReason,
+  }) as { state: RunFinishedSummary['state']; exit_status: number | null };
   // Watchdog-kill reason wins over stderr capture — gives operators a
   // distinguishable error string ("killed: wall-time cap exceeded") so
   // they can tell wall-time kills from natural failures or orphan-sweep
   // detections. See sweepWallTimeCap below + Task #398 / #418.
-  let error: string | null =
-    state === 'failed' ? (session.killedReason ?? (session.stderrAll || null)) : null;
-  // Artifact verification before failing a cap-kill: a SIGTERM'd child that
-  // already wrote its linked entity is died-after-writeback, not failed —
-  // the same rule the finalizer applies to runs that die while the server
-  // is down (runs-finalize.mjs).
-  if (state === 'failed' && session.killedReason?.startsWith('killed:')) {
-    const fresh = artifactFresh({
-      change_id: session.change_id,
-      project: session.project,
-      started_at: session.ts,
-    }) as boolean;
-    if (fresh) {
-      state = 'died-after-writeback';
-      error = `${session.killedReason} — linked entity updated after start; work likely landed (verify it)`;
-    }
+  let error: string | null = null;
+  if (state === 'failed') {
+    error = session.killedReason ?? (session.stderrAll || null);
+  } else if (state === 'died-after-writeback') {
+    error = `${session.killedReason ?? 'no result event'} — linked entity updated after start; work likely landed (verify it)`;
+  }
+  // Killed-run cost recovery (in-server half): no result event means no
+  // usage data on the session — recover the lower bound the journaled
+  // assistant events prove was billed. Tail-bounded read (runs-finalize).
+  let usage = {
+    costUsd: session.costUsd,
+    tokensIn: session.tokensIn,
+    tokensOut: session.tokensOut,
+    tokensCacheRead: session.tokensCacheRead,
+    tokensCacheWrite: session.tokensCacheWrite,
+    model: session.model,
+  };
+  if (!session.resultReceived && session.costUsd == null) {
+    const recovered = recoverUsageFromJournal(session.outputPath) as typeof usage | null;
+    if (recovered) usage = recovered;
   }
   const ok = state === 'done' || state === 'died-after-writeback';
   finishRun(id, {
@@ -485,12 +523,12 @@ function finishAndRecord(session: RunSession, code: number | null) {
     exit_status: exit,
     duration_ms: session.claudeDurationMs ?? durationMs,
     error,
-    cost_usd: session.costUsd,
-    tokens_in: session.tokensIn,
-    tokens_out: session.tokensOut,
-    tokens_cache_hit: session.tokensCacheRead,
-    tokens_cache_write: session.tokensCacheWrite,
-    model: session.model,
+    cost_usd: usage.costUsd,
+    tokens_in: usage.tokensIn,
+    tokens_out: usage.tokensOut,
+    tokens_cache_hit: usage.tokensCacheRead,
+    tokens_cache_write: usage.tokensCacheWrite,
+    model: usage.model,
   });
 
   closeSubscribers(session, { done: true, exit });
@@ -508,12 +546,12 @@ function finishAndRecord(session: RunSession, code: number | null) {
     project: session.project,
     report_id: session.report_id,
     domain: session.domain,
-    model: session.model,
-    tokens_in: session.tokensIn,
-    tokens_out: session.tokensOut,
-    tokens_cache_hit: session.tokensCacheRead,
-    tokens_cache_write: session.tokensCacheWrite,
-    cost_usd: session.costUsd,
+    model: usage.model,
+    tokens_in: usage.tokensIn,
+    tokens_out: usage.tokensOut,
+    tokens_cache_hit: usage.tokensCacheRead,
+    tokens_cache_write: usage.tokensCacheWrite,
+    cost_usd: usage.costUsd,
     duration_ms: session.claudeDurationMs ?? durationMs,
     exit_status: exit,
     status: ok ? 'success' : 'error',
@@ -528,8 +566,8 @@ function finishAndRecord(session: RunSession, code: number | null) {
         state,
         exit_status: exit,
         duration_ms: session.claudeDurationMs ?? durationMs,
-        cost_usd: session.costUsd,
-        model: session.model,
+        cost_usd: usage.costUsd,
+        model: usage.model,
         stdout_preview: session.combinedText,
         stderr: session.stderrAll || null,
       });
@@ -559,26 +597,22 @@ function finishAndRecord(session: RunSession, code: number | null) {
 }
 
 function superviseSession(session: RunSession) {
-  const { child } = session;
-  session.follower = setInterval(() => followTick(session), FOLLOW_INTERVAL_MS);
-  session.follower.unref?.();
-
-  child.on('exit', (code) => {
-    // Drain twice: once immediately (bytes written before exit are visible),
-    // and once shortly after to be safe about flush ordering.
+  // No ChildProcess to attach exit/error handlers to — the holder exited
+  // before this session existed. Completion detection rides the follower
+  // cadence: drain, then probe PID liveness (process.kill(pid, 0) is cheap
+  // at 300 ms intervals). On first dead observation, drain once more after a
+  // short settle — same flush-ordering safety the old exit handler had.
+  session.follower = setInterval(() => {
     followTick(session);
+    if (session.finished || session.deadSettleScheduled) return;
+    if (isPidAlive(session.pid)) return;
+    session.deadSettleScheduled = true;
     setTimeout(() => {
       followTick(session);
-      finishAndRecord(session, code);
+      finishAndRecord(session);
     }, 150);
-  });
-
-  child.on('error', (err) => {
-    // Spawn-level failure (ENOENT etc.) — 'exit' may never fire.
-    appendChunk(session.id, 'stderr', `spawn error: ${err.message}\n`);
-    broadcast(session, { stderr: `spawn error: ${err.message}\n` });
-    setTimeout(() => finishAndRecord(session, null), 50);
-  });
+  }, FOLLOW_INTERVAL_MS);
+  session.follower.unref?.();
 }
 
 async function replayFromDisk(reply: FastifyReply, outputPath: string, endOffset: number) {
@@ -729,7 +763,7 @@ function sweepWallTimeCap(): void {
     // probes liveness without sending a real signal.
     if (session.killedReason && session.killedAt !== null) {
       if (now - session.killedAt > SIGKILL_ESCALATION_MS) {
-        const pid = session.child.pid;
+        const pid = session.pid;
         if (pid && isPidAlive(pid)) {
           try {
             process.kill(pid, 'SIGKILL');
@@ -750,7 +784,7 @@ function sweepWallTimeCap(): void {
     session.killedReason = `killed: wall-time cap exceeded (${minutes}m)`;
     session.killedAt = now;
     try {
-      session.child.kill('SIGTERM');
+      if (session.pid) process.kill(session.pid, 'SIGTERM');
       console.warn(
         `runs: SIGTERM run ${session.id} (skill=${session.skill}, age=${Math.floor(ageMs / 1000)}s) — wall-time cap exceeded`,
       );
@@ -987,7 +1021,7 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
     appendChunk(id, 'stderr', '\n✗ Cancelled by user\n');
     broadcast(session, { stderr: '\n✗ Cancelled by user\n' });
     try {
-      session.child.kill('SIGTERM');
+      if (session.pid) process.kill(session.pid, 'SIGTERM');
     } catch {
       /* already dead */
     }
