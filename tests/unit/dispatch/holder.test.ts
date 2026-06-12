@@ -1,7 +1,7 @@
 // Re-parenting trampoline (scripts/dispatch-holder.mjs). These spawn the
 // real holder and pin its wire contract: pid line + exit 0 on success, the
-// grandchild re-parented to PID 1 with the holder's cwd, and the no-pid
-// non-zero-exit shape on spawn failure.
+// grandchild re-parented away from the holder with the holder's cwd, and
+// the no-pid non-zero-exit shape on spawn failure.
 
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -15,6 +15,7 @@ interface HolderResult {
   exitCode: number | null;
   stdout: string;
   stderr: string;
+  holderPid: number | undefined;
 }
 
 function runHolder(args: string[], cwd: string): Promise<HolderResult> {
@@ -31,7 +32,9 @@ function runHolder(args: string[], cwd: string): Promise<HolderResult> {
     holder.stderr.on('data', (d) => {
       stderr += d;
     });
-    holder.on('close', (exitCode) => resolve({ exitCode, stdout, stderr }));
+    holder.on('close', (exitCode) =>
+      resolve({ exitCode, stdout, stderr, holderPid: holder.pid }),
+    );
   });
 }
 
@@ -59,7 +62,7 @@ afterAll(() => {
 });
 
 describe('dispatch-holder', () => {
-  it('re-parents the grandchild to PID 1, inherits cwd, and hands back its pid', async () => {
+  it('re-parents the grandchild away from the holder, inherits cwd, and hands back its pid', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'holder-test-'));
     dirs.push(dir);
     const outPath = join(dir, 'out.log');
@@ -79,11 +82,15 @@ describe('dispatch-holder', () => {
 
     expect(isAlive(pid)).toBe(true);
     // The holder has exited (close event fired) — the grandchild must have
-    // re-parented to PID 1 (launchd/init).
+    // re-parented away from it. On plain macOS/Linux the new parent is PID 1,
+    // but under a subreaper (containerized CI, systemd --user) it's the
+    // subreaper instead — so assert the actual invariant: the PPID link to
+    // the spawner is broken, which is what defeats a parent-pid tree-kill.
     const ppid = execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], {
       encoding: 'utf8',
     }).trim();
-    expect(ppid).toBe('1');
+    expect(ppid).not.toBe(String(res.holderPid));
+    expect(ppid).not.toBe(String(process.pid));
 
     // The grandchild's `pwd` went to the redirected journal and reflects the
     // cwd the holder was spawned with (the holder sets no cwd of its own).

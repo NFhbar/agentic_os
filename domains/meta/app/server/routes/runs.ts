@@ -20,10 +20,9 @@ import {
 import { dirname } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';
+// biome-ignore format: one line keeps the ts-expect-error on the resolution error
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
-import { resolveWallTimeCapMs } from '../../../../../scripts/dispatch-claude.mjs';
-// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
-import { spawnClaudeOrphaned } from '../../../../../scripts/dispatch-claude.mjs';
+import { resolveWallTimeCapMs, spawnClaudeOrphaned } from '../../../../../scripts/dispatch-claude.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { recordEvent } from '../../../../../scripts/events-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
@@ -115,6 +114,14 @@ interface RunSession {
   // terminal-state evidence inferTerminalState keys on (no exit code exists
   // for a PID-1-reaped child).
   resultReceived: boolean;
+  // True when spawnClaudeOrphaned reported no pid — the child never existed,
+  // so finishAndRecord must never consult artifact freshness (the automation
+  // orchestrator writes the linked entry around dispatch, which would
+  // misclassify a never-spawned run as died-after-writeback).
+  spawnFailed: boolean;
+  // Last time the follower read new journal/stderr bytes. Feeds the
+  // recycled-PID signaling guard (see mayStillSignal below).
+  lastJournalActivityMs: number;
   // Guards the dead-PID settle timer against double scheduling.
   deadSettleScheduled: boolean;
   combinedText: string;
@@ -289,6 +296,8 @@ export async function startRun(input: StartRunOptions): Promise<StartRunResult> 
     claudeDurationMs: null,
     isError: false,
     resultReceived: false,
+    spawnFailed: false,
+    lastJournalActivityMs: startedMs,
     deadSettleScheduled: false,
     combinedText: '',
     stderrAll: '',
@@ -313,6 +322,7 @@ export async function startRun(input: StartRunOptions): Promise<StartRunResult> 
     const note = `spawn error: ${spawned.error ?? 'unknown'}\n`;
     appendChunk(id, 'stderr', note);
     session.stderrAll = note;
+    session.spawnFailed = true;
     finishAndRecord(session);
     return { ok: true, run_id: id };
   }
@@ -446,6 +456,7 @@ function consumeJournalLine(session: RunSession, line: string) {
 function followTick(session: RunSession) {
   const out = readNewText(session.outputPath, session.rawOffset);
   if (out.text) {
+    session.lastJournalActivityMs = Date.now();
     session.rawOffset = out.nextOffset;
     session.rawBuf += out.text;
     let nl = session.rawBuf.indexOf('\n');
@@ -458,10 +469,26 @@ function followTick(session: RunSession) {
   }
   const err = readNewText(session.stderrPath, session.errOffset);
   if (err.text) {
+    session.lastJournalActivityMs = Date.now();
     session.errOffset = err.nextOffset;
     session.stderrAll += err.text;
     broadcast(session, { stderr: err.text });
   }
+}
+
+// PID reuse: the old ChildProcess handle made kill() a no-op once Node had
+// reaped the child; a bare PID has no such protection — process.kill(pid, …)
+// signals whatever process owns that number now. Sequential PID allocation
+// makes a collision inside the 300 ms poll cadence vanishingly unlikely on
+// this single-user machine (the SIGKILL-escalation path already accepts the
+// same tradeoff), but the exposure is now every kill path, so we add the
+// cheap guard: once the result frame is journaled AND the stream has gone
+// quiet, the run's work is over — any PID still "alive" then is either a
+// lingering flush or a recycled PID, and neither should be signaled.
+const RESULT_QUIET_MS = 2_000;
+
+function mayStillSignal(session: RunSession): boolean {
+  return !(session.resultReceived && Date.now() - session.lastJournalActivityMs > RESULT_QUIET_MS);
 }
 
 function finishAndRecord(session: RunSession) {
@@ -480,13 +507,16 @@ function finishAndRecord(session: RunSession) {
   // frame was journaled finalizes done (the result wins over the `killed:`
   // marker), matching the off-server finalizer instead of forking on the
   // same evidence. The cancel marker still wins over everything.
-  const fresh = session.resultReceived
-    ? false
-    : (artifactFresh({
-        change_id: session.change_id,
-        project: session.project,
-        started_at: session.ts,
-      }) as boolean);
+  // spawnFailed forces fresh=false: a run whose child never spawned cannot
+  // have landed work, so it must never classify died-after-writeback.
+  const fresh =
+    session.resultReceived || session.spawnFailed
+      ? false
+      : (artifactFresh({
+          change_id: session.change_id,
+          project: session.project,
+          started_at: session.ts,
+        }) as boolean);
   const { state, exit_status: exit } = inferTerminalState({
     result: session.resultReceived ? { isError: session.isError } : null,
     fresh,
@@ -758,6 +788,10 @@ function isPidAlive(pid: number | null | undefined): boolean {
 function sweepWallTimeCap(): void {
   const now = Date.now();
   for (const session of sessions.values()) {
+    // Recycled-PID guard (see mayStillSignal): result journaled + stream
+    // quiet means the work finished — finalization is imminent via the
+    // dead-PID settle, and signaling now risks hitting a reused PID.
+    if (!mayStillSignal(session)) continue;
     // Already killed this round — escalate to SIGKILL if the process
     // hasn't dropped after the escalation window. process.kill(pid, 0)
     // probes liveness without sending a real signal.
@@ -1021,7 +1055,10 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
     appendChunk(id, 'stderr', '\n✗ Cancelled by user\n');
     broadcast(session, { stderr: '\n✗ Cancelled by user\n' });
     try {
-      if (session.pid) process.kill(session.pid, 'SIGTERM');
+      // mayStillSignal: skip the signal (not the cancel marker) when the
+      // result already landed and the journal is quiet — the PID may be
+      // recycled by now.
+      if (session.pid && mayStillSignal(session)) process.kill(session.pid, 'SIGTERM');
     } catch {
       /* already dead */
     }
