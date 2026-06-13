@@ -1149,11 +1149,17 @@ async function completeChangeAutomation(args: {
   };
   await writeChangeAutomation(changePath, nextAutomation);
 
+  // passCount > 0 distinguishes "verified zero standing blockers" from
+  // "could not read the review" — lookupLinkedReview returns the empty shape
+  // (standingBlockerCount: 0) for a missing/unparseable file, which would
+  // otherwise fail-open into an evidence-free upgrade-to-clean.
+  const linkedReview = linkedReviewPath !== null ? lookupLinkedReview(linkedReviewPath) : null;
   let prReviewStatusSet: string | null = null;
   if (
     currentPrReviewStatus === 'pending' &&
-    linkedReviewPath !== null &&
-    lookupLinkedReview(linkedReviewPath).standingBlockerCount === 0
+    linkedReview !== null &&
+    linkedReview.passCount > 0 &&
+    linkedReview.standingBlockerCount === 0
   ) {
     content = await readFile(changePath, 'utf8');
     const updated = rewriteFrontmatter(content, {

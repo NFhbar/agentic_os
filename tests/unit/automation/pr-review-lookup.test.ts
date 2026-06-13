@@ -146,4 +146,31 @@ describe('lookupLinkedReview — standingBlockerCount', () => {
     );
     expect(lookupLinkedReview(rel).standingBlockerCount).toBe(0);
   });
+
+  it('treats wontfix as not standing (a user rejection, like dismissed)', () => {
+    const rel = writeFixture(
+      [
+        '## Pass 1',
+        '',
+        comment(1, ['- file: src/a.ts', '- line: 10', '- status: wontfix'], 'Body.', 'bug'),
+        comment(2, ['- file: src/b.ts', '- line: 20', '- status: wontfix'], 'Body.', 'blocker'),
+      ].join('\n'),
+    );
+    expect(lookupLinkedReview(rel).standingBlockerCount).toBe(0);
+  });
+
+  it('parses severity as the last ·-delimited token when the category is multi-word', () => {
+    const rel = writeFixture(
+      [
+        '## Pass 1',
+        '',
+        // Free-form categories (spaces, even an interior ·) must not hide the
+        // severity — an unparsed severity fails open on the standing gate.
+        '#### Comment 1: error handling · bug\n- file: src/a.ts\n- line: 10\n- status: new\n\nBody.\n',
+        '#### Comment 2: api · surface · blocker\n- file: src/b.ts\n- line: 20\n- status: accepted\n\nBody.\n',
+        '#### Comment 3: error handling · nit\n- file: src/c.ts\n- line: 30\n- status: new\n\nBody.\n',
+      ].join('\n'),
+    );
+    expect(lookupLinkedReview(rel).standingBlockerCount).toBe(2);
+  });
 });

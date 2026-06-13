@@ -30,22 +30,27 @@ export interface ReviewLookup {
   // gates the Mark-ready affordances.
   untriagedCount: number;
   // Count of latest-pass comments with severity blocker|bug whose status is
-  // still standing (not resolved/dismissed/acted-on). Mirrors dev-pr-review's
-  // step-14 roll-up rule for `pr_review_status: approved`; gates the
-  // orchestrator's pending → approved upgrade at completion so a
+  // still standing (not resolved/dismissed/acted-on/wontfix). Mirrors
+  // dev-pr-review's step-14 roll-up rule for `pr_review_status: approved`;
+  // gates the orchestrator's pending → approved upgrade at completion so a
   // standing-bug `pending` is never relabeled as clean.
   standingBlockerCount: number;
 }
 
+// The "no review readable" shape. Exported so callers that need a fallback
+// (e.g. changes.ts when pr_review_path is unset) don't hand-maintain a copy
+// that drifts as the interface grows. Callers treat lookups as read-only.
+export const EMPTY_REVIEW_LOOKUP: ReviewLookup = {
+  commentsToAddress: 0,
+  reviewPublished: false,
+  reviewGithubReviewId: null,
+  passCount: 0,
+  untriagedCount: 0,
+  standingBlockerCount: 0,
+};
+
 export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
-  const empty: ReviewLookup = {
-    commentsToAddress: 0,
-    reviewPublished: false,
-    reviewGithubReviewId: null,
-    passCount: 0,
-    untriagedCount: 0,
-    standingBlockerCount: 0,
-  };
+  const empty = EMPTY_REVIEW_LOOKUP;
   const abs = safePath(prReviewPath);
   if (!abs || !existsSync(abs)) return empty;
   let raw: string;
@@ -92,7 +97,10 @@ export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
     const blankIdx = block.search(/\n\s*\n/);
     const header = blankIdx >= 0 ? block.slice(0, blankIdx) : block;
     // Severity lives in the heading line: `#### Comment N: <category> · <severity>`.
-    const severityM = header.match(/^#### Comment \d+:\s*[\w-]+\s*·\s*([\w-]+)/);
+    // Match the LAST ·-delimited token (greedy .*) — categories are free-form
+    // and may contain spaces or even · themselves; failing to parse a severity
+    // would fail-open on the standing-blocker gate.
+    const severityM = header.match(/^#### Comment \d+:.*·\s*([\w-]+)\s*$/m);
     const severity = severityM ? severityM[1] : null;
     const statusM = header.match(/^- status:\s*([\w-]+)/m);
     const status = statusM ? statusM[1] : 'new';
@@ -100,11 +108,14 @@ export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
     const ghReviewM = header.match(/^- github_review_id:\s*(\d+)/m);
     if (ghReviewM && firstReviewId == null) firstReviewId = Number(ghReviewM[1]);
     if (status === 'new') untriaged++;
+    // wontfix is a user rejection — semantically equivalent to dismissed for
+    // the standing test, else a wontfix'd bug pins the roll-up at pending.
     if (
       (severity === 'blocker' || severity === 'bug') &&
       status !== 'resolved' &&
       status !== 'dismissed' &&
-      status !== 'acted-on'
+      status !== 'acted-on' &&
+      status !== 'wontfix'
     )
       standingBlockers++;
     if (
