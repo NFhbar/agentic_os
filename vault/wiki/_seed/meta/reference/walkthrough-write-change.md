@@ -114,7 +114,7 @@ The writer:
 The PR-review flow has its own page (PR Review app) and supports multi-pass review. Each pass writes a `pr-review` wiki entry tied to the change.
 
 - **PR Review app** → click the change row → **`Re-review`** (or first review)
-- `dev-pr-review` walks the diff + repo-knowledge + conventions, writes a structured verdict, surfaces inline comments. `pr_review_status` flips to `approved` | `request-changes` | `comments`.
+- `dev-pr-review` walks the diff + repo-knowledge + conventions, writes a structured verdict, surfaces inline comments. The change's `pr_review_status` roll-up flips to `needs-changes` (blockers flagged) | `approved` (clean pass — triage comments, then Mark ready) | `pending` (approving verdict but a blocker/bug comment still stands).
 
 If `request-changes` with inline comments to address:
 

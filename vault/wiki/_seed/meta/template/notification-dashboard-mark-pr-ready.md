@@ -15,7 +15,7 @@ last_verified: 2026-06-02
 
 # Notification template — PR ready for human review
 
-Renders when `dashboard.mark-pr-ready` fires (dev-mark-pr-ready flipped `pr_review_status: pending → ready-for-human` on the change). Overrides `notification-default.md` for this event_type. Args carry `change`, `source` (e.g. `change-automation` when the orchestrator auto-fired it, otherwise the dashboard button), and `override` — the renderer flattens these into top-level template vars.
+Renders when `dashboard.mark-pr-ready` fires (dev-mark-pr-ready flipped `pr_review_status` to `ready-for-human` on the change). Overrides `notification-default.md` for this event_type. Args carry `change` and `override` — the renderer flattens these into top-level template vars. Only the human Mark-ready action fires this event; the change-automation orchestrator no longer does (its completion sets the `approved` loop-state instead).
 
 ## title
 

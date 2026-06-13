@@ -25,15 +25,34 @@ export interface ReviewLookup {
   // automation orchestrator's artifact-verified advance: a pr-review step
   // only counts as done when this number incremented past the baseline.
   passCount: number;
+  // Count of latest-pass comments still `status: new` — untriaged. Comment
+  // disposition is a merge invariant (new → acted-on | dismissed); this count
+  // gates the Mark-ready affordances.
+  untriagedCount: number;
+  // Count of latest-pass comments with severity blocker|bug whose status is
+  // still standing (not resolved/dismissed/acted-on/wontfix). Mirrors
+  // dev-pr-review's step-14 roll-up rule for `pr_review_status: approved`;
+  // gates the orchestrator's pending → approved upgrade at completion so a
+  // standing-bug `pending` is never relabeled as clean.
+  standingBlockerCount: number;
 }
 
+// The "no review readable" shape. Exported so callers that need a fallback
+// (e.g. changes.ts when pr_review_path is unset) don't hand-maintain a copy
+// that drifts as the interface grows. Frozen + Readonly because it's returned
+// by reference on every unreadable-review path — a mutating caller would
+// poison the shared constant process-wide.
+export const EMPTY_REVIEW_LOOKUP: Readonly<ReviewLookup> = Object.freeze({
+  commentsToAddress: 0,
+  reviewPublished: false,
+  reviewGithubReviewId: null,
+  passCount: 0,
+  untriagedCount: 0,
+  standingBlockerCount: 0,
+});
+
 export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
-  const empty: ReviewLookup = {
-    commentsToAddress: 0,
-    reviewPublished: false,
-    reviewGithubReviewId: null,
-    passCount: 0,
-  };
+  const empty = EMPTY_REVIEW_LOOKUP;
   const abs = safePath(prReviewPath);
   if (!abs || !existsSync(abs)) return empty;
   let raw: string;
@@ -70,6 +89,8 @@ export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
     cm = commentRe.exec(section);
   }
   let count = 0;
+  let untriaged = 0;
+  let standingBlockers = 0;
   let firstReviewId: number | null = null;
   for (let i = 0; i < commentStarts.length; i++) {
     const start = commentStarts[i];
@@ -77,11 +98,28 @@ export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
     const block = section.slice(start, end);
     const blankIdx = block.search(/\n\s*\n/);
     const header = blankIdx >= 0 ? block.slice(0, blankIdx) : block;
+    // Severity lives in the heading line: `#### Comment N: <category> · <severity>`.
+    // Match the LAST ·-delimited token (greedy .*) — categories are free-form
+    // and may contain spaces or even · themselves; failing to parse a severity
+    // would fail-open on the standing-blocker gate.
+    const severityM = header.match(/^#### Comment \d+:.*·\s*([\w-]+)\s*$/m);
+    const severity = severityM ? severityM[1] : null;
     const statusM = header.match(/^- status:\s*([\w-]+)/m);
     const status = statusM ? statusM[1] : 'new';
     const actedOn = /^- acted_on_at:\s*\S/m.test(header);
     const ghReviewM = header.match(/^- github_review_id:\s*(\d+)/m);
     if (ghReviewM && firstReviewId == null) firstReviewId = Number(ghReviewM[1]);
+    if (status === 'new') untriaged++;
+    // wontfix is a user rejection — semantically equivalent to dismissed for
+    // the standing test, else a wontfix'd bug pins the roll-up at pending.
+    if (
+      (severity === 'blocker' || severity === 'bug') &&
+      status !== 'resolved' &&
+      status !== 'dismissed' &&
+      status !== 'acted-on' &&
+      status !== 'wontfix'
+    )
+      standingBlockers++;
     if (
       !actedOn &&
       (status === 'accepted' || status === 'published' || status === 'published-as-body')
@@ -93,5 +131,7 @@ export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
     reviewPublished,
     reviewGithubReviewId: firstReviewId,
     passCount,
+    untriagedCount: untriaged,
+    standingBlockerCount: standingBlockers,
   };
 }

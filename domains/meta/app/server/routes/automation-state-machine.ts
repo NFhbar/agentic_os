@@ -210,7 +210,8 @@ export function decideNextChangeStep(args: {
     case 'pr-review': {
       // Decide based on the review verdict — see archetype-change § PR review
       // fields. `needs-changes` triggers the address-comments loop. Anything
-      // else (pending = no blockers, ready-for-human) is terminal.
+      // else (pending = no blockers, approved = clean pass awaiting human
+      // triage, ready-for-human) is terminal.
       if (args.pr_review_status === 'needs-changes') {
         // Task #427 — no-op-loop guard. If zero comments on the latest pass
         // are curated for re-implementation, dispatching address-comments

@@ -47,7 +47,7 @@ export interface ReviewRow {
   // external PR reviews (no change_id) or stale change_id references.
   changeStatus: string | null;
   // Linked change's `pr_review_status` field (pending / needs-changes /
-  // ready-for-human), when the change_id resolves. Surfaces the
+  // approved / ready-for-human), when the change_id resolves. Surfaces the
   // "ready for human" signal on the Reviews list row so the user knows which
   // PRs are waiting on a human merge vs which still need address-comments.
   // Null for external PRs or stale references. Mirrors what the detail
@@ -143,8 +143,9 @@ export interface RecentRun {
 }
 
 // Snapshot of the linked change's OS-side workflow state, included on the
-// ReviewDetail response so the review header can surface "ready-for-human"
-// without an extra fetch. Null for external PRs (no change_id linkage).
+// ReviewDetail response so the review header can surface "approved" /
+// "ready-for-human" without an extra fetch. Null for external PRs (no
+// change_id linkage).
 export interface LinkedChange {
   id: string;
   prReviewStatus: string | null;

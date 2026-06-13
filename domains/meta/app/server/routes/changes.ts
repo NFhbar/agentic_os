@@ -19,7 +19,7 @@ import type {
   RelatedEntities,
   StageStatus,
 } from './changes.types.js';
-import { lookupLinkedReview } from './pr-review-lookup.js';
+import { EMPTY_REVIEW_LOOKUP, lookupLinkedReview } from './pr-review-lookup.js';
 
 // Re-export so existing consumers that import { ChangeSummary, ... } from
 // './changes.js' keep working without changes. New consumers should import
@@ -671,7 +671,7 @@ export const changesRoutes: FastifyPluginAsync = async (fastify) => {
           // PrReviewSummaryCard can render a "Published to GitHub" deep link.
           const reviewLookup = summary.pr_review_path
             ? lookupLinkedReview(summary.pr_review_path)
-            : { commentsToAddress: 0, reviewPublished: false, reviewGithubReviewId: null };
+            : EMPTY_REVIEW_LOOKUP;
           // Extract the review id from the path and look up the most recent
           // publish event's timestamp. The change frontmatter already carries
           // pr_review_path (e.g. vault/wiki/development/pr-review/<id>.md);
@@ -698,6 +698,7 @@ export const changesRoutes: FastifyPluginAsync = async (fastify) => {
             related,
             rollup: buildChangeRollup(events),
             comments_to_address: reviewLookup.commentsToAddress,
+            untriaged_comments: reviewLookup.untriagedCount,
             pr_review_published: reviewLookup.reviewPublished,
             pr_review_github_review_id: reviewLookup.reviewGithubReviewId,
             pr_review_published_at: reviewPublishedAt,

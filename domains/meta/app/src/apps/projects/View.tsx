@@ -2482,7 +2482,7 @@ function ProjectAutomationTab({
           }}
         >
           {`EXECUTE → OPEN-PR → PR-REVIEW ─┬─ no blockers → complete
-                                │              (auto-flips pr_review_status: ready-for-human)
+                                │              (sets pr_review_status: approved — triage, then Mark ready)
                                 │
                                 └─ needs-changes → ADDRESS-COMMENTS → PR-REVIEW
                                                    (loops; caps per change.iteration_cap)`}
