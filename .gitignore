@@ -21,6 +21,9 @@ dist/
 .vite/
 *.log
 
+# Test fixture scratch dirs (left behind if a run crashes before afterAll)
+tests/.tmp-*/
+
 # Ingested external repositories (see standard-repo-ingestion)
 repos/
 

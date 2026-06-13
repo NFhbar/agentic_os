@@ -39,15 +39,17 @@ export interface ReviewLookup {
 
 // The "no review readable" shape. Exported so callers that need a fallback
 // (e.g. changes.ts when pr_review_path is unset) don't hand-maintain a copy
-// that drifts as the interface grows. Callers treat lookups as read-only.
-export const EMPTY_REVIEW_LOOKUP: ReviewLookup = {
+// that drifts as the interface grows. Frozen + Readonly because it's returned
+// by reference on every unreadable-review path — a mutating caller would
+// poison the shared constant process-wide.
+export const EMPTY_REVIEW_LOOKUP: Readonly<ReviewLookup> = Object.freeze({
   commentsToAddress: 0,
   reviewPublished: false,
   reviewGithubReviewId: null,
   passCount: 0,
   untriagedCount: 0,
   standingBlockerCount: 0,
-};
+});
 
 export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
   const empty = EMPTY_REVIEW_LOOKUP;
