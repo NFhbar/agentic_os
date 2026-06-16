@@ -9,6 +9,7 @@ import { ScaffoldForm } from '../../components/ScaffoldForm';
 import { getJson } from '../../lib/api';
 import { useDispatch, useRunTerminal } from '../../lib/dispatch';
 import { useNavigation } from '../../lib/navigation';
+import { danglingRepos } from '../../lib/repos';
 import { type SkillSummary, fetchSkills, findSkill } from '../../lib/skills';
 import { formatLocal, formatRelative } from '../../lib/time';
 import { type ManifestEntry, fetchEntry, fetchManifest } from '../../lib/vault';
@@ -194,6 +195,15 @@ export default function Projects() {
     skill: SkillSummary;
     projectId: string;
   } | null>(null);
+  // dev-ingest-repo scaffold form, opened from the repo-picker's "Repo not
+  // listed?" affordance or a dangling-repo [Ingest] action. When a slug
+  // pre-fill is set (the project's repos[] id), the ingested entity's slug
+  // matches the reference, so the dangling link closes once the run lands.
+  const [ingestRepoSkill, setIngestRepoSkill] = useState<SkillSummary | null>(null);
+  const [ingestSlugPrefill, setIngestSlugPrefill] = useState<string | null>(null);
+  // Bumped when an ingest run completes; forces the repo pickers + dangling
+  // flags to re-resolve against the fresh manifest without a remount/reload.
+  const [manifestRefreshKey, setManifestRefreshKey] = useState(0);
   const { startSkillRun, setDrawerFilter, setDrawerOpen } = useDispatch();
 
   async function dispatch(prompt: string, title: string, skill: string, projectId?: string) {
@@ -222,6 +232,14 @@ export default function Projects() {
         /* keep prior */
       }
     }
+  });
+
+  // A dev-ingest-repo run carries project: null, so the project-scoped hook
+  // above won't catch it. Force-refresh the manifest and bump the key so the
+  // repo picker + dangling-repo flags re-resolve when the ingest completes.
+  useRunTerminal({ skill: 'dev-ingest-repo' }, async () => {
+    await fetchManifest(true);
+    setManifestRefreshKey((k) => k + 1);
   });
 
   const refresh = useCallback(async () => {
@@ -283,6 +301,25 @@ export default function Projects() {
       return;
     }
     setAddChangeSkill({ skill, projectId });
+  }
+
+  // Opens the dev-ingest-repo scaffold form. `slugPrefill` (the project's
+  // repos[] id, passed by the dangling-repo [Ingest] action) pre-fills the
+  // optional `slug` input so the ingested entity's slug matches the reference
+  // and closes the dangling link. The required `source` stays operator-entered
+  // — a bare slug is not a resolvable clone target.
+  async function openIngestRepoForm(slugPrefill?: string) {
+    let skill = await findSkill('dev-ingest-repo');
+    if (!skill) {
+      await fetchSkills(true);
+      skill = await findSkill('dev-ingest-repo');
+    }
+    if (!skill) {
+      alert('dev-ingest-repo skill not found in .claude/skills/');
+      return;
+    }
+    setIngestSlugPrefill(slugPrefill ?? null);
+    setIngestRepoSkill(skill);
   }
 
   // Same pattern for meta-add-schedule. Scaffolds a runbook entry with
@@ -414,6 +451,8 @@ export default function Projects() {
             <ProjectDetailPane
               detail={detail}
               explicitTab={explicitTab}
+              manifestRefreshKey={manifestRefreshKey}
+              onIngestRepo={(slugPrefill) => openIngestRepoForm(slugPrefill)}
               onSetTab={setTab}
               onGenerateReport={(t) => generateReport(detail.project, t ?? 'status')}
               onScheduleReport={async (cadence) => {
@@ -541,11 +580,13 @@ export default function Projects() {
         />
       )}
 
-      {addChangeSkill && (
+      {addChangeSkill && !ingestRepoSkill && (
         <ScaffoldForm
           skill={addChangeSkill.skill}
           title={`Add Change to ${addChangeSkill.projectId}`}
           initialValues={{ project: addChangeSkill.projectId }}
+          onIngestRepo={() => openIngestRepoForm()}
+          manifestRefreshKey={manifestRefreshKey}
           onCancel={() => setAddChangeSkill(null)}
           onSubmit={(prompt) => {
             const pid = addChangeSkill.projectId;
@@ -570,6 +611,23 @@ export default function Projects() {
             const pid = addScheduleSkill.projectId;
             setAddScheduleSkill(null);
             dispatch(prompt, `Adding schedule to ${pid}…`, 'meta-add-schedule', pid);
+          }}
+        />
+      )}
+
+      {ingestRepoSkill && (
+        <ScaffoldForm
+          skill={ingestRepoSkill}
+          title="Ingest Repo"
+          initialValues={ingestSlugPrefill ? { slug: ingestSlugPrefill } : undefined}
+          onCancel={() => {
+            setIngestRepoSkill(null);
+            setIngestSlugPrefill(null);
+          }}
+          onSubmit={(prompt) => {
+            setIngestRepoSkill(null);
+            setIngestSlugPrefill(null);
+            dispatch(prompt, 'Ingesting repo…', 'dev-ingest-repo');
           }}
         />
       )}
@@ -762,6 +820,8 @@ function defaultTabFor(planStatus: string | null): ProjectTabId {
 function ProjectDetailPane({
   detail,
   explicitTab,
+  manifestRefreshKey,
+  onIngestRepo,
   onSetTab,
   onGenerateReport,
   onOpenEntry,
@@ -778,6 +838,13 @@ function ProjectDetailPane({
   // default is derived from plan_status (Plan vs Changes). Otherwise the
   // validated tab id from the URL.
   explicitTab: ProjectTabId | null;
+  // Bumped by the parent when an ingest run completes; re-keys the manifest
+  // load below so dangling-repo flags auto-clear without a remount.
+  manifestRefreshKey: number;
+  // Opens the dev-ingest-repo scaffold form. The optional arg pre-fills the
+  // `slug` input — used by the dangling-repo [Ingest] action so the ingested
+  // entity's slug matches the project's repos[] reference.
+  onIngestRepo: (slugPrefill?: string) => void;
   onSetTab: (t: ProjectTabId) => void;
   onGenerateReport: (type?: ReportType) => void;
   onOpenEntry: (id: string) => void;
@@ -803,6 +870,29 @@ function ProjectDetailPane({
   const p = detail.project;
   const reporting = p.reporting;
   const hasReporting = reporting?.cadence && reporting.cadence !== 'none';
+
+  // Manifest backs the dangling-repo detection (repos[] ids with no ingested
+  // repo entity). Re-keyed on manifestRefreshKey so an ingest dispatched from
+  // this pane clears the flag on completion. Null while loading → no flag flash
+  // (an empty manifest would otherwise mark every repo dangling mid-load).
+  const [repoManifest, setRepoManifest] = useState<ManifestEntry[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetchManifest(manifestRefreshKey > 0)
+      .then((m) => {
+        if (!cancelled) setRepoManifest(m.entries);
+      })
+      .catch(() => {
+        if (!cancelled) setRepoManifest([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [manifestRefreshKey]);
+  const danglingRepoSet = useMemo(
+    () => new Set(repoManifest ? danglingRepos(p.repos, repoManifest) : []),
+    [p.repos, repoManifest],
+  );
 
   // `explicitTab` is the URL-derived tab (null when the URL has no tab
   // segment). When null, fall back to a plan_status-derived default so
@@ -1070,14 +1160,28 @@ function ProjectDetailPane({
                 <span style={{ fontSize: 12.5 }}>
                   {p.repos.map((r, i) => (
                     <React.Fragment key={r}>
-                      <button
-                        type="button"
-                        className="link-inline"
-                        onClick={() => onOpenEntry(r)}
-                        style={linkStyle}
-                      >
-                        {r}
-                      </button>
+                      {danglingRepoSet.has(r) ? (
+                        <span style={{ color: 'var(--warn-text)' }}>
+                          {r} ⚠ not ingested{' '}
+                          <button
+                            type="button"
+                            className="link-inline"
+                            onClick={() => onIngestRepo(r)}
+                            style={linkStyle}
+                          >
+                            [Ingest]
+                          </button>
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="link-inline"
+                          onClick={() => onOpenEntry(r)}
+                          style={linkStyle}
+                        >
+                          {r}
+                        </button>
+                      )}
                       {i < p.repos.length - 1 && <span className="subtle">, </span>}
                     </React.Fragment>
                   ))}
