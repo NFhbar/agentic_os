@@ -209,7 +209,9 @@ export async function startRun(input: StartRunOptions): Promise<StartRunResult> 
   const repo = tags.repo ?? null;
   const domain = tags.domain ?? promptAttribution.domain ?? null;
   // Origin is a structural property of the run, stamped at dispatch. An
-  // explicit input wins; the dashboard/API default is `human`.
+  // explicit input wins; this is the single place the `human` default is
+  // resolved (startRun is createRun's only caller, so createRun stores the
+  // value verbatim rather than re-defaulting).
   const origin: RunOrigin = input.origin ?? 'human';
   // report_id rides only on the session + event row; the runs table doesn't
   // carry it. Research-domain skills declare report_id as their canonical

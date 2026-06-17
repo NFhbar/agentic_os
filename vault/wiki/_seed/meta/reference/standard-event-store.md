@@ -259,11 +259,12 @@ When retention is added, it will be a `scripts/events-db-vacuum.mjs` that prunes
 
 ## 6. Audit checks
 
-| id                         | severity        | what                                                                                                                                                                     |
-| -------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `events-db-exists`         | info            | DB file is present (opt-in: only warns if any other code has tried to write)                                                                                             |
-| `events-db-schema-current` | error           | Actual `events` columns match the standard's column list                                                                                                                 |
-| `run-origin-missing`       | error/warn/info | `runs.origin` column exists (error if missing) + every non-NULL value is in the `RUN_ORIGINS` vocabulary (error otherwise); NULL rows tolerated as legacy `human` (info) |
+| id                         | severity   | what                                                                                                                                                                                      |
+| -------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `events-db-exists`         | info       | DB file is present (opt-in: only warns if any other code has tried to write)                                                                                                              |
+| `events-db-schema-current` | error      | Actual `events` columns match the standard's column list                                                                                                                                  |
+| `run-origin-missing`       | error/info | `runs.origin` column exists (error if missing) + every non-NULL value is in the `RUN_ORIGINS` vocabulary (error otherwise); NULL rows tolerated as legacy `human` (info)                  |
+| `runs-db-schema-current`   | warn       | Actual `runs` columns include every entry in `RUNS_EXPECTED_COLUMNS`; a non-origin column going missing warns here (not under `run-origin-missing`), mirroring `events-db-schema-current` |
 
 ## 7. Why these choices
 

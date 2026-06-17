@@ -23,6 +23,11 @@ import type { RunFilter, RunRecord, RunTags } from '../../server/routes/runs.typ
 // dispatcher is visible at a glance. Marker-aware — skips when the title
 // already carries a known-origin prefix, so legacy `[automation] …` titles
 // (written before origin became structural) render once, never doubled.
+// Note: the guard matches ANY known-origin marker, so a row whose literal
+// title marker disagrees with its `origin` (e.g. `[automation] …` with
+// origin `scheduler`) renders the title verbatim rather than re-deriving.
+// Intentional — never double-prefix; such a mismatch is a legacy artifact,
+// not a state the dispatch paths can produce.
 const ORIGIN_MARKER = /^\[(?:human|automation|scheduler|driver)\]/;
 
 export function deriveRunLabel(run: RunRecord): string {

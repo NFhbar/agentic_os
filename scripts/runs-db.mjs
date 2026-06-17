@@ -114,7 +114,10 @@ export function createRun(payload) {
       title: payload.title ?? null,
       prompt: payload.prompt ?? '',
       output_path: payload.output_path ?? outputPathFor(id),
-      origin: payload.origin ?? 'human',
+      // Default origin is resolved once by the caller (startRun); coerce a
+      // missing value to NULL (legacy sentinel, read as `human`) rather than
+      // defaulting a second time — single source of truth lives upstream.
+      origin: payload.origin ?? null,
     };
     getInsertStmt().run(row);
     return { run_id: id };

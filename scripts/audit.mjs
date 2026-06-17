@@ -23,6 +23,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { EXPECTED_COLUMNS as EVENTS_DB_EXPECTED_COLUMNS } from './events-db-init.mjs';
 import { RUNS_EXPECTED_COLUMNS, RUN_ORIGINS } from './runs-db-init.mjs';
+import { classifyRunsOrigin } from './audit-runs-origin.mjs';
 import {
   CHANGE_SCOPED_SKILLS,
   PROJECT_SCOPED_SKILLS,
@@ -1359,52 +1360,50 @@ function checkRunsDb() {
       .prepare('PRAGMA table_info(runs)')
       .all()
       .map((r) => r.name);
-    // No runs table yet (fresh clone that never dispatched) — nothing to check.
-    if (columns.length === 0) return findings;
-    if (!columns.includes('origin')) {
-      findings.push({
-        id: 'run-origin-missing',
-        severity: 'error',
-        path: '.claude/state/events.db:runs',
-        message: 'runs table is missing the `origin` column',
-        hint: 'Re-open the dashboard (initRunsTable migrates in place) or run `node scripts/runs-db-init.mjs`.',
-      });
-      return findings;
+    // Read the row-level facts only when the origin column exists — the count
+    // queries reference it. classifyRunsOrigin owns the branch → severity
+    // decisions; we map each decision kind to a finding id here (schema drift
+    // gets its own id so a generic missing column isn't mislabeled as
+    // origin-specific). Keeping the id literals here also keeps the audit
+    // check-id scanners — which read only audit.mjs — in sync.
+    let legacyNullCount = 0;
+    let invalidCount = 0;
+    if (columns.includes('origin')) {
+      legacyNullCount =
+        db.prepare('SELECT count(*) AS n FROM runs WHERE origin IS NULL').get()?.n ?? 0;
+      const placeholders = RUN_ORIGINS.map(() => '?').join(', ');
+      invalidCount =
+        db
+          .prepare(
+            `SELECT count(*) AS n FROM runs WHERE origin IS NOT NULL AND origin NOT IN (${placeholders})`,
+          )
+          .get(...RUN_ORIGINS)?.n ?? 0;
     }
-    // Schema drift backstop — mirrors events-db-schema-current.
-    const expected = new Set(RUNS_EXPECTED_COLUMNS);
-    const missing = [...expected].filter((c) => !columns.includes(c));
-    if (missing.length > 0) {
-      findings.push({
-        id: 'run-origin-missing',
-        severity: 'warn',
-        path: '.claude/state/events.db:runs',
-        message: `runs table missing columns: ${missing.join(', ')}`,
-        hint: 'Re-open the dashboard or run `node scripts/runs-db-init.mjs` (idempotent additive migrations).',
-      });
-    }
-    const legacy = db.prepare('SELECT count(*) AS n FROM runs WHERE origin IS NULL').get();
-    if ((legacy?.n ?? 0) > 0) {
-      findings.push({
-        id: 'run-origin-missing',
-        severity: 'info',
-        path: '.claude/state/events.db:runs',
-        message: `${legacy.n} runs row(s) have a NULL origin (legacy — read as human)`,
-        hint: 'Expected for rows created before origin was stamped at dispatch. No action needed; they render as `human`.',
-      });
-    }
-    const placeholders = RUN_ORIGINS.map(() => '?').join(', ');
-    const invalid = db
-      .prepare(`SELECT count(*) AS n FROM runs WHERE origin IS NOT NULL AND origin NOT IN (${placeholders})`)
-      .get(...RUN_ORIGINS);
-    if ((invalid?.n ?? 0) > 0) {
-      findings.push({
-        id: 'run-origin-missing',
-        severity: 'error',
-        path: '.claude/state/events.db:runs',
-        message: `${invalid.n} runs row(s) carry an origin outside the vocabulary (${RUN_ORIGINS.join(' | ')})`,
-        hint: 'A dispatch path stamped an unknown origin. Check the startRun callers; valid values live in RUN_ORIGINS (scripts/runs-db-init.mjs).',
-      });
+    const decisions = classifyRunsOrigin({
+      columns,
+      expectedColumns: RUNS_EXPECTED_COLUMNS,
+      validOrigins: RUN_ORIGINS,
+      legacyNullCount,
+      invalidCount,
+    });
+    for (const d of decisions) {
+      if (d.kind === 'schema-drift') {
+        findings.push({
+          id: 'runs-db-schema-current',
+          severity: d.severity,
+          path: '.claude/state/events.db:runs',
+          message: d.message,
+          hint: d.hint,
+        });
+      } else {
+        findings.push({
+          id: 'run-origin-missing',
+          severity: d.severity,
+          path: '.claude/state/events.db:runs',
+          message: d.message,
+          hint: d.hint,
+        });
+      }
     }
   } catch {
     // runs table absent or unreadable — covered by events-db-readable.
