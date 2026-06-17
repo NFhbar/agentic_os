@@ -23,6 +23,7 @@ export const SKILL = {
   META_ADD_APP: 'meta-add-app',
   META_ADD_ARCHETYPE: 'meta-add-archetype',
   META_ADD_DOMAIN: 'meta-add-domain',
+  META_ADD_ENTITY: 'meta-add-entity',
   META_ADD_MCP: 'meta-add-mcp',
   META_ADD_NOTE: 'meta-add-note',
   META_ADD_PROJECT: 'meta-add-project',

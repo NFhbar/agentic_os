@@ -37,6 +37,7 @@ Meta holds the OS's self-knowledge: standards, evolution skills, scaffolding tem
 - `meta-brief` — session brief / status
 - `meta-add-schedule` — scaffold a scheduled runbook (cron + prompt the OS fires when due)
 - `meta-add-project` — scaffold a project (scope + lifecycle + reporting cadence; optionally linked to an ingested repo)
+- `meta-add-entity` — scaffold a non-repo entity (person / system / other / project) so entity-id wikilink references resolve; repo entities stay with `dev-ingest-repo`
 - `meta-reopen-project` — flip a completed project back to `status: active` (vault-only frontmatter edit). CLI equivalent of the dashboard's Reopen button on the project status banner.
 - `meta-status-report` — generate a project status report — synthesizes commits, decisions, scheduler activity, milestones into structured markdown
 - `meta-audit` — audit the OS for compliance with documented standards (skills, wiki, domains, archetypes, router, logs)
