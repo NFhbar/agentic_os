@@ -249,6 +249,7 @@ export const schedulesRoutes: FastifyPluginAsync = async (fastify) => {
     const result = await startRun({
       prompt: target.prompt,
       title: `Run now: ${target.title}`,
+      origin: 'scheduler',
       tags: { skill: target.id ?? undefined },
       onFinished: (s) => {
         const preview =

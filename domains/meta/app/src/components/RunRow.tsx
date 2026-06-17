@@ -4,7 +4,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { type RunRecord, cancelRun, subscribeRun } from '../lib/runs';
+import { type RunRecord, cancelRun, deriveRunLabel, subscribeRun } from '../lib/runs';
 // Pure helpers extracted to orphan-recognizer.ts so unit tests can exercise
 // them without pulling React. See tests/unit/runs/orphanRecognizer.test.ts.
 import { entityLink, recognizeOrphanLike } from './orphan-recognizer';
@@ -107,7 +107,7 @@ export function RunRow({ run, onCancel, compact, defaultExpanded = false }: Prop
   }, [run.id, onCancel]);
 
   const isRunning = run.state === 'running' || run.state === 'queued';
-  const label = run.title ?? run.skill ?? '(untitled run)';
+  const label = deriveRunLabel(run);
   const tag =
     run.change_id ?? run.project ?? run.repo ?? (run.skill && `skill=${run.skill}`) ?? null;
 

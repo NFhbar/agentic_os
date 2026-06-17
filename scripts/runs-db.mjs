@@ -80,10 +80,10 @@ function getStream(runId, outputPath) {
 const INSERT_SQL = `
 INSERT INTO runs (
   id, started_at, state, pid, skill, change_id, project, repo, domain,
-  title, prompt, output_path
+  title, prompt, output_path, origin
 ) VALUES (
   @id, @started_at, @state, @pid, @skill, @change_id, @project, @repo, @domain,
-  @title, @prompt, @output_path
+  @title, @prompt, @output_path, @origin
 )`;
 
 let _insertStmt = null;
@@ -114,6 +114,10 @@ export function createRun(payload) {
       title: payload.title ?? null,
       prompt: payload.prompt ?? '',
       output_path: payload.output_path ?? outputPathFor(id),
+      // Default origin is resolved once by the caller (startRun); coerce a
+      // missing value to NULL (legacy sentinel, read as `human`) rather than
+      // defaulting a second time — single source of truth lives upstream.
+      origin: payload.origin ?? null,
     };
     getInsertStmt().run(row);
     return { run_id: id };
@@ -318,7 +322,7 @@ export function getRun(id) {
   }
 }
 
-const FILTER_KEYS = ['state', 'skill', 'change_id', 'project', 'repo', 'domain'];
+const FILTER_KEYS = ['state', 'skill', 'change_id', 'project', 'repo', 'domain', 'origin'];
 
 export function listRuns(filter = {}) {
   try {

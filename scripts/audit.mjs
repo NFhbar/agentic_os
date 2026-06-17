@@ -22,6 +22,8 @@ import { dirname, join, relative } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { EXPECTED_COLUMNS as EVENTS_DB_EXPECTED_COLUMNS } from './events-db-init.mjs';
+import { RUNS_EXPECTED_COLUMNS, RUN_ORIGINS } from './runs-db-init.mjs';
+import { classifyRunsOrigin } from './audit-runs-origin.mjs';
 import {
   CHANGE_SCOPED_SKILLS,
   PROJECT_SCOPED_SKILLS,
@@ -1335,6 +1337,78 @@ function checkEventsDb() {
       message: `events.db has extra columns not in standard: ${extra.join(', ')}`,
       hint: 'Update EXPECTED_COLUMNS in scripts/events-db-init.mjs and standard-event-store.md if these are intended.',
     });
+  }
+  return findings;
+}
+
+// Runs table (.claude/state/events.db) — origin enforcement. Origin is a
+// structural property of every run (who dispatched it); titles derive their
+// `[origin]` prefix from it. This check pins that the column exists and every
+// row carries a value in the vocabulary. Legacy NULL rows read as `human` at
+// the display layer, so they're tolerated (info-level), not errors.
+function checkRunsDb() {
+  const findings = [];
+  if (!existsSync(EVENTS_DB_PATH)) return findings; // covered by events-db-exists
+  let db;
+  try {
+    db = new DatabaseSync(EVENTS_DB_PATH);
+  } catch {
+    return findings; // covered by events-db-readable
+  }
+  try {
+    const columns = db
+      .prepare('PRAGMA table_info(runs)')
+      .all()
+      .map((r) => r.name);
+    // Read the row-level facts only when the origin column exists — the count
+    // queries reference it. classifyRunsOrigin owns the branch → severity
+    // decisions; we map each decision kind to a finding id here (schema drift
+    // gets its own id so a generic missing column isn't mislabeled as
+    // origin-specific). Keeping the id literals here also keeps the audit
+    // check-id scanners — which read only audit.mjs — in sync.
+    let legacyNullCount = 0;
+    let invalidCount = 0;
+    if (columns.includes('origin')) {
+      legacyNullCount =
+        db.prepare('SELECT count(*) AS n FROM runs WHERE origin IS NULL').get()?.n ?? 0;
+      const placeholders = RUN_ORIGINS.map(() => '?').join(', ');
+      invalidCount =
+        db
+          .prepare(
+            `SELECT count(*) AS n FROM runs WHERE origin IS NOT NULL AND origin NOT IN (${placeholders})`,
+          )
+          .get(...RUN_ORIGINS)?.n ?? 0;
+    }
+    const decisions = classifyRunsOrigin({
+      columns,
+      expectedColumns: RUNS_EXPECTED_COLUMNS,
+      validOrigins: RUN_ORIGINS,
+      legacyNullCount,
+      invalidCount,
+    });
+    for (const d of decisions) {
+      if (d.kind === 'schema-drift') {
+        findings.push({
+          id: 'runs-db-schema-current',
+          severity: d.severity,
+          path: '.claude/state/events.db:runs',
+          message: d.message,
+          hint: d.hint,
+        });
+      } else {
+        findings.push({
+          id: 'run-origin-missing',
+          severity: d.severity,
+          path: '.claude/state/events.db:runs',
+          message: d.message,
+          hint: d.hint,
+        });
+      }
+    }
+  } catch {
+    // runs table absent or unreadable — covered by events-db-readable.
+  } finally {
+    db.close();
   }
   return findings;
 }
@@ -3662,6 +3736,7 @@ function main() {
   if (sections.wiki) findings.push(...checkReviewStateEnums());
   // Event store schema drift — cheap, runs unconditionally.
   findings.push(...checkEventsDb());
+  findings.push(...checkRunsDb());
   findings.push(...checkEventAttribution());
   findings.push(...checkProjectAttribution());
   findings.push(...checkPlanFileOrphan());
