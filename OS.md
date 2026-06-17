@@ -68,6 +68,7 @@ Direct invocation (`/dev-pr-review`, `/meta-dashboard`) is a power-user escape h
 | `brief`, `session brief`, `what's new`, `status`                                           | `meta-brief`                        |
 | `add schedule`, `new schedule`, `schedule this`                                            | `meta-add-schedule`                 |
 | `add project`, `new project`, `start project`                                              | `meta-add-project`                  |
+| `add entity`, `new entity`, `add person`, `add system entity`                              | `meta-add-entity`                   |
 | `reopen project`, `un-complete project`, `revive project`                                  | `meta-reopen-project`               |
 | `status report`, `weekly update`, `report`                                                 | `meta-status-report`                |
 | `audit`, `check`, `lint os`, `health`                                                      | `meta-audit`                        |
