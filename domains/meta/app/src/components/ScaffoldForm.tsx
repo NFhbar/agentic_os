@@ -8,12 +8,27 @@ interface Props {
   initialValues?: Record<string, string>;
   onSubmit: (prompt: string) => void;
   onCancel: () => void;
+  // Opt-in, project usage only: renders an inline "Repo not listed? Ingest
+  // one →" affordance in the repo picker. Absent for the Overview scaffolders,
+  // which keep the CLI-only empty-state hint unchanged.
+  onIngestRepo?: () => void;
+  // Bump to force the manifest pickers to refetch (e.g. after an ingest run
+  // completes) so a freshly-ingested repo becomes selectable without a remount.
+  manifestRefreshKey?: number;
 }
 
 // Strict-validated form generated from a skill's `inputs:` frontmatter schema.
 // Required fields enforced; pattern regex validated; submit disabled until clean.
 // Emits a prompt for the parent to feed into ActionRunner.
-export function ScaffoldForm({ skill, title, initialValues, onSubmit, onCancel }: Props) {
+export function ScaffoldForm({
+  skill,
+  title,
+  initialValues,
+  onSubmit,
+  onCancel,
+  onIngestRepo,
+  manifestRefreshKey,
+}: Props) {
   const fields = useMemo(() => Object.entries(skill.inputs), [skill.inputs]);
 
   const [values, setValues] = useState<Record<string, string>>(() => {
@@ -38,7 +53,9 @@ export function ScaffoldForm({ skill, title, initialValues, onSubmit, onCancel }
   useEffect(() => {
     if (!needsManifest) return;
     let cancelled = false;
-    fetchManifest()
+    // Cache-friendly on first mount (key absent/0); forced on every subsequent
+    // bump so a just-ingested repo lands in the picker without a remount.
+    fetchManifest((manifestRefreshKey ?? 0) > 0)
       .then((m) => {
         if (!cancelled) setManifestEntries(m.entries);
       })
@@ -48,7 +65,7 @@ export function ScaffoldForm({ skill, title, initialValues, onSubmit, onCancel }
     return () => {
       cancelled = true;
     };
-  }, [needsManifest]);
+  }, [needsManifest, manifestRefreshKey]);
   const repoOptions = useMemo(() => {
     if (!manifestEntries) return null;
     return manifestEntries
@@ -217,13 +234,28 @@ export function ScaffoldForm({ skill, title, initialValues, onSubmit, onCancel }
                         </option>
                       ))}
                     </select>
-                    {repoOptions?.length === 0 && (
-                      <p className="hint" style={{ color: 'var(--warn-text)', marginTop: 6 }}>
-                        No repo entities found. Run <code>/os ingest repo &lt;owner/repo&gt;</code>{' '}
-                        via CLI to add one, or use the Overview app's Action Items panel after the
-                        action item surfaces.
-                      </p>
+                    {onIngestRepo && (
+                      <button
+                        type="button"
+                        className="link-button"
+                        style={{ padding: 0, marginTop: 6, textAlign: 'left' }}
+                        onClick={onIngestRepo}
+                      >
+                        Repo not listed? Ingest one →
+                      </button>
                     )}
+                    {repoOptions?.length === 0 &&
+                      (onIngestRepo ? (
+                        <p className="hint muted" style={{ marginTop: 6 }}>
+                          Or via CLI: <code>/os ingest repo &lt;owner/repo&gt;</code>
+                        </p>
+                      ) : (
+                        <p className="hint" style={{ color: 'var(--warn-text)', marginTop: 6 }}>
+                          No repo entities found. Run{' '}
+                          <code>/os ingest repo &lt;owner/repo&gt;</code> via CLI to add one, or use
+                          the Overview app's Action Items panel after the action item surfaces.
+                        </p>
+                      ))}
                   </>
                 ) : isProjectPicker ? (
                   <select
