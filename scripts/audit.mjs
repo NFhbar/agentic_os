@@ -22,6 +22,7 @@ import { dirname, join, relative } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { EXPECTED_COLUMNS as EVENTS_DB_EXPECTED_COLUMNS } from './events-db-init.mjs';
+import { RUNS_EXPECTED_COLUMNS, RUN_ORIGINS } from './runs-db-init.mjs';
 import {
   CHANGE_SCOPED_SKILLS,
   PROJECT_SCOPED_SKILLS,
@@ -1335,6 +1336,80 @@ function checkEventsDb() {
       message: `events.db has extra columns not in standard: ${extra.join(', ')}`,
       hint: 'Update EXPECTED_COLUMNS in scripts/events-db-init.mjs and standard-event-store.md if these are intended.',
     });
+  }
+  return findings;
+}
+
+// Runs table (.claude/state/events.db) — origin enforcement. Origin is a
+// structural property of every run (who dispatched it); titles derive their
+// `[origin]` prefix from it. This check pins that the column exists and every
+// row carries a value in the vocabulary. Legacy NULL rows read as `human` at
+// the display layer, so they're tolerated (info-level), not errors.
+function checkRunsDb() {
+  const findings = [];
+  if (!existsSync(EVENTS_DB_PATH)) return findings; // covered by events-db-exists
+  let db;
+  try {
+    db = new DatabaseSync(EVENTS_DB_PATH);
+  } catch {
+    return findings; // covered by events-db-readable
+  }
+  try {
+    const columns = db
+      .prepare('PRAGMA table_info(runs)')
+      .all()
+      .map((r) => r.name);
+    // No runs table yet (fresh clone that never dispatched) — nothing to check.
+    if (columns.length === 0) return findings;
+    if (!columns.includes('origin')) {
+      findings.push({
+        id: 'run-origin-missing',
+        severity: 'error',
+        path: '.claude/state/events.db:runs',
+        message: 'runs table is missing the `origin` column',
+        hint: 'Re-open the dashboard (initRunsTable migrates in place) or run `node scripts/runs-db-init.mjs`.',
+      });
+      return findings;
+    }
+    // Schema drift backstop — mirrors events-db-schema-current.
+    const expected = new Set(RUNS_EXPECTED_COLUMNS);
+    const missing = [...expected].filter((c) => !columns.includes(c));
+    if (missing.length > 0) {
+      findings.push({
+        id: 'run-origin-missing',
+        severity: 'warn',
+        path: '.claude/state/events.db:runs',
+        message: `runs table missing columns: ${missing.join(', ')}`,
+        hint: 'Re-open the dashboard or run `node scripts/runs-db-init.mjs` (idempotent additive migrations).',
+      });
+    }
+    const legacy = db.prepare('SELECT count(*) AS n FROM runs WHERE origin IS NULL').get();
+    if ((legacy?.n ?? 0) > 0) {
+      findings.push({
+        id: 'run-origin-missing',
+        severity: 'info',
+        path: '.claude/state/events.db:runs',
+        message: `${legacy.n} runs row(s) have a NULL origin (legacy — read as human)`,
+        hint: 'Expected for rows created before origin was stamped at dispatch. No action needed; they render as `human`.',
+      });
+    }
+    const placeholders = RUN_ORIGINS.map(() => '?').join(', ');
+    const invalid = db
+      .prepare(`SELECT count(*) AS n FROM runs WHERE origin IS NOT NULL AND origin NOT IN (${placeholders})`)
+      .get(...RUN_ORIGINS);
+    if ((invalid?.n ?? 0) > 0) {
+      findings.push({
+        id: 'run-origin-missing',
+        severity: 'error',
+        path: '.claude/state/events.db:runs',
+        message: `${invalid.n} runs row(s) carry an origin outside the vocabulary (${RUN_ORIGINS.join(' | ')})`,
+        hint: 'A dispatch path stamped an unknown origin. Check the startRun callers; valid values live in RUN_ORIGINS (scripts/runs-db-init.mjs).',
+      });
+    }
+  } catch {
+    // runs table absent or unreadable — covered by events-db-readable.
+  } finally {
+    db.close();
   }
   return findings;
 }
@@ -3662,6 +3737,7 @@ function main() {
   if (sections.wiki) findings.push(...checkReviewStateEnums());
   // Event store schema drift — cheap, runs unconditionally.
   findings.push(...checkEventsDb());
+  findings.push(...checkRunsDb());
   findings.push(...checkEventAttribution());
   findings.push(...checkProjectAttribution());
   findings.push(...checkPlanFileOrphan());

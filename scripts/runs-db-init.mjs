@@ -13,6 +13,12 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_DB_PATH } from './events-db-init.mjs';
 
+// Who dispatched a run. Stamped at create time; NULL on legacy rows reads as
+// `human` at the derive/display layer. Mirror this list as the `RunOrigin`
+// type union in domains/meta/app/server/routes/runs.types.ts (that file is
+// types-only and cannot import this runtime value).
+export const RUN_ORIGINS = ['human', 'automation', 'scheduler', 'driver'];
+
 export const RUNS_EXPECTED_COLUMNS = [
   'id',
   'started_at',
@@ -40,6 +46,9 @@ export const RUNS_EXPECTED_COLUMNS = [
   'tokens_cache_hit',
   'tokens_cache_write',
   'model',
+  // Who dispatched this run — human | automation | scheduler | driver.
+  // Stamped at create time; NULL (legacy rows) reads as `human`.
+  'origin',
   // Set when post-terminal side-effects (events.db row, automation hooks)
   // have fired for this run. Row finalization and hook firing are split:
   // the supervisor (scheduler tick) can finalize a row while the server is
@@ -71,7 +80,8 @@ CREATE TABLE IF NOT EXISTS runs (
   tokens_out          INTEGER,
   tokens_cache_hit    INTEGER,
   tokens_cache_write  INTEGER,
-  model               TEXT
+  model               TEXT,
+  origin              TEXT
 );`;
 
 const INDEXES = [
@@ -93,6 +103,7 @@ const COLUMN_MIGRATIONS = [
   { col: 'tokens_cache_hit', sql: 'ALTER TABLE runs ADD COLUMN tokens_cache_hit INTEGER' },
   { col: 'tokens_cache_write', sql: 'ALTER TABLE runs ADD COLUMN tokens_cache_write INTEGER' },
   { col: 'model', sql: 'ALTER TABLE runs ADD COLUMN model TEXT' },
+  { col: 'origin', sql: 'ALTER TABLE runs ADD COLUMN origin TEXT' },
   { col: 'hooks_fired_at', sql: 'ALTER TABLE runs ADD COLUMN hooks_fired_at TEXT' },
 ];
 

@@ -66,11 +66,11 @@ import { recoverUsageFromJournal } from '../../../../../scripts/runs-finalize.mj
 import { parseStreamJsonLine } from '../lib/stream-json.js';
 import { safePath } from '../repo.js';
 import { onAutomationStepComplete, onChangeAutomationStepComplete } from './automation.js';
-import type { RunRecord, RunTags } from './runs.types.js';
+import type { RunOrigin, RunRecord, RunTags } from './runs.types.js';
 
 // Re-export wire-shape types for backward-compat. New consumers should
 // import from ./runs.types.js per standard-shared-types.
-export type { RunFilter, RunRecord, RunState, RunTags } from './runs.types.js';
+export type { RunFilter, RunOrigin, RunRecord, RunState, RunTags } from './runs.types.js';
 
 // Local alias: existing server code uses `RunRow`. RunRow is byte-equivalent
 // to RunRecord (wire shape); the rename to RunRecord matches the client's
@@ -81,6 +81,7 @@ interface StartBody {
   prompt: string;
   title?: string;
   tags?: RunTags;
+  origin?: RunOrigin;
 }
 
 // In-memory per-run state. Lives only while the child is running.
@@ -207,6 +208,9 @@ export async function startRun(input: StartRunOptions): Promise<StartRunResult> 
   const project = tags.project ?? promptAttribution.project ?? null;
   const repo = tags.repo ?? null;
   const domain = tags.domain ?? promptAttribution.domain ?? null;
+  // Origin is a structural property of the run, stamped at dispatch. An
+  // explicit input wins; the dashboard/API default is `human`.
+  const origin: RunOrigin = input.origin ?? 'human';
   // report_id rides only on the session + event row; the runs table doesn't
   // carry it. Research-domain skills declare report_id as their canonical
   // arg key (per their input schemas) so the events.db row is queryable
@@ -250,6 +254,7 @@ export async function startRun(input: StartRunOptions): Promise<StartRunResult> 
     title: input.title ?? null,
     prompt,
     output_path,
+    origin,
   }) as { run_id?: string; error?: string };
 
   if (created.error) {
@@ -854,7 +859,12 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
       reply.code(400);
       return { error: 'prompt is required' };
     }
-    const result = await startRun({ prompt: body.prompt, title: body.title, tags: body.tags });
+    const result = await startRun({
+      prompt: body.prompt,
+      title: body.title,
+      tags: body.tags,
+      origin: body.origin,
+    });
     if (result.ok) return { run_id: result.run_id };
     if ('blocking' in result) {
       reply.code(409);
@@ -873,6 +883,7 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
       project?: string;
       repo?: string;
       domain?: string;
+      origin?: string;
       since?: string;
       until?: string;
       limit?: string;
@@ -886,6 +897,7 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
       project: q.project || undefined,
       repo: q.repo || undefined,
       domain: q.domain || undefined,
+      origin: q.origin || undefined,
       since: q.since || undefined,
       until: q.until || undefined,
       limit: q.limit ? Number.parseInt(q.limit, 10) : undefined,
@@ -902,6 +914,7 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
       project?: string;
       repo?: string;
       domain?: string;
+      origin?: string;
     };
   }>('/count', async (req) => {
     const q = req.query ?? {};
@@ -912,6 +925,7 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
       project: q.project || undefined,
       repo: q.repo || undefined,
       domain: q.domain || undefined,
+      origin: q.origin || undefined,
     }) as number;
     return { n, cap: RUNS_RETENTION_CAP as number };
   });

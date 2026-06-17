@@ -11,16 +11,26 @@ import { type ActionChunk, getJson, postJson, runStream } from './api';
 
 export type {
   RunFilter,
+  RunOrigin,
   RunRecord,
   RunState,
   RunTags,
 } from '../../server/routes/runs.types';
 
-import type {
-  RunFilter,
-  RunRecord,
-  RunTags,
-} from '../../server/routes/runs.types';
+import type { RunFilter, RunRecord, RunTags } from '../../server/routes/runs.types';
+
+// Display label for a run: prefix `[<origin>]` for non-human origins so the
+// dispatcher is visible at a glance. Marker-aware — skips when the title
+// already carries a known-origin prefix, so legacy `[automation] …` titles
+// (written before origin became structural) render once, never doubled.
+const ORIGIN_MARKER = /^\[(?:human|automation|scheduler|driver)\]/;
+
+export function deriveRunLabel(run: RunRecord): string {
+  const base = run.title ?? run.skill ?? '(untitled run)';
+  if (!run.origin || run.origin === 'human') return base;
+  if (ORIGIN_MARKER.test(base)) return base;
+  return `[${run.origin}] ${base}`;
+}
 
 // Client-side parse of the server's discriminated StartRunResult union.
 // The server returns either `{ ok: true, run_id }` OR `{ ok: false, error,
@@ -41,6 +51,7 @@ function toQuery(filter: RunFilter): string {
   if (filter.project) params.set('project', filter.project);
   if (filter.repo) params.set('repo', filter.repo);
   if (filter.domain) params.set('domain', filter.domain);
+  if (filter.origin) params.set('origin', filter.origin);
   if (filter.since) params.set('since', filter.since);
   if (filter.until) params.set('until', filter.until);
   if (filter.limit != null) params.set('limit', String(filter.limit));

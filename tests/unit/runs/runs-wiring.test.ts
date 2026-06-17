@@ -97,7 +97,12 @@ vi.mock('../../../domains/meta/app/server/routes/automation.js', () => ({
 
 import { startRun } from '../../../domains/meta/app/server/routes/runs.js';
 
-function createdRow(): { id: string; output_path: string; started_at: string } {
+function createdRow(): {
+  id: string;
+  output_path: string;
+  started_at: string;
+  origin?: string;
+} {
   return mocks.createRun.mock.calls.at(-1)?.[0];
 }
 
@@ -282,5 +287,19 @@ describe('runs.ts wiring — PID-dead settle + spawn-failure early-finalize', ()
       'stderr',
       expect.stringContaining('spawn error: holder exploded'),
     );
+  });
+
+  it('stamps origin=human into the created row by default', async () => {
+    mocks.spawnClaudeOrphaned.mockResolvedValue({ pid: DEAD_PID });
+    await startRun({ prompt: 'wiring test' });
+    expect(createdRow().origin).toBe('human');
+  });
+
+  it('honors an explicit origin on the start input', async () => {
+    mocks.spawnClaudeOrphaned.mockResolvedValue({ pid: DEAD_PID });
+    await startRun({ prompt: 'wiring test', origin: 'automation' });
+    expect(createdRow().origin).toBe('automation');
+    await startRun({ prompt: 'wiring test', origin: 'scheduler' });
+    expect(createdRow().origin).toBe('scheduler');
   });
 });

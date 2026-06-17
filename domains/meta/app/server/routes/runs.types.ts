@@ -19,6 +19,11 @@ export type RunState =
   | 'cancelled'
   | 'died-after-writeback';
 
+// Who dispatched a run. Stamped at create time; NULL (legacy rows) reads as
+// `human`. Keep in sync with RUN_ORIGINS in scripts/runs-db-init.mjs — that
+// .mjs holds the runtime list; this types-only file can't import it.
+export type RunOrigin = 'human' | 'automation' | 'scheduler' | 'driver';
+
 // Attribution tags written at start-time. Used for change/project/repo
 // filtering in the Processes view + cost rollups on the change/project
 // detail pages. Both server (storage column names) and client (input
@@ -58,6 +63,8 @@ export interface RunRecord {
   tokens_cache_hit: number | null;
   tokens_cache_write: number | null;
   model: string | null;
+  // Who dispatched the run. Null on legacy rows (read as `human`).
+  origin: RunOrigin | null;
 }
 
 // Filter passed to GET /api/runs. Client + server share the shape.
@@ -68,6 +75,7 @@ export interface RunFilter {
   project?: string;
   repo?: string;
   domain?: string;
+  origin?: RunOrigin;
   since?: string;
   until?: string;
   limit?: number;
@@ -78,6 +86,9 @@ export interface StartRunInput {
   prompt: string;
   title?: string | null;
   tags?: RunTags;
+  // Defaults to `human` when unset. The orchestrator passes `automation`,
+  // the scheduler `scheduler`; an explicit value wins (the future `driver`).
+  origin?: RunOrigin;
 }
 
 // Result of startRun(). Server uses a discriminated union (ok: boolean +

@@ -285,7 +285,8 @@ async function dispatchStep(
   }
   const result = await startRun({
     prompt: buildStepPrompt(step, changeId),
-    title: `[automation] ${skill} ${changeId}`,
+    title: `${skill} ${changeId}`,
+    origin: 'automation',
     tags: {
       project: projectId,
       domain: projectDomain ?? undefined,
@@ -995,7 +996,8 @@ async function dispatchChangeStep(args: {
   };
   const result = await startRun({
     prompt,
-    title: `[automation] ${CHANGE_STEP_SKILLS[step]} ${changeId} (${step})`,
+    title: `${CHANGE_STEP_SKILLS[step]} ${changeId} (${step})`,
+    origin: 'automation',
     tags: {
       skill: CHANGE_STEP_SKILLS[step],
       change_id: changeId,

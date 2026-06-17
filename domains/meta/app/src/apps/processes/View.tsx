@@ -7,17 +7,22 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { RunRow } from '../../components/RunRow';
 import { getJson } from '../../lib/api';
 import { useDispatch } from '../../lib/dispatch';
-import { type RunRecord, type RunState, getRun, listRuns } from '../../lib/runs';
+import { type RunOrigin, type RunRecord, type RunState, getRun, listRuns } from '../../lib/runs';
 import '../../shared/styles.css';
+
+// Dispatch origins, in display order. Mirrors RUN_ORIGINS in
+// scripts/runs-db-init.mjs / the RunOrigin type.
+const ORIGINS: RunOrigin[] = ['human', 'automation', 'scheduler', 'driver'];
 
 // URL filter taxonomy: /processes (all), /processes/running, /processes/done,
 // /processes/failed, /processes/cancelled, /processes/skill/:skill,
-// /processes/change/:change. Keep the splat parser tiny — anything else
-// falls back to "all".
+// /processes/change/:change, /processes/origin/:origin. Keep the splat parser
+// tiny — anything else falls back to "all".
 function parseFilter(splat: string | undefined): {
   state?: RunState;
   skill?: string;
   change?: string;
+  origin?: RunOrigin;
   label: string;
 } {
   if (!splat || splat === '') return { label: 'All runs' };
@@ -38,6 +43,10 @@ function parseFilter(splat: string | undefined): {
   if (splat.startsWith('change/')) {
     const change = splat.slice('change/'.length);
     return { change, label: `Runs · change ${change}` };
+  }
+  if (splat.startsWith('origin/')) {
+    const origin = splat.slice('origin/'.length) as RunOrigin;
+    if (ORIGINS.includes(origin)) return { origin, label: `Runs · ${origin}` };
   }
   return { label: 'All runs' };
 }
@@ -132,6 +141,8 @@ export default function ProcessesView() {
       if (filter.state && r.state !== filter.state) return false;
       if (filter.skill && r.skill !== filter.skill) return false;
       if (filter.change && r.change_id !== filter.change) return false;
+      // Legacy rows (origin null) read as `human`.
+      if (filter.origin && (r.origin ?? 'human') !== filter.origin) return false;
       return true;
     });
     // Pin the hash-targeted run at the top when it isn't already in view —
@@ -159,6 +170,13 @@ export default function ProcessesView() {
       const bucket = r.state === 'died-after-writeback' ? 'done' : r.state;
       c[bucket] += 1;
     }
+    return c;
+  }, [runs]);
+
+  const originCounts = useMemo(() => {
+    // Legacy rows (origin null) read as `human`.
+    const c: Record<RunOrigin, number> = { human: 0, automation: 0, scheduler: 0, driver: 0 };
+    for (const r of runs) c[r.origin ?? 'human'] += 1;
     return c;
   }, [runs]);
 
@@ -214,6 +232,24 @@ export default function ProcessesView() {
         <FilterTab to="done" label="Done" count={counts.done} />
         <FilterTab to="failed" label="Failed" count={counts.failed} />
         <FilterTab to="cancelled" label="Cancelled" count={counts.cancelled} />
+      </div>
+      <div
+        style={{
+          display: 'flex',
+          gap: 6,
+          flexWrap: 'wrap',
+          marginBottom: 14,
+          paddingBottom: 14,
+          borderBottom: '1px solid var(--border)',
+          alignItems: 'center',
+        }}
+      >
+        <span className="subtle" style={{ fontSize: 11.5, marginRight: 2 }}>
+          origin
+        </span>
+        {ORIGINS.map((o) => (
+          <FilterTab key={o} to={`origin/${o}`} label={o} count={originCounts[o]} />
+        ))}
       </div>
       {filtered.length === 0 ? (
         <EmptyState filter={filter} totalRuns={runs.length} />

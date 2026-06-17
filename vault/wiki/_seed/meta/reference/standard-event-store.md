@@ -142,6 +142,24 @@ CREATE INDEX IF NOT EXISTS events_model ON events(model);
 - **`status`** — free-form short tag. Common values: `success`, `error`, `skipped`, `partial`. Audit will not enforce an enum here (deliberately permissive).
 - **Truncation** — `prompt`, `stdout_preview`, `stderr` all truncated at insert. Helper handles this; callers can pass full text.
 
+### Run origin — who dispatched a run
+
+The `runs` table (same DB file, separate table — see `scripts/runs-db-init.mjs`) carries an `origin` column stamped at **create time**, capturing _who dispatched the run_. It is a structural property, not a title convention: the `[origin]` prefix shown on run titles is **derived at render time** from this column, never stored in the title string.
+
+| `origin`     | who                                                         | stamped by                                           |
+| ------------ | ----------------------------------------------------------- | ---------------------------------------------------- |
+| `human`      | a person, via the dashboard / API (the default)             | `startRun` default when no explicit origin is passed |
+| `automation` | the change/project automation orchestrator                  | `routes/automation.ts` dispatch sites                |
+| `scheduler`  | a manual schedule fire (`run-now`)                          | `routes/schedules.ts` run-now                        |
+| `driver`     | reserved for `dev-drive-project` dispatches (not yet wired) | (future) an explicit `origin` on the start payload   |
+
+Rules:
+
+- **Vocabulary is closed.** `RUN_ORIGINS` in `scripts/runs-db-init.mjs` is the runtime source of truth; the `RunOrigin` type in `runs.types.ts` mirrors it (types-only file, can't import the runtime list).
+- **NULL reads as `human`.** Legacy rows predate the column; the derive/display layer and the Processes filter both treat `NULL` as `human`. No backfill — the migration is purely additive.
+- **Explicit origin wins.** A caller may pass `origin` on the start payload; it overrides the `human` default (this is the `driver` integration point).
+- **Enforced by audit.** `run-origin-missing` (§ 6) pins the column's presence and that no row carries a value outside the vocabulary.
+
 ## 3. Write sites
 
 | site                                       | kind        | action(s)                        | when                                      |
@@ -241,10 +259,11 @@ When retention is added, it will be a `scripts/events-db-vacuum.mjs` that prunes
 
 ## 6. Audit checks
 
-| id                         | severity | what                                                                         |
-| -------------------------- | -------- | ---------------------------------------------------------------------------- |
-| `events-db-exists`         | info     | DB file is present (opt-in: only warns if any other code has tried to write) |
-| `events-db-schema-current` | error    | Actual `events` columns match the standard's column list                     |
+| id                         | severity        | what                                                                                                                                                                     |
+| -------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `events-db-exists`         | info            | DB file is present (opt-in: only warns if any other code has tried to write)                                                                                             |
+| `events-db-schema-current` | error           | Actual `events` columns match the standard's column list                                                                                                                 |
+| `run-origin-missing`       | error/warn/info | `runs.origin` column exists (error if missing) + every non-NULL value is in the `RUN_ORIGINS` vocabulary (error otherwise); NULL rows tolerated as legacy `human` (info) |
 
 ## 7. Why these choices
 
