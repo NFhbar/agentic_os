@@ -31,7 +31,8 @@ inputs:
     description: One-paragraph description; fills the entry's `## Context` body when provided.
 outputs:
   - kind: file
-    path: vault/wiki/{{input.domain}}/entity/{{input.slug}}.md
+    path: vault/wiki/{{input.domain}}/entity/<derived-id>.md
+    description: 'The id is `slug || kebab-case(name)` (see step 2) — when `slug` is omitted the file lands at the kebab-derived id, not a literal `{{input.slug}}`.'
 ---
 
 # meta-add-entity
@@ -82,7 +83,7 @@ Create a **non-repo** `entity` archetype entry — the graph node that entity-id
    - `{{name}}` → inputs.name
    - `{{kind}}` → resolved kind
 
-   When `inputs.description` is provided, replace the template's `## Context` placeholder line with the description text. Leave `## Notable details` and `## Links` as the template ships them (the operator fills these in later).
+   When `inputs.description` is provided, replace the placeholder line _under_ `## Context` with the description text (leave the `## Context` heading itself in place). Leave `## Notable details` and `## Links` as the template ships them (the operator fills these in later).
 
 6. **Write the file** to `vault/wiki/<inputs.domain>/entity/<id>.md` via the Write tool. The PostToolUse `rebuild-vault-index.sh` hook refreshes the manifest so the new entity resolves immediately.
 

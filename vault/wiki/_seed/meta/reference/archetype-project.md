@@ -21,12 +21,14 @@ An active initiative with goals, status, and (optionally) a deadline. Projects b
 
 ## Required frontmatter (in addition to shared)
 
-| field          | type   | notes                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| -------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `title`        | string | initiative name                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `status`       | enum   | `active`, `paused`, `completed`, or `cancelled`                                                                                                                                                                                                                                                                                                                                                                                        |
-| `deadline`     | date   | optional; YYYY-MM-DD                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `stakeholders` | array  | list of `[[entity-id]]` references (for stakeholders that exist as entities) and/or plain-string names (ad-hoc people not yet promoted to entities). `meta-add-project` resolves each supplied name against the manifest: a match becomes `[[entity-id]]`, a miss is written as a plain string — never a blind-wrapped display name that can't resolve. Promote a plain-string stakeholder to a reference later via `meta-add-entity`. |
+| field          | type   | notes                                                                                    |
+| -------------- | ------ | ---------------------------------------------------------------------------------------- |
+| `title`        | string | initiative name                                                                          |
+| `status`       | enum   | `active`, `paused`, `completed`, or `cancelled`                                          |
+| `deadline`     | date   | optional; YYYY-MM-DD                                                                     |
+| `stakeholders` | array  | list of `[[entity-id]]` references and/or plain-string names — see resolution note below |
+
+**Stakeholder resolution:** `meta-add-project` resolves each supplied name against the manifest — a match becomes `[[entity-id]]` (for stakeholders that exist as entities), a miss is written as a plain string (ad-hoc people not yet promoted to entities), never a blind-wrapped display name that can't resolve. Promote a plain-string stakeholder to a reference later via `meta-add-entity`.
 
 ## Optional frontmatter — for projects that drive code or scheduled work
 

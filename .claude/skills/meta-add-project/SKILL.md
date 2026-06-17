@@ -75,7 +75,7 @@ A project is the **glue** between primitives. The entry itself stays lean; every
    - Always uncomment `lifecycle_stage: planning` — every new project starts in planning
    - `milestones` stays commented out — user fills in manually
 8. Parse `inputs.stakeholders` (if provided): split on comma, trim. For each token, **resolve it against the vault manifest instead of blind-wrapping it** (the old behavior minted dangling links — it wrapped the raw display name, which can't resolve even if a matching entity later exists):
-   - Derive the kebab id: `id = kebab-case(token)` (lowercase, spaces/punctuation → single hyphens, strip leading/trailing hyphens).
+   - Derive the kebab id using the **same rule as [[meta-add-entity]] step 2** (canonical definition): `id = kebab-case(token)` (lowercase, spaces/punctuation → single hyphens, strip leading/trailing hyphens). These must stay byte-identical — an entity stored under meta-add-entity's id must match the id derived here, or resolution silently falls back to a plain string.
    - Load `vault/.index/manifest.json` and scan `entries` for any entry with `type: entity` whose `id` equals the derived id. This is the same flat, domain-agnostic resolution the `wikilinks` structural test uses — so a match here guarantees the reference resolves.
    - **If found** → emit `[[<id>]]` (the kebab id, never the display name).
    - **If not found** → emit the token as a **plain string** (no wikilink). Collect these unresolved tokens so the success report can hint: run `/os add-entity name="<token>"` to promote them to entities, after which a re-run resolves them.
