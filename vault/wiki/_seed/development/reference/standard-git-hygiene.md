@@ -3,7 +3,7 @@ id: standard-git-hygiene
 type: reference
 domain: development
 created: 2026-05-21T23:55:00Z
-updated: 2026-05-21T23:55:00Z
+updated: 2026-07-05T23:03:50Z
 tags: [standard, git, branching, commits, conventions]
 source: manual
 private: false
@@ -146,6 +146,28 @@ git -C ~/code/personal/api config user.email "jane@personal.example"
 ```
 
 The combo of per-repo `user.email` + a custom SSH host alias keeps the three identities aligned for that specific repo.
+
+### Headless signing for automation (dedicated signing-only key)
+
+Automated lifecycles ([[dev-write-change]] EXECUTE / ADDRESS-COMMENTS) commit with no human at the keyboard. Two failure modes observed live (2026-06-12) block them at the commit/push step:
+
+1. **Agent-managed signing key prompts or locks.** When `gpg.ssh.program` points at an agent binary (e.g. 1Password's `op-ssh-sign`), a locked vault or a mid-update agent fails headless commits with `error: agent returned an error`.
+2. **GH007 email-privacy push block.** GitHub rejects pushes whose commits carry the account's real email while "Block command line pushes that expose my email" is enabled.
+
+The counter-pattern (configured by [[dev-setup-repo-identity]], offered across ingested repos by install.sh's optional signing step):
+
+- A dedicated **passphrase-less ed25519 signing-only key** on disk (default `~/.ssh/agentic_os_signing`) — no agent in the signing path, so commits never prompt.
+- The four **repo-local** config values: `user.signingkey <pub path>`, `gpg.ssh.program ssh-keygen`, `gpg.ssh.allowedSignersFile <signers path>`, `user.email <id>+<login>@users.noreply.github.com`. On machines whose inherited `gpg.format` / `commit.gpgsign` are wrong for silent SSH signing, those two are additionally set — also repo-local.
+- The public key registered on GitHub as a **Signing Key** — not an Authentication Key.
+
+**The security trade, stated plainly:** a passphrase-less key on disk means anyone with read access to the disk can produce signatures that verify as yours for these repos. It is bounded: a signing-only registration cannot authenticate or push; revocation is one click (GitHub → Settings → SSH and GPG keys); scope is per-repo opt-in. Accept the trade deliberately — it is what makes silent signing for automation possible at all.
+
+**Never-touch-global rule:** every write is repo-local (`git -C <repo> config <key> <value>`). Global git config is never modified, so the operator's interactive setup — e.g. 1Password-managed signing for human commits — keeps working in every other repo on the machine.
+
+**SSH authentication posture** — signing is headless by construction; authentication is a separate, documented choice:
+
+- **(a) Prompt-per-session (recommended default):** keep the agent-managed auth key and enable the agent's "remember approval" setting — one human checkpoint per sitting. Automated lifecycles generate many pushes/pulls per session, so per-use prompting is untenable; per-session approval keeps a human in the loop.
+- **(b) Fully headless dedicated auth key:** zero prompts. Blast radius stated plainly: auth keys can push. Reserve for routine unattended driving.
 
 ### Skill enforcement
 

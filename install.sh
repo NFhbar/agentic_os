@@ -191,6 +191,25 @@ else
 fi
 
 echo ""
+echo "→ Headless commit signing (optional)..."
+# Dedicated signing-only key + repo-local git config so automated changes
+# commit (signed) and push past GitHub's email-privacy block without agent
+# prompts. Repo-local writes only — global git config is never touched. See
+# vault/wiki/_seed/development/reference/standard-git-hygiene.md § 4a.
+signing_setup_ran=0
+echo "  Configures a dedicated signing-only key + repo-local git identity across"
+echo "  your ingested repos (and this clone) so headless lifecycles can commit."
+# `|| ans=""` keeps a non-interactive stdin (EOF → read exits non-zero) from
+# aborting the whole install under `set -e`; default is skip.
+read -r -p "  Set up headless commit signing for your repos? [y/N] " ans || ans=""
+if [[ "${ans}" =~ ^[Yy]$ ]]; then
+  node scripts/setup-repo-identity.mjs --all
+  signing_setup_ran=1
+else
+  echo "  ⊘ skipped — run /os setup repo identity <repo> later (or node scripts/setup-repo-identity.mjs --repo-path <path>)"
+fi
+
+echo ""
 echo "→ Scheduler (optional)..."
 if [[ "$(uname -s)" == "Darwin" ]]; then
   echo "  Install the launchd agent that ticks scheduler-tick.mjs every 60s?"
@@ -217,3 +236,7 @@ echo "     bot-token vs webhook tradeoffs). Skip to ignore notifications."
 echo "  3. Run \`claude\` from this directory"
 echo "  4. Try /os brief"
 echo "  5. Try /os dashboard"
+if [[ "${signing_setup_ran}" == "1" ]]; then
+  echo "  6. Register the printed signing public key on GitHub:"
+  echo "     Settings → SSH and GPG keys → New SSH key → key type: Signing Key"
+fi

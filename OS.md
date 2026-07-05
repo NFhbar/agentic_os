@@ -104,6 +104,7 @@ Direct invocation (`/dev-pr-review`, `/meta-dashboard`) is a power-user escape h
 | `publish pr review`, `post review to github`, `submit review`, `publish comments`          | `dev-pr-review-publish`             |
 | `close change`, `mark merged`, `finalize change`, `pr merged`                              | `dev-close-change`                  |
 | `pull pr comments`, `ingest review comments`, `sync external review`, `import pr feedback` | `dev-pull-pr-comments`              |
+| `setup repo identity`, `signing setup`, `headless signing`, `repo identity`                | `dev-setup-repo-identity`           |
 
 Misses (no match) are logged with the original intent so we can grow the vocabulary.
 
