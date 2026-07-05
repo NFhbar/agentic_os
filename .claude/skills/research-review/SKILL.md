@@ -2,7 +2,7 @@
 name: research-review
 description: 'Peer-review a research-report entry. Read-only: re-walks materials, parses the report, runs a structured checklist, writes a verdict (approve | request-changes | reject) and flips review_status. Mirrors meta-review-project-plan one altitude up the research lifecycle.'
 user-invocable: true
-recommended_effort: xhigh
+recommended_effort: max
 version: 1
 domain: research
 tags: [research, review, peer-review, lifecycle, report]
@@ -11,7 +11,7 @@ inputs:
     type: string
     required: true
     pattern: '^[a-z0-9][a-z0-9-]*$'
-    description: 'Research-report id (slug). Must match an existing entry of `type: research-report` with `review_status: pending` or `request-changes` (the latter lets a reviewer take a second look at an unrevised report).'
+    description: 'Research-report id (slug). Must match an existing entry of `type: research-report` with `review_status: pending` or `request-changes` (the latter is the standard post-`research-revise` re-review — revise preserves the prior verdict — or a reviewer taking a second look at an unrevised report).'
 outputs:
   - kind: file
     path: vault/output/research/reports/{{input.report_id}}-review.md
@@ -31,7 +31,7 @@ Act as a peer reviewer for a research-report produced by [[research-write]] (or 
 
 **Read-only operation.** This skill MUST NOT edit the report body, MUST NOT mutate `recommended_changes`, MUST NOT scaffold downstream changes. It reads + writes one artifact (the review document) + updates a small set of frontmatter fields on the report entry. Same separation principle as [[meta-review-project-plan]] and [[dev-review-change]] — writers can mutate, reviewers cannot. If something feels like it should be acted on, that's evidence FOR a `request-changes` verdict (because [[research-revise]] should do it), not evidence to act directly.
 
-The two-step `status` transition (`reviewed` → `approved`) is deliberate: this skill writes `status: reviewed` on the `approved` verdict; the explicit `reviewed → approved` flip is a separate human action before [[meta-scaffold-project-plan]] can consume `recommended_changes`. See [[archetype-research-report]] § Status enum + § Lifecycle.
+On the `approved` verdict this skill sets `review_status: approved` — the gate [[research-scaffold-recommendations]] checks before it consumes `recommended_changes` — and writes `status: reviewed`. When the reviewer returns `request-changes` but the user disagrees, [[meta-mark-research-approved]] is the override that flips `review_status → approved` directly. See [[archetype-research-report]] § Status enum + § Lifecycle.
 
 ## Procedure
 
@@ -41,8 +41,8 @@ The two-step `status` transition (`reviewed` → `approved`) is deliberate: this
 2. Locate the report entry at `vault/wiki/research/research-report/<report_id>.md`. Reject with `report "<id>" not found` if missing or `type != research-report`.
 3. Extract: `title`, `project`, `status`, `materials_path`, `report_revision` (default `1`), `review_status`, `review_path`, `recommended_changes`.
 4. Verify `review_status` is one of:
-   - `pending` — the standard path. Both a first review after `research-write` AND a re-review after `research-revise` land here (revise resets `review_status: pending`).
-   - `request-changes` — the second-opinion path. A reviewer can re-run on an unrevised report to confirm or update the prior verdict without going through revise. Niche but valid.
+   - `pending` — the first review after `research-write`, or a re-review after [[research-update]] reset `review_status: pending` on a substantive update.
+   - `request-changes` — the standard re-review path. Both the post-`research-revise` re-review (revise preserves the prior verdict, so the report arrives still tagged `request-changes`) AND a reviewer's second look at an unrevised report land here.
      Any other state is rejected with `report review_status is currently <state> — nothing to review`.
 5. Locate the owning project at `vault/wiki/*/project/<project>.md`. Read its body for context (the `## Why`, `## Approach`, the research framing). Warn but don't reject if missing — a report can outlive a project rename; the review can still proceed.
 
@@ -196,7 +196,7 @@ Edit the report entry's frontmatter via the Edit tool:
 - `updated: <ISO 8601 UTC now>`
 - For each unconsidered note from Step 2.3 that you DID address in the checklist, append a `considered_by` entry: `{ skill: "research-review", ts: "<ISO 8601 UTC now>" }`. Notes you couldn't address (because they don't apply to this run's scope) get an entry too, with the explanation captured in your verdict's `## Concerns` or `## Suggested changes` section. Surgical `replaceField` on the `notes_log` line — single-line JSON, same pattern as `recommended_changes`. Per [[archetype-research-report]] § `notes_log` item shape, append; never mutate existing fields.
 - `review_status` + `status` per the verdict:
-  - On `approve` → `review_status: approved`, `status: reviewed`. (The `reviewed → approved` flip is a separate human action — manual frontmatter edit today, or a future `research-approve` skill. [[meta-scaffold-project-plan]] consumes `recommended_changes` only from `status: approved` reports.)
+  - On `approve` → `review_status: approved`, `status: reviewed`. (`review_status: approved` is the gate [[research-scaffold-recommendations]] checks before it consumes `recommended_changes`; [[meta-mark-research-approved]] is the override that reaches the same state from a `request-changes` verdict.)
   - On `request-changes` → `review_status: request-changes`, `status: request-changes`.
   - On `reject` → `review_status: rejected`, `status: draft` (unchanged from prior, preserved for the user to choose: re-write from scratch or abandon). No terminal `rejected` status enum value exists on research-report (matches [[meta-review-project-plan]]'s reject-path treatment).
 
@@ -226,7 +226,7 @@ node scripts/record-dashboard-action.mjs \
 
 `next:` text per verdict:
 
-- `approve` → `status is now 'reviewed'. Edit frontmatter to status: approved when ready to let meta-scaffold-project-plan consume recommended_changes.`
+- `approve` → `review_status is now 'approved' — recommendations can be scaffolded via /os scaffold research recommendations <report_id>.`
 - `request-changes` → `/os research revise <report_id>` (fold these findings into the report, then re-review)
 - `reject` → `review verdict was REJECT — choose one: (a) /os research write <project> <report_topic> with a fresh prompt to re-author from scratch (delete the old report first), or (b) leave the report as 'draft' if you want to abandon the investigation. The status field will remain at 'draft'.`
 
@@ -260,4 +260,4 @@ If you're tempted to act on a concern directly, that's an `approve` (the concern
 - [[research-update]] — delta-driven rewrite that may reset `review_status: pending` and re-trigger this skill
 - [[meta-review-project-plan]] — project-tier analog; this skill mirrors its read-only constraint
 - [[dev-review-change]] — change-tier analog; same write/review separation
-- [[meta-scaffold-project-plan]] — terminal phase; consumes `recommended_changes` only from `status: approved` reports
+- [[research-scaffold-recommendations]] — terminal phase; consumes `recommended_changes` once `review_status` is `approved`

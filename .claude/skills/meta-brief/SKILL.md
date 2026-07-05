@@ -36,7 +36,21 @@ Cheap to run — pure file reads + manifest queries, no API calls.
 3. Read `.claude/state/pending-curation.txt`. Count lines. If non-empty, find the age of the oldest entry (mtime of the referenced raw file).
 4. Read the last ~500 lines of `vault/raw/router-log.jsonl`. Filter to last 7 days. Compute miss rate = entries with `confidence: miss` / total.
 5. Find the last entry in `vault/raw/dashboard-actions.jsonl` with `action: launch` to determine when the dashboard was last opened.
-6. From the manifest, find entries with `type: project` and `status: active`. For each: title, deadline (and overdue flag), lifecycle_stage. List up to 5; if more exist, mention count.
+
+5b. Gather scheduler data (feeds the `## Scheduler` section):
+
+- **Schedules + next fire**: run `node scripts/scheduler-tick.mjs --list` — it prints every schedule with its next run. ("Enabled" means a `type: runbook` wiki entry with both `schedule:` and `prompt:` frontmatter set — there is no `enabled` field; the manifest does not carry `schedule`/`prompt`, so the wiki files / the `--list` output are the source, not the manifest.)
+- **Last-24h outcomes**: read `vault/raw/scheduled-runs.jsonl` (last 24h window) and count fired / skipped / failed. Every entry has an `outcome` field:
+  - `outcome: 'fired'` — the scheduler ran the runbook's prompt (counts as `ran`)
+  - `outcome: 'skipped'` — precondition not met (e.g. zero in-review changes to monitor); counts as healthy, NOT a failure. Common for high-frequency runbooks like `runbook-pr-ci-monitor` during quiet periods.
+  - `outcome: 'spawn-error'` — claude CLI couldn't be spawned (counts as failed)
+  - `exit: <non-zero>` on a fired entry — runbook ran but errored (counts as failed)
+
+  Older entries without `outcome` predate the field (pre-2026-05-24); treat them as `fired` for backwards compat.
+
+- **Last-fire detection**: "last fired" means "most recent entry of any outcome" — don't filter out skips when computing freshness. A runbook that's skipped 150 times in a row is still healthy; the problem you're looking for is "no entries at all in the last 2× the cron interval".
+
+6. From the manifest, find entries with `type: project` and `status: active`. The manifest does NOT carry `deadline` or `lifecycle_stage` (they're not in the index builder's lifted fields) — so for each matching entry, read its file (the manifest `path` field) and extract title, deadline (and overdue flag), lifecycle_stage from the frontmatter. List up to 5; if more exist, mention count.
 7. From the manifest, find entries with `type: change` and bucket them:
    - **in-progress** — agent is editing. Count + list ids.
    - **in-review** — PR open, awaiting merge. Count + list ids with `pr_url` if set.
@@ -81,16 +95,6 @@ Cheap to run — pure file reads + manifest queries, no API calls.
    - <N> schedules enabled · next fire: <id> at <time>
    - Last 24h: <fired> fired, <skipped> skipped, <failed> failed
    - (If any failed: list ids)
-
-   **Interpreting scheduled-runs.jsonl entries:** every entry has an `outcome` field:
-   - `outcome: 'fired'` — the scheduler ran the runbook's prompt (counts as `ran`)
-   - `outcome: 'skipped'` — precondition not met (e.g. zero in-review changes to monitor); counts as healthy, NOT a failure. Common for high-frequency runbooks like `runbook-pr-ci-monitor` during quiet periods.
-   - `outcome: 'spawn-error'` — claude CLI couldn't be spawned (counts as failed)
-   - `exit: <non-zero>` on a fired entry — runbook ran but errored (counts as failed)
-
-   Older entries without `outcome` predate the field (pre-2026-05-24); treat them as `fired` for backwards compat.
-
-   **Last-fire detection:** "last fired" means "most recent entry of any outcome" — don't filter out skips when computing freshness. A runbook that's skipped 150 times in a row is still healthy; the problem you're looking for is "no entries at all in the last 2× the cron interval".
 
    ## Recent OS activity (last 7d)
    - <N> dashboard actions (<X> successful, <Y> failed)

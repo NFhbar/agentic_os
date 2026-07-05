@@ -652,10 +652,13 @@ export const changesRoutes: FastifyPluginAsync = async (fastify) => {
           //     stripping the marker blockquotes. One-click via the new
           //     POST /:id/accept-drafts endpoint.
           const lowerBody = body.toLowerCase();
+          // Substrings kept byte-aligned with the placeholder prose in
+          // _templates/wiki-entry/change.md.tmpl (## Why / ## Approach) and the
+          // identical checks in dev-write-change PLAN step 1a + audit.mjs.
           const bodyHasPlaceholders =
-            lowerBody.includes("what's broken / what's missing / what we're improving") ||
+            lowerBody.includes("what's broken, what's missing, or what we're improving") ||
             lowerBody.includes(
-              'how you plan to do it. touched files, key functions, test strategy',
+              'how you plan to do it. files touched, key functions, test strategy',
             );
           const draftMarkerCount = (body.match(/\*\*DRAFT\*\*/g) || []).length;
           // Events.db rows tagged with this change_id. Powers the activity

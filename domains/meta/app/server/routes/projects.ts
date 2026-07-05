@@ -1949,7 +1949,10 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary of 
     const nowIso = new Date().toISOString();
     let updated = rewriteFrontmatter(content, {
       status: 'active',
-      lifecycle_stage: 'in-progress',
+      // 'active' is the project archetype's in-flight lifecycle_stage enum value
+      // (planning|active|review|shipped|archived) — 'in-progress' belongs to the
+      // change status enum and trips the project-lifecycle-stage-enum audit finding.
+      lifecycle_stage: 'active',
       updated: nowIso,
     });
     updated = removeFrontmatterFields(updated, ['completed_at']);

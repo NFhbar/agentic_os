@@ -2,7 +2,7 @@
 name: dev-write-change
 description: 'State-machine driven: produces a structured plan, gates on peer review, then executes (creates branch, edits files, runs tests). Reads change entry to determine which phase to run.'
 user-invocable: true
-recommended_effort: xhigh
+recommended_effort: max
 version: 1
 domain: development
 tags: [change, code, write, plan, execute]
@@ -59,16 +59,16 @@ The state machine lives in the change entry's `review_status` field. Same skill 
 
 Otherwise, fall through to the standard plan-review state machine, dispatched on `review_status`:
 
-| `review_status`   | `inputs.force_replan` | action                                                                           |
-| ----------------- | --------------------- | -------------------------------------------------------------------------------- |
-| `pending`         | (any)                 | **PLAN phase** (or RE-PLAN if a plan already exists and force_replan=true)       |
-| `approved`        | false                 | **EXECUTE phase**                                                                |
-| `approved`        | true                  | **RE-PLAN phase**: reset `review_status: pending`, wipe `review_path`, then PLAN |
-| `request-changes` | false                 | Show concerns + 3 options. Stop.                                                 |
-| `request-changes` | true                  | **RE-PLAN phase**: reset state, then PLAN                                        |
-| `rejected`        | (any)                 | Refuse to execute. Suggest `status: abandoned`. Stop.                            |
-| `overridden`      | false                 | **EXECUTE phase** (with override log)                                            |
-| `not-required`    | (any)                 | **EXECUTE phase** (skip review entirely)                                         |
+| `review_status`   | `inputs.force_replan` | action                                                                                                                                                                                                                       |
+| ----------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pending`         | (any)                 | **PLAN phase** (or RE-PLAN if a plan already exists and force_replan=true)                                                                                                                                                   |
+| `approved`        | false                 | **EXECUTE phase**                                                                                                                                                                                                            |
+| `approved`        | true                  | **RE-PLAN phase**: reset `review_status: pending`, wipe `review_path`, then PLAN                                                                                                                                             |
+| `request-changes` | false                 | Show concerns + 3 options. Stop.                                                                                                                                                                                             |
+| `request-changes` | true                  | **RE-PLAN phase**: reset state, then PLAN                                                                                                                                                                                    |
+| `rejected`        | (any)                 | Refuse to execute. Suggest `status: abandoned`. Stop.                                                                                                                                                                        |
+| `overridden`      | false                 | **EXECUTE phase** (with override log)                                                                                                                                                                                        |
+| `not-required`    | (any)                 | **PLAN phase when `plan_path` is unset**, else **EXECUTE phase**. `not-required` skips only the review gate, never planning — EXECUTE hard-requires a plan (step 4.1), so routing straight to EXECUTE with no plan deadlocks |
 
 ### Step 3: PLAN phase
 
@@ -77,8 +77,10 @@ When you reach this phase:
 1. **Gate: verify the change body is fit for planning.** Read the change entry's body. Two sub-checks:
 
    **1a. Template placeholders (hard reject).** If the body still contains either of these substrings (case-insensitive), the body was never written. Reject with the message below and stop:
-   - `"what's broken / what's missing / what we're improving"`
-   - `"how you plan to do it. touched files, key functions, test strategy"`
+   - `"what's broken, what's missing, or what we're improving"`
+   - `"how you plan to do it. files touched, key functions, test strategy"`
+
+   These substrings must stay byte-aligned with the placeholder prose in `_templates/wiki-entry/change.md.tmpl` (`## Why` / `## Approach`) and with the identical checks in `scripts/audit.mjs` (`change-body-template-placeholder`) and the dashboard warning in `domains/meta/app/server/routes/changes.ts`. If you reword the template, update all three consumers in the same change.
 
    Rejection message:
 
@@ -115,15 +117,16 @@ When you reach this phase:
 
    Strategy: prefer the OS-managed read cache (`.claude/state/pr-review-cache/<owner>/<repo>/`); fall back to `local_path` with the original branch+clean gate when the cache is unavailable.
 
-   **3a. Compute `owner/repo`** from the entity entry's `remote_url` (or, when remote_url is absent, from the entity id by convention). Reject if neither yields a clean `<owner>/<repo>` pair.
+   **3a. Compute `owner/repo`** from the entity entry's `remote_url` **when it is a GitHub URL** (`https://github.com/<owner>/<repo>`). If `remote_url` is `null` or points at a non-GitHub host, this is a **local-only repo** — a first-class ingest class (`remote_url: null` for purely local repos per the entity archetype; see [[dev-ingest-repo]]'s local flow). The OS-managed cache does not apply: skip steps 3b–3c and go straight to the 3d `local_path` flow, framed as "local-only repo — cache not applicable" (NOT the degraded-fallback warning). Do **not** guess an owner from the entity id — the id is the bare repo slug and carries no owner, so a guess would make 3c clone an unrelated repo.
 
    **3b. Check cache freshness.** Cache path: `.claude/state/pr-review-cache/<owner>/<repo>/`. If the directory exists AND its last refresh was within 5 minutes (see [[dev-cache-pr-review-repo]] § Staleness gate), set `read_path = <cache-path>` and skip to step 4.
 
    **3c. Auto-trigger the cache skill when missing or stale.** Invoke `[[dev-cache-pr-review-repo]]` with inputs `{ owner: "<owner>", repo: "<repo>" }`. The skill accepts the owner+repo pair directly (no PR URL needed) and shallow-clones / fast-forwards `default_branch` into the cache path. On success, set `read_path = <cache-path>` and continue.
 
-   **3d. Fallback to `local_path` (degraded mode).** If the cache step fails (network, auth, etc.), fall back to the original behavior:
+   **3d. Read from `local_path`.** Reached two ways: **(i) local-only repo** routed here from 3a (cache not applicable — this is the expected read path, not a fallback), or **(ii) degraded fallback** when the cache step (3b–3c) failed for a GitHub repo (network, auth, etc.).
    - `cd` into `local_path`. Verify it's a git repo and working tree is clean (`git status --porcelain` empty) on `default_branch`. If not, abort with the specific issue (see `standard-git-hygiene` § 1).
-   - Set `read_path = <local_path>`. Surface a warning in the final report: `⚠ Used local_path fallback for PLAN reads — cache step failed (<reason>). Consider re-running once <reason> is resolved.`
+   - Set `read_path = <local_path>`.
+   - **Only for (ii)** surface a warning in the final report: `⚠ Used local_path fallback for PLAN reads — cache step failed (<reason>). Consider re-running once <reason> is resolved.` For (i) local-only repos, print no warning — reading from `local_path` is expected (there is no cache to prefer).
 
    The rest of this step set uses `read_path` for all reads. EXECUTE phase still uses `local_path` (writing happens in the user's clone, on a feature branch).
 
@@ -181,7 +184,7 @@ When you reach this phase:
     ```
     ✓ Plan written for <title>
       phase:   PLAN (review_status: pending)
-      read:    <cache | local_path>   (cache = .claude/state/pr-review-cache/<owner>/<repo>/, local_path = degraded fallback)
+      read:    <cache | local_path>   (cache = .claude/state/pr-review-cache/<owner>/<repo>/; local_path = local-only repo or degraded fallback)
       plan:    vault/output/<domain>/changes/<change>-plan.md
       next:    /os review-change <change>   (run dev-review-change to gate execution)
     ```

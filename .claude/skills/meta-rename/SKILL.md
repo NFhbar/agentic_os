@@ -60,6 +60,7 @@ Rename a skill, domain, or wiki entry. Updates the file/folder name AND all know
    - Rename matching vault paths if they exist: `vault/wiki/<old>` → `vault/wiki/<new>` and `vault/output/<old>` → `vault/output/<new>`. (For sub-domains, only the leaf segment renames — preserve parent prefix.)
    - If this is a sub-domain, update the parent playbook's `## Sub-domains` section
    - Grep all wiki entries' `domain:` frontmatter for the old path and update to the new path
+   - Grep `.claude/skills/*/SKILL.md` frontmatter for `domain: <old-path>` and update to `domain: <new-path>` — skills claim their domain in frontmatter (outside `domains/`), and the audit's `skill-domain-exists` check ERRORs on every skill still pointing at the old path. Then run `node scripts/audit.mjs --skills --domains` to confirm zero `skill-domain-exists` findings.
 
    ### wiki-entry
    - `target_path` is `vault/wiki/<domain>/<archetype>/<old-slug>.md`

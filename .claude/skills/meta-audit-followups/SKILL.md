@@ -9,7 +9,7 @@ inputs:
   audit:
     type: string
     required: false
-    description: 'Audit id to process. If omitted, the skill scans ALL provisional audits with at least 1 day since merge (the batch path used by the scheduled runbook). Pass a specific id for one-off processing or debugging.'
+    description: 'Audit id to process. Both id forms are accepted — the full frontmatter id (`audit-<change-id>`, what the dashboard and lifecycle-audit entries carry) or the bare change id; step 2 normalizes. If omitted, the skill scans ALL provisional audits with at least 1 day since merge (the batch path used by the scheduled runbook). Pass a specific id for one-off processing or debugging.'
   window_days:
     type: integer
     required: false
@@ -24,7 +24,7 @@ outputs:
   - kind: file
     path: vault/wiki/meta/lifecycle-audit/audit-<id>.md
   - kind: event
-    path: '.claude/state/events.db (kind: meta, action: audit-followups, audit_id: <id>, files_touched: [<audit-path>])'
+    path: '.claude/state/events.db (kind: dashboard, action: audit-followups, audit_id: <id>, files_touched: [<audit-path>])'
 spawns: []
 ---
 
@@ -71,7 +71,7 @@ Aggregated across many audits, this is what answers _"are skill X's outputs dura
    - If `dry_run` is set, treat all `Write` / `Edit` operations as logged-only (print the proposed change instead of applying).
 
 2. **Resolve the audit set.**
-   - **Single mode** (`audit` provided): load `vault/wiki/meta/lifecycle-audit/audit-<audit>.md`. If not found, reject with `audit "<id>" not found at vault/wiki/meta/lifecycle-audit/audit-<id>.md`.
+   - **Single mode** (`audit` provided): normalize the id first — audit files are named `audit-<change-id>.md` and their frontmatter `id` is the full `audit-<change-id>`, so a caller passing the frontmatter id must NOT get a double-prefixed `audit-audit-…` path. Try `vault/wiki/meta/lifecycle-audit/<audit>.md`, then `vault/wiki/meta/lifecycle-audit/audit-<audit stripped of any leading "audit-">.md` (mirrors `loadAuditById` in `domains/meta/app/server/routes/tuning-suggestions.ts`). If neither exists, reject with `audit "<id>" not found in vault/wiki/meta/lifecycle-audit/ (tried <audit>.md and audit-<bare>.md)`.
    - **Batch mode** (`audit` omitted): walk `vault/wiki/meta/lifecycle-audit/*.md`. Parse each frontmatter; keep entries where `type: lifecycle-audit` AND `audit_status: provisional` AND `overseer_completed_at` is at least 24h old AND `files_touched` is non-empty. This is the working set.
 
 3. **For each audit in the working set, do the per-audit work** (steps 4-10):
@@ -285,7 +285,7 @@ applied_at + days]`. The target skill = `target_metric.name`'s skill
 ## Errors
 
 - `audit must match ^[a-z0-9][a-z0-9-]*$` — invalid input to single-audit mode.
-- `audit "<id>" not found at vault/wiki/meta/lifecycle-audit/audit-<id>.md` — invalid audit id.
+- `audit "<id>" not found in vault/wiki/meta/lifecycle-audit/ (tried <audit>.md and audit-<bare>.md)` — invalid audit id (both id shapes tried).
 - `audit <id>: cannot compute window — audited change has no merged_at` — skipped per-audit (batch continues).
 - `audit <id>: files_touched is empty — skipping` — skipped per-audit (warning only; batch continues).
 - `vault manifest unavailable — falling back to file walk` — degraded but functional. Logged as warning.

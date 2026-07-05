@@ -43,11 +43,13 @@ Permanently delete a skill, domain, or wiki entry. Recursively removes contents 
 
    ### domain
    - Path: `domains/<...>/<name>/`
+   - **Skill-orphan gate**: grep `.claude/skills/*/SKILL.md` frontmatter for `domain:` values matching this domain path (or any sub-path of it). Skills live outside `domains/`, so deleting the folder does NOT delete them — each would be left claiming a dead domain (audit `skill-domain-exists` ERRORs) with dangling OS.md Intent-vocabulary rows. If any match → **abort before removing anything**, listing the orphaned skills: "domain `<name>` is claimed by N skill(s): <list> — delete or reassign them first (meta-delete each skill, or edit their `domain:` frontmatter), then re-run."
    - Will remove:
      - The domain folder (recursive, including sub-domains and apps)
      - `vault/wiki/<...>/<name>/` (if exists)
      - `vault/output/<...>/<name>/` (if exists)
    - Will NOT remove wiki entries in unrelated domains that happen to reference this one
+   - Will NOT remove skills — the skill-orphan gate above guarantees none claim the domain by the time removal runs
    - **Warn explicitly** in output: "This will remove N files."
 
    ### wiki-entry
@@ -76,6 +78,8 @@ Permanently delete a skill, domain, or wiki entry. Recursively removes contents 
 
 4b. **Regenerate the skill-id constants module** (skill deletions only): `node scripts/generate-skill-ids.mjs`, then `node scripts/audit.mjs --skills` — `skill-ids-module-stale` ERRORs until regenerated, and `app-stale-skill-literal` lists any app-code site still naming the deleted skill.
 
+    For **domain deletions**, run `node scripts/audit.mjs --skills --domains` as well — confirms zero `skill-domain-exists` findings (the step-2 skill-orphan gate should guarantee this) and surfaces any other post-deletion inconsistency.
+
 5. **Record the audit event** via the dual-write wrapper:
 
    ```bash
@@ -92,6 +96,7 @@ Permanently delete a skill, domain, or wiki entry. Recursively removes contents 
 
 - Path not found → abort
 - Path escapes repo root → abort with security error
+- Domain still claimed by skills → abort with the orphan list (delete or reassign the skills first, then re-run)
 - If the deletion would orphan a parent domain (e.g. deleting `meta` — the OS depends on it), warn loudly but proceed (the user has confirmed)
 
 ## Notes

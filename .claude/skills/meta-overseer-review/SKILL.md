@@ -2,7 +2,7 @@
 name: meta-overseer-review
 description: 'Audit a completed change lifecycle. Reads the change + plan + plan-review + every PR-review pass + events.db attribution; applies the 3-dimension rubric (correctness / completeness / efficiency) per skill that ran; emits a structured lifecycle-audit entry with scores, categorical tags, and concrete skill-tuning suggestions. The Overseer is how the OS observes itself — aggregated audits drive the self-improvement loop.'
 user-invocable: true
-recommended_effort: xhigh
+recommended_effort: max
 version: 1
 domain: meta
 tags: [audit, overseer, self-improvement, quality-measurement, lifecycle]
@@ -26,7 +26,7 @@ outputs:
   - kind: file
     path: vault/wiki/meta/lifecycle-audit/audit-{{input.change}}.md
   - kind: event
-    path: '.claude/state/events.db (kind: meta, action: lifecycle-audit, change_id: <change>, files_touched: [vault/wiki/meta/lifecycle-audit/audit-<change>.md])'
+    path: '.claude/state/events.db (kind: dashboard, action: lifecycle-audit, change_id: <change>, files_touched: [vault/wiki/meta/lifecycle-audit/audit-<change>.md])'
 spawns: []
 model: claude-fable-5
 effort: max
@@ -77,7 +77,7 @@ Producing audits is cheap (one LLM call per merged change, typically $1-3). Acti
    - If `audit.enabled` is unset or `false` AND `force: false` → reject with `project "<id>" has not opted into auditing. Set audit.enabled: true on the project frontmatter, OR re-run with force: true for a one-off audit.`
    - If `force: true` was set, note it in the audit's `notes` field for trail.
 
-3. **Check for recent audit.** If `vault/wiki/meta/lifecycle-audit/audit-<change>.md` exists AND was modified within the last 24h AND `force: false` → reject with `audit for change "<value>" already exists (created <relative>). Re-run with force: true to overwrite.`
+3. **Check for recent audit.** If `vault/wiki/meta/lifecycle-audit/audit-<change>.md` exists AND was **last modified** within the last 24h AND `force: false` → reject with `audit for change "<value>" already exists (last modified <relative>). Re-run with force: true to overwrite.` Note that daily `followup_signals[]` appends by `meta-audit-followups` bump the file's modification time, so an actively-tracked audit stays inside this window — a forced re-run past it must still preserve that state (see step 10).
 
 4. **Load lifecycle artifacts.** Read the following (skip gracefully when missing):
    - **Change entry** — full frontmatter + body (already loaded)
@@ -159,6 +159,13 @@ Producing audits is cheap (one LLM call per merged change, typically $1-3). Acti
     mkdir -p vault/wiki/meta/lifecycle-audit
     ```
 
+    **Preserve append-only forward-look state when overwriting.** If an audit file already exists for this change (a `force: true` re-run, or any re-run past the 24h window), read it first and carry forward, unchanged, into the new entry:
+    - `followup_signals[]` — appended daily by `meta-audit-followups`; the array is append-only per [[archetype-lifecycle-audit]] and must never be dropped or reordered.
+    - `human_override` — set via the dashboard's audit detail view; overwriting it silently discards a human judgment.
+    - the original `created` timestamp — a new audit-entry-revision does not reset when the audit was first authored.
+
+    If `followup_signals[]` or `human_override` are non-empty AND `force: false`, do **not** overwrite — reject with `audit for change "<value>" carries forward-look state (followup_signals / human_override). Re-run with force: true to overwrite — existing followup_signals and human_override will be preserved.` Re-running the Overseer appends a new revision; the prior audit's forward-look state is not the Overseer's to erase (see [[archetype-lifecycle-audit]] § append-only — "the prior audit becomes an attachment, not the canonical record").
+
     Frontmatter MUST be emitted with:
     - `recommended_changes` (n/a for this archetype — skip)
     - All structured arrays (`audit_tags`, `per_skill_findings`, `tuning_suggestions`, `files_touched`, `red_flags`) on single lines as JSON for the manifest parser. See [[archetype-research-report]] § "Frontmatter caveats" — the same flat-parser caveat applies.
@@ -213,7 +220,8 @@ Producing audits is cheap (one LLM call per merged change, typically $1-3). Acti
 - `change "<value>" not found — searched vault/wiki/*/change/` — change entry doesn't exist.
 - `change "<value>" is in-flight (status: <s>) — Overseer requires terminal state` — change hasn't merged or been abandoned yet.
 - `project "<id>" has not opted into auditing. Set audit.enabled: true on the project frontmatter, OR re-run with force: true` — opt-in gate.
-- `audit for change "<value>" already exists (created <relative>). Re-run with force: true to overwrite.` — debounce.
+- `audit for change "<value>" already exists (last modified <relative>). Re-run with force: true to overwrite.` — debounce (24h since last modification; daily followup appends extend the window).
+- `audit for change "<value>" carries forward-look state (followup_signals / human_override). Re-run with force: true to overwrite — existing followup_signals and human_override will be preserved.` — protects append-only Phase-3 state; a forced re-run carries it forward rather than dropping it.
 - `plan file at <path> missing — proceeding without plan-quality assessment` — graceful degradation (warn, don't fail).
 - `events.db unavailable — cost/duration attribution will be omitted` — graceful degradation.
 

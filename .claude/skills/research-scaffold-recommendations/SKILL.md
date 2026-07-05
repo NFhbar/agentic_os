@@ -33,6 +33,8 @@ Bridge research-domain output into the development domain: take a curated subset
 
 The skill is the **orchestrator** for what was originally drafted as endpoint-side per-item work in `routes/research.ts`'s `POST /:id/scaffold-recommendations`. The endpoint is a thin dispatcher (`startRun` is fire-and-forget; per-item synchronous orchestration belongs in a skill where nested skill invocations are the standard pattern). This skill is the analog of `meta-scaffold-project-plan` for the research surface: same per-item-loop shape, same partial-failure semantics, same post-dispatch surgical frontmatter writeback.
 
+The skill is **gated on the report's `review_status: approved` (or `overridden` / `not-required`)** — same hard gate as `meta-scaffold-project-plan` Step 1.5. Any other state is rejected: the review verdict is load-bearing because scaffolding creates real change entries that downstream skills will pick up, and uncritically materializing an unreviewed report defeats the review loop. [[meta-mark-research-approved]] is the explicit override when the reviewer's verdict conflicts with the user's judgment.
+
 Per-item opt-in is the convention: `inputs.indices` is an explicit array of indices into `recommended_changes`. The endpoint resolves the default (all items with `status: proposed`) before dispatch.
 
 ## Procedure
@@ -42,9 +44,10 @@ Per-item opt-in is the convention: `inputs.indices` is an explicit array of indi
 1. Validate `inputs.report` matches `^[a-z0-9][a-z0-9-]*$`. Reject if not.
 2. Locate the report entry at `vault/wiki/research/research-report/<report>.md`. Reject with `report "<id>" not found` if missing or `type != research-report`.
 3. Parse the report's frontmatter via js-yaml (so `recommended_changes` deserializes as real objects rather than the inline-JSON string).
-4. Verify `inputs.indices` is an array of non-negative integers. Reject if any entry is not an integer or is negative.
-5. Verify every index is in-range (`0 <= i < recommended_changes.length`). Hard reject the whole call up-front with the list of bad indices if any are out-of-range — partial scaffolds are confusing; fail fast.
-6. If `inputs.indices` is an empty array: idempotent stop. Print `↻ No indices selected — nothing to scaffold.` Do NOT mutate any frontmatter. Done.
+4. **Review gate.** Verify the report's `review_status` is `approved` or `overridden` (or `not-required`, for reports with the review gate switched off — shared review-state enum per `lifecycle-state.ts`). Reject any other state with: `cannot scaffold — review_status is <state>, expected approved`. Escape hatch when the reviewer's verdict conflicts with the user's judgment: [[meta-mark-research-approved]] flips `request-changes → approved`. Mirrors `meta-scaffold-project-plan` SKILL.md Step 1.5.
+5. Verify `inputs.indices` is an array of non-negative integers. Reject if any entry is not an integer or is negative.
+6. Verify every index is in-range (`0 <= i < recommended_changes.length`). Hard reject the whole call up-front with the list of bad indices if any are out-of-range — partial scaffolds are confusing; fail fast.
+7. If `inputs.indices` is an empty array: idempotent stop. Print `↻ No indices selected — nothing to scaffold.` Do NOT mutate any frontmatter. Done.
 
 ### Step 2: Resolve the owning project + repo
 
@@ -186,6 +189,7 @@ The top-level `report` key feeds `record-dashboard-action.mjs`'s attribution ext
 
 - `inputs.report` slug invalid → reject with the regex
 - Report not found / not `type: research-report` → reject with id
+- `review_status` not `approved` / `overridden` / `not-required` → reject with `cannot scaffold — review_status is <state>, expected approved` (override via [[meta-mark-research-approved]])
 - Report has no `project` → reject (a research-report must own a project per archetype)
 - Project not found / no `repos[0]` → reject
 - Any index out of range → hard reject before any dispatch begins (lists bad indices)
@@ -199,5 +203,5 @@ The top-level `report` key feeds `record-dashboard-action.mjs`'s attribution ext
 - [[meta-scaffold-project-plan]] — the parallel orchestrator for project plans (this skill mirrors its structure)
 - [[dev-add-change]] — the sub-scaffolder dispatched per item
 - [[research-write]] — produces the report this skill materializes
-- [[research-review]] — gates the report; recommended_changes shouldn't be scaffolded until review_status is `approved`
+- [[research-review]] — produces the `review_status: approved` verdict Step 1's review gate requires before anything is scaffolded
 - [[research-update]] — may append new proposals to `recommended_changes` that this skill can scaffold in a follow-up call

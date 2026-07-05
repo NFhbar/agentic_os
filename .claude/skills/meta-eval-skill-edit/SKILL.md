@@ -2,7 +2,7 @@
 name: meta-eval-skill-edit
 description: 'Replay-eval a proposed SKILL.md edit before it reaches the decision gate. v1 is scoped to dev-pr-review: re-runs the stored prompts of 1-3 historical review passes against repo state PINNED to what each pass originally saw (scripts/eval-skill-edit.mjs reconstructs head + historic merge-base from git), with the EDITED skill travelling inline in the replay prompt — the on-disk SKILL.md is never touched. An LLM judge then compares old vs new passes on the audit rubric dimensions and emits better/same/worse + rationale. Closes the Finding 3.3 gap: skill edits previously shipped with zero regression check while lifecycle audits arrived at ~1/week, sample size ~4.'
 user-invocable: true
-recommended_effort: xhigh
+recommended_effort: max
 version: 1
 domain: meta
 tags: [overseer, self-improvement, skill-tuning, eval, replay]
@@ -31,7 +31,7 @@ outputs:
   - kind: file
     path: vault/output/meta/tuning-evals/replay-<ts>.jsonl (one per sample)
   - kind: event
-    path: '.claude/state/events.db (kind: meta, action: skill-edit-eval, files_touched: [<report>, <replay jsonls>])'
+    path: '.claude/state/events.db (kind: dashboard, action: skill-edit-eval, files_touched: [<report>, <replay jsonls>])'
 spawns: []
 model: claude-fable-5
 effort: max
@@ -112,7 +112,13 @@ Replay non-determinism is accepted by design: the judge scores _relative_ qualit
      - **Efficiency** — focus, signal-to-noise, cost vs the original run's `run_cost_usd`.
    - Emit per-sample verdict `better | same | worse` + 2-4 sentences of rationale citing SPECIFIC comments from both sides.
 
-6. **Aggregate.** Majority across non-errored samples; ties → `same`. Single sample → its verdict, flagged `low-confidence (n=1)`.
+6. **Aggregate.** `same` votes are held controls, not dissents — the default n=2 shape is one hypothesis sample plus one does-it-hurt-elsewhere control, whose expected success shape is {better, same}, so `same` samples must not dilute a genuine improvement. Across non-errored samples:
+   - any `better` AND no `worse` → **better**
+   - any `worse` AND no `better` → **worse**
+   - both `better` and `worse` present → **inconclusive** (flag `conflicting samples` in the report)
+   - all `same` → **same**
+
+   Single sample → its verdict, flagged `low-confidence (n=1)`.
 
 7. **Write the eval report** to `vault/output/meta/tuning-evals/<proposal-diff-basename minus .diff>-eval.md`:
 

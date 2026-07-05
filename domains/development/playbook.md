@@ -44,7 +44,7 @@ Planned for v1.5:
 
 ## Apps
 
-- `pr-review` — visual dashboard for the PR review workflow. Lives at `domains/meta/app/src/apps/pr-review/` (apps physically reside inside the meta dashboard bundle; the manifest's `domain: 'dev'` field is what places it in the sidebar's **Development** section). Currently a visual scaffold over mock data; backend wiring planned alongside the multi-pass extensions to `dev-pr-review`.
+- `pr-review` — visual dashboard for the PR review workflow. Lives at `domains/meta/app/src/apps/pr-review/` (apps physically reside inside the meta dashboard bundle; the manifest's `domain: 'dev'` field is what places it in the sidebar's **Development** section). Fully wired to the API: reviews list + detail (multi-pass, comment triage accept/dismiss, verdict-state banner + Mark-ready gate), metrics, and Settings with resolved model/effort verdict cards per skill.
 
 ## Sub-domains
 

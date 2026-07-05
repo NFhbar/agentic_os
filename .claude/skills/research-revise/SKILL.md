@@ -2,7 +2,7 @@
 name: research-revise
 description: 'Revises an existing research-report to address findings from research-review. Reads review_path + current report body + re-walks materials, rewrites the report in place, bumps report_revision. Preserves review_status — the original verdict still describes the prior revision.'
 user-invocable: true
-recommended_effort: xhigh
+recommended_effort: max
 version: 1
 domain: research
 tags: [research, revise, review, lifecycle, report]
@@ -11,7 +11,7 @@ inputs:
     type: string
     required: true
     pattern: '^[a-z0-9][a-z0-9-]*$'
-    description: 'Research-report id (slug). Must match an existing entry of `type: research-report` with both `review_path` set + the review file present on disk.'
+    description: 'Research-report id (slug). Must match an existing entry of `type: research-report` with both `review_path` set + the review file present on disk. The review''s parsed verdict must be `request-changes` — `approve` / `reject` verdicts refuse at the Step 3a gate.'
 outputs:
   - kind: file
     path: vault/wiki/research/research-report/{{input.report_id}}.md
@@ -39,7 +39,7 @@ This is the research-domain analog of [[dev-revise-plan]] (one altitude up: repo
 
 1. Validate `inputs.report_id` matches `^[a-z0-9][a-z0-9-]*$`. Reject if not.
 2. Locate the report entry at `vault/wiki/research/research-report/<report_id>.md`. Reject with `report "<id>" not found` if missing or `type != research-report`.
-3. Extract: `title`, `project`, `status`, `materials_path`, `report_revision` (default `1`), `review_path`, `recommended_changes`.
+3. Extract: `title`, `project`, `status`, `materials_path`, `report_revision` (default `1`), `review_path`, `reviewed_at`, `report_revised_at`, `report_revised_from_review`, `recommended_changes`.
 4. Verify `review_path` is set AND the file exists at that path. Reject with `no review findings to apply — run /os research review <id> first` if not.
 5. Locate the owning project at `vault/wiki/*/project/<project>.md`. Read its body for context (the `## Why`, `## Approach`). Warn but don't reject if missing.
 
@@ -61,7 +61,58 @@ This is the research-domain analog of [[dev-revise-plan]] (one altitude up: repo
    - **Suggested changes section** — numbered list of concrete revisions (only present on `request-changes` verdicts)
 3. Read `notes_log` from the report frontmatter (parsed as JSON array). Build a list of unconsidered notes (entries where `considered_by` is empty). These are user-added mid-lifecycle guidance you MUST fold into the revision alongside the review's concerns/suggestions. Treat severity as weight: `info` = take into account; `warn` = strongly consider; `blocker` = must address (or document in `## Revision N notes` why the revision can't, and what would unblock).
 
-### Step 3: Refusal gate — nothing to revise
+### Step 3: Refusal gates
+
+Run these gates in order — each refuses (and stops) before the expensive materials re-walk in Step 4 begins.
+
+#### 3a. Verdict gate — only `request-changes` verdicts are revisable
+
+The revise loop is only coherent from a `request-changes` verdict. Branch on the verdict parsed in Step 2.2:
+
+- **`reject`** — refuse. Reject means the right path forward is a fresh re-author, not folding findings into the existing body (that's [[research-review]]'s own reject semantics — and because this skill preserves `review_status`, a post-revise `rejected` report would be stuck outside `research-review`'s pending/request-changes gate):
+
+  ```
+  ✗ Cannot revise — the review verdict is REJECT.
+
+  review:   <review_path>
+  verdict:  reject
+
+  Reject means re-author, not refine — choose one:
+    (a) delete the report, then /os research write <project> <report_topic> with a fresh prompt
+    (b) leave the report as-is to abandon the investigation
+  ```
+
+- **`approve`** — refuse. Nit-level concerns recorded on an approve verdict stand as-is; revising would leave `review_status: approved` describing a body the approval never reviewed:
+
+  ```
+  ✗ Nothing to revise — the report is approved.
+
+  review:   <review_path>
+  verdict:  approve
+
+  Nits on an approve verdict stand as recorded. For content changes, use:
+    /os research update <report_id>   (delta-driven rewrite when new materials land)
+  ```
+
+- **`request-changes`** — proceed to 3b.
+
+#### 3b. Idempotence guard — this review was already folded in
+
+If `report_revised_from_review` equals `review_path` AND both timestamps are set AND `report_revised_at` is later than `reviewed_at`, the current review has already been folded into the current revision — re-running would fold the same findings twice. Idempotent stop:
+
+```
+↻ Review already folded — revision <report_revision> already addresses this review.
+
+review:        <review_path>   (reviewed <reviewed_at>)
+last revise:   <report_revised_at>   (report_revised_from_review matches this review)
+
+For a fresh verdict against the current revision, run /os research review <report_id>
+first — then revise again if that verdict requests changes.
+```
+
+Then stop. (A newer review pass rewrites the file at the same `review_path` and bumps `reviewed_at` past `report_revised_at`, so the guard correctly lets the next revise through. Skip the guard when any of the three fields is unset — legacy reports and first revises pass.)
+
+#### 3c. Nothing to revise
 
 If the review has ZERO items in BOTH `## Concerns` AND `## Suggested changes`, refuse:
 
@@ -168,7 +219,9 @@ node scripts/record-dashboard-action.mjs \
 - `inputs.report_id` slug invalid → reject with the regex
 - Report not found / not `type: research-report` → reject with id
 - `review_path` not set or file missing → instruct user to run `/os research review <id>` first
-- Review has zero concerns AND zero suggested changes → refuse with the message in Step 3
+- Review verdict is `reject` or `approve` → refuse with the Step 3a message (revise only folds `request-changes` verdicts)
+- Review already folded (`report_revised_from_review` matches `review_path` AND `report_revised_at` postdates `reviewed_at`) → idempotent stop per Step 3b; re-run `/os research review <id>` for a fresh verdict first
+- Review has zero concerns AND zero suggested changes → refuse with the message in Step 3c
 - `materials_path` unreadable → warn and proceed with report body + review only
 
 ## What this skill must NOT do

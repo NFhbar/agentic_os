@@ -62,6 +62,7 @@ export function buildScaffoldPrompt(skill: SkillSummary, values: Record<string, 
     `Skill location: .claude/skills/${skill.name}/SKILL.md`,
     'Read the skill and follow its Procedure exactly with the inputs below.',
     'Report success and any errors. Do not skip steps.',
+    'Do NOT use AskUserQuestion — run non-interactively; where the Procedure offers an interactive choice, take its documented headless fallback or a conservative default and record the decision in your report.',
     '',
     'Inputs:',
   ];

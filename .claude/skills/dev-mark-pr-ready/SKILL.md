@@ -124,7 +124,7 @@ Only one direction is supported — there's no `dev-unmark-pr-ready`. If a later
 - **Call GitHub.** No `gh` CLI, no github MCP, no PR mutations, no draft → ready flips, no labels, no comments. The user owns the GitHub-side workflow. (A future `dev-mark-pr-ready-github` could layer that on top; this skill stays pure.)
 - **Write to the linked pr-review entry.** Comment state lives on the pr-review entry's body and is mutated by `dev-pr-review` (or the per-comment dashboard endpoint). Step 3 reads the entry to count untriaged comments, but this skill's writes target the change entry exclusively.
 - **Open a new review pass.** Re-running this skill on an already-ready change is a no-op, not a re-review trigger. Use `dev-pr-review` to re-review.
-- **Modify `status`.** The change's top-level `status` stays `in-review` (the human hasn't merged yet). It transitions to `merged` later, via a future `dev-close-change` skill (planned in `domains/development/playbook.md` § "Planned for v1.5") or a manual hand-off, when GitHub confirms the merge.
+- **Modify `status`.** The change's top-level `status` stays `in-review` (the human hasn't merged yet). It transitions to `merged` later, via [[dev-close-change]] (verifies the merge on GitHub, writes `status: merged` + `merged_at`, cleans up the branch) or the PR-CI-monitor runbook's auto-detect, when GitHub confirms the merge.
 
 ## Errors
 
@@ -139,5 +139,5 @@ Only one direction is supported — there's no `dev-unmark-pr-ready`. If a later
 - [[archetype-change]] § "PR review fields" — the data contract for `pr_review_status` and `pr_ready_at`
 - [[dev-pr-review]] — the skill that produces the review this skill consumes
 - [[dev-open-pr]] — the skill that creates the PR being marked ready
-- `dev-close-change` (planned) — the skill that will close out the change once the PR is merged on GitHub. Tracked in `domains/development/playbook.md` § "Planned for v1.5"; not yet implemented.
+- [[dev-close-change]] — closes out the change once the PR is merged on GitHub (merge verification, status transition, Done-when checkoff, branch cleanup).
 - `scripts/record-dashboard-action.mjs` — event-recording wrapper used in step 6

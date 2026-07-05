@@ -2,7 +2,7 @@
 name: dev-review-change
 description: 'Peer-reviews a plan produced by dev-write-change. Read-only: walks the plan + repo + repo conventions, runs a structured checklist, writes a verdict (approve / request-changes / reject) plus concerns.'
 user-invocable: true
-recommended_effort: xhigh
+recommended_effort: max
 version: 1
 domain: development
 tags: [change, review, peer-review]
@@ -57,6 +57,8 @@ Act as a peer reviewer for a plan produced by `dev-write-change`. Read the plan,
 - `vault/wiki/_seed/development/reference/standard-git-hygiene.md` (branch + commit + PR conventions)
 
 These are the floor every plan must meet. Repo-specific overrides (in the entity entry's `## Conventions` section) take precedence where they conflict, but the standards' protections (security, BC, tests required, etc.) are baseline.
+
+**Resolve the read path first** — review against the same repo state PLAN saw, not whatever branch the user's clone happens to be on (the plan was composed from the `default_branch` snapshot; `local_path` may be on a different feature branch or dirty). Same resolution as [[dev-revise-plan]]: first choice `.claude/state/pr-review-cache/<owner>/<repo>/` (do NOT spawn the cache skill — freshening is PLAN's job; use what's there), fall back to `local_path`, and refuse with `no readable repo source — neither the pr-review cache nor local_path exists` when neither is available. All reads in this step and step 4 use `read_path`.
 
 **Repo inspection** — For each file listed under "Files I will modify": read the current content. For each file listed under "Files I will create": read the directory it'll live in to confirm the placement matches conventions.
 

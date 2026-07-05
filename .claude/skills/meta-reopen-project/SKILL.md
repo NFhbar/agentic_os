@@ -1,6 +1,6 @@
 ---
 name: meta-reopen-project
-description: "Reopen a previously-completed project — vault-only frontmatter flip from `status: completed` back to `status: active` (and lifecycle_stage to `in-progress`, clearing `completed_at`). Used when a post-Complete gap surfaces and the project needs to absorb additional work before re-closing."
+description: "Reopen a previously-completed project — vault-only frontmatter flip from `status: completed` back to `status: active` (and lifecycle_stage to `active`, clearing `completed_at`). Used when a post-Complete gap surfaces and the project needs to absorb additional work before re-closing."
 user-invocable: true
 recommended_effort: medium
 version: 1
@@ -35,7 +35,7 @@ Gated on `status === 'completed'` — refuses on already-active / unknown projec
 
 3. **Surgical frontmatter rewrite**. Compute `now` = ISO 8601 UTC. Edit the file in place:
    - `status: completed` → `status: active`
-   - `lifecycle_stage: archived` → `lifecycle_stage: in-progress` (preserve if already different)
+   - `lifecycle_stage: archived` → `lifecycle_stage: active` (preserve if already different; `active` is the archetype enum's in-flight value — `in-progress` belongs to the change status enum and trips the `project-lifecycle-stage-enum` audit finding)
    - Remove the `completed_at:` line entirely (cleared, not nulled, per the existing pattern at `POST /api/projects/:id/reopen`)
    - Bump `updated:` to `now`
 
@@ -46,6 +46,7 @@ Gated on `status === 'completed'` — refuses on already-active / unknown projec
    ```bash
    node scripts/record-dashboard-action.mjs \
      --action project-reopen \
+     --skill meta-reopen-project \
      --args '{"project":"<project-id>"}' \
      --files-touched '["<relative path to project file>"]' \
      --exit-status 0
@@ -58,7 +59,7 @@ Gated on `status === 'completed'` — refuses on already-active / unknown projec
    ```
    ✓ Reopened project <id>
      status:           completed → active
-     lifecycle_stage:  archived → in-progress
+     lifecycle_stage:  archived → active
      completed_at:     cleared
      updated:          <now>
 

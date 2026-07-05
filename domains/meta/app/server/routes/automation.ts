@@ -817,9 +817,10 @@ async function writeChangeAutomation(
 function buildChangeStepPrompt(step: ChangeAutomationStep, changeId: string): string {
   const skill = CHANGE_STEP_SKILLS[step];
   // address-comments dispatches dev-write-change but with explicit phase
-  // hint in the prompt body — the skill detects address-comments mode from
-  // the presence of pr_review_status: needs-changes on the change entry,
-  // but the prompt is explicit so behavior is unambiguous.
+  // hint in the prompt body — the skill derives address-comments mode from
+  // the change's PR-review state (open pr_url + standing review comments;
+  // see dev-write-change SKILL.md's mode-detection table), but the prompt
+  // is explicit so behavior is unambiguous.
   const phaseLine =
     step === 'address-comments'
       ? '- mode: address-comments  (fold inline review comments into code, commit + push the follow-up)'
