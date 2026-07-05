@@ -24,6 +24,8 @@ outputs:
     path: vault/output/{{input.domain}}/changes/{{input.change}}-execution-log.md
     description: 'Only written when EXECUTE phase hits test failures.'
 spawns: []
+model: claude-fable-5
+effort: max
 ---
 
 # dev-write-change

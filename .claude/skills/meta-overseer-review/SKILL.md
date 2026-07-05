@@ -28,6 +28,8 @@ outputs:
   - kind: event
     path: '.claude/state/events.db (kind: meta, action: lifecycle-audit, change_id: <change>, files_touched: [vault/wiki/meta/lifecycle-audit/audit-<change>.md])'
 spawns: []
+model: claude-fable-5
+effort: max
 ---
 
 # meta-overseer-review

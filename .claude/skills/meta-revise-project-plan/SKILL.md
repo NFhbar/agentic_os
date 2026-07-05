@@ -19,6 +19,8 @@ outputs:
     path: vault/wiki/{{input.domain}}/project/{{input.project}}.md
     fields: [plan_revision, plan_revised_at, plan_revised_from_review, plan_generated_at, review_status, updated]
 spawns: []
+model: claude-fable-5
+effort: max
 ---
 
 # meta-revise-project-plan

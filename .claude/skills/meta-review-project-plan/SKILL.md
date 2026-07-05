@@ -19,6 +19,8 @@ outputs:
     path: vault/wiki/{{input.domain}}/project/{{input.project}}.md
     fields: [review_path, reviewed_at, review_status, updated]
 spawns: []
+model: claude-fable-5
+effort: max
 ---
 
 # meta-review-project-plan
