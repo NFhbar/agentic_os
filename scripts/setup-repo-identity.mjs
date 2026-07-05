@@ -135,7 +135,9 @@ function ensureKey(keyPath) {
   return { pubPath, created: true };
 }
 
-function setupRepo(repoPath, { emailFlag, keyPath, signersPath }) {
+// Exported for the spawnSync-spy test that pins the never-global invariant on
+// the real git invocation shape (planConfigWrites alone can't enforce it).
+export function setupRepo(repoPath, { emailFlag, keyPath, signersPath }) {
   if (git(repoPath, ['rev-parse', '--git-dir']).status !== 0) {
     return { repoPath, skipped: 'not a git repository' };
   }
@@ -315,6 +317,12 @@ function parseArgs(argv) {
 
 function main() {
   const opts = parseArgs(process.argv.slice(2));
+  // Warn, don't reject: GHE / custom-domain noreply forms are legitimate, but
+  // a typo'd or real address silently re-arms the GH007 wall this tool exists
+  // to remove.
+  if (opts.email && !isNoreplyEmail(opts.email)) {
+    console.error('warning: --email does not match the github.com noreply shape — GH007 may still block pushes');
+  }
   const shared = {
     emailFlag: opts.email,
     keyPath: resolve(expandHome(opts.key ?? DEFAULT_KEY)),

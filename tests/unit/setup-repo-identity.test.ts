@@ -1,6 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 // @ts-expect-error — plain .mjs module without type declarations
-import { composeSignersLine, isNoreplyEmail, planConfigWrites, signersHasKey } from '../../scripts/setup-repo-identity.mjs';
+import { composeSignersLine, isNoreplyEmail, planConfigWrites, setupRepo, signersHasKey } from '../../scripts/setup-repo-identity.mjs';
+
+vi.mock('node:child_process', () => ({ spawnSync: vi.fn() }));
 
 const OPTS = {
   pubPath: '/home/u/.ssh/agentic_os_signing.pub',
@@ -61,6 +67,10 @@ describe('planConfigWrites', () => {
     expect(keys(reference)).not.toContain('commit.gpgsign');
   });
 
+  // Documents intent only — planConfigWrites returns literal keys and
+  // caller-supplied paths, so this can't fail structurally. The enforcement
+  // lives in the spawnSync-spy test below, which pins the actual `git config`
+  // invocation shape.
   it('never emits a global-scope write', () => {
     const everyShape = [
       planConfigWrites(REFERENCE_EFFECTIVE, OPTS),
@@ -72,6 +82,61 @@ describe('planConfigWrites', () => {
       expect(`${w.key} ${w.value}`).not.toContain('--global');
       expect(w.key.startsWith('--')).toBe(false);
       expect(String(w.value).startsWith('--')).toBe(false);
+    }
+  });
+});
+
+describe('setupRepo git invocation shape', () => {
+  // The load-bearing never-global guarantee lives in setupRepo's spawnSync
+  // call shape (no scope flag = local write). Spy on spawnSync and assert it.
+  it('writes config via plain local-scope `git -C <repo> config <key> <value>` calls — never --global', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'repo-identity-spy-'));
+    try {
+      const keyPath = join(dir, 'signing');
+      const pubLine = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAISpyTestKeyBlob agentic-os automation signing key (signing-only, 2026-07-05)';
+      writeFileSync(keyPath, 'private key material\n');
+      writeFileSync(`${keyPath}.pub`, `${pubLine}\n`);
+      const signersPath = join(dir, 'allowed_signers');
+      const repoPath = join(dir, 'repo'); // never touched by fs — git is mocked
+
+      const spawnSyncMock = vi.mocked(spawnSync);
+      spawnSyncMock.mockReset();
+      // Blanket "unset" answers: rev-parse succeeds, every config --get reads
+      // empty — the fresh-machine path, so all six writes (4 base + 2
+      // conditionals) fire.
+      spawnSyncMock.mockReturnValue({ status: 0, stdout: '', stderr: '' } as never);
+
+      const report = setupRepo(repoPath, {
+        emailFlag: '23327624+NFhbar@users.noreply.github.com',
+        keyPath,
+        signersPath,
+      });
+      expect(report.configReport).toHaveLength(6);
+
+      const calls = spawnSyncMock.mock.calls.map((c) => ({ cmd: c[0], args: c[1] as string[] }));
+      expect(calls.length).toBeGreaterThan(0);
+      for (const { cmd, args } of calls) {
+        expect(cmd).toBe('git');
+        expect(args.slice(0, 2)).toEqual(['-C', repoPath]);
+        expect(args).not.toContain('--global');
+      }
+
+      // Config WRITES are exactly `-C <repo> config <key> <value>` — nothing
+      // between `config` and the key means local scope.
+      const writes = calls.filter(({ args }) => args[2] === 'config' && !args[3].startsWith('--'));
+      expect(writes.map(({ args }) => args[3])).toEqual([
+        'user.signingkey',
+        'gpg.ssh.program',
+        'gpg.ssh.allowedSignersFile',
+        'user.email',
+        'gpg.format',
+        'commit.gpgsign',
+      ]);
+      for (const { args } of writes) {
+        expect(args).toHaveLength(5);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

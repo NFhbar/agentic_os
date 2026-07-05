@@ -203,8 +203,15 @@ echo "  your ingested repos (and this clone) so headless lifecycles can commit."
 # aborting the whole install under `set -e`; default is skip.
 read -r -p "  Set up headless commit signing for your repos? [y/N] " ans || ans=""
 if [[ "${ans}" =~ ^[Yy]$ ]]; then
-  node scripts/setup-repo-identity.mjs --all
-  signing_setup_ran=1
+  # Run inside `if` so a failure (no ssh-keygen on minimal Linux, one malformed
+  # entity) can't abort the rest of the install under `set -e` — this step is
+  # optional. Failure also skips the "Next steps" key-registration hint, since
+  # the script exits before printing the public key.
+  if node scripts/setup-repo-identity.mjs --all; then
+    signing_setup_ran=1
+  else
+    echo "  ✗ signing setup failed — re-run later: node scripts/setup-repo-identity.mjs --all"
+  fi
 else
   echo "  ⊘ skipped — run /os setup repo identity <repo> later (or node scripts/setup-repo-identity.mjs --repo-path <path>)"
 fi

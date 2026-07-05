@@ -38,7 +38,7 @@ Idempotent: re-runs converge (key reused, config values skipped when already set
    ```bash
    node scripts/setup-repo-identity.mjs --repo-path <local_path> [--email <email>]
    ```
-4. **Verify the config landed.** Read back each written key with `git -C <local_path> config --local --get <key>` (`user.signingkey`, `gpg.ssh.program`, `gpg.ssh.allowedSignersFile`, and `user.email` when the script reported it resolved). Surface any mismatch between the script's report and the read-back as an error — do not silently proceed.
+4. **Verify the config landed.** The script's report enumerates every config key it wrote or found already set (the `config:` lines). Read back **each key named in that report** with `git -C <local_path> config --local --get <key>` — not a fixed list: on fresh machines the report includes `gpg.format` / `commit.gpgsign`, and that path is precisely where silent signing is most likely to be misconfigured. Surface any mismatch between the script's report and the read-back as an error — do not silently proceed.
 5. **Print the handoff block** (the script emits it; make sure it reaches the user, don't swallow it):
    - The public key line, with the GitHub registration steps: Settings → SSH and GPG keys → New SSH key → key type **Signing Key** — not Authentication Key.
    - The noreply-email lookup instructions when the email stayed unresolved (GitHub → Settings → Emails).

@@ -3,7 +3,7 @@ id: standard-git-hygiene
 type: reference
 domain: development
 created: 2026-05-21T23:55:00Z
-updated: 2026-07-05T23:03:50Z
+updated: 2026-07-05T23:41:44Z
 tags: [standard, git, branching, commits, conventions]
 source: manual
 private: false
@@ -161,6 +161,8 @@ The counter-pattern (configured by [[dev-setup-repo-identity]], offered across i
 - The public key registered on GitHub as a **Signing Key** — not an Authentication Key.
 
 **The security trade, stated plainly:** a passphrase-less key on disk means anyone with read access to the disk can produce signatures that verify as yours for these repos. It is bounded: a signing-only registration cannot authenticate or push; revocation is one click (GitHub → Settings → SSH and GPG keys); scope is per-repo opt-in. Accept the trade deliberately — it is what makes silent signing for automation possible at all.
+
+**Rotation is manual:** delete the key pair (`~/.ssh/agentic_os_signing` + `.pub`), re-run [[dev-setup-repo-identity]] to generate + configure a fresh key, register the new public key on GitHub — and hand-prune the old key's line from `agentic_os_allowed_signers`. Nothing prunes that file automatically; a stale entry keeps old-key signatures verifying locally indefinitely.
 
 **Never-touch-global rule:** every write is repo-local (`git -C <repo> config <key> <value>`). Global git config is never modified, so the operator's interactive setup — e.g. 1Password-managed signing for human commits — keeps working in every other repo on the machine.
 
