@@ -2,7 +2,7 @@
 name: dev-revise-plan
 description: 'Revises an existing change plan to address findings from dev-review-change. Reads plan_path + review_path, rewrites the plan in place, bumps plan_revision. Preserves review_status — the original verdict still stands for the prior plan revision; user can manually re-run dev-review-change for a fresh verdict if desired.'
 user-invocable: true
-recommended_effort: xhigh
+recommended_effort: max
 version: 1
 domain: development
 tags: [change, plan, revise, review]
@@ -150,9 +150,14 @@ Print:
   findings addressed: <count>
   plan:               vault/output/<domain>/changes/<change>-plan.md
   review_status:      <prior verdict — unchanged>   (was: <prior verdict>)
-  next:               /os write-change <change>      (execute the revised plan)
-                      /os review-change <change>     (optional — re-review the revised plan)
+  next:               <verdict-conditional — see below>
 ```
+
+The `next:` line MUST match the preserved verdict, or it sends the follower into a refusal:
+
+- Prior verdict `request-changes` / `rejected` → primary next is `/os review-change <change>` (re-review the revised plan — dev-review-change accepts request-changes for exactly this). Do NOT print `/os write-change` as next: its state machine refuses to EXECUTE on request-changes and the option it then offers (`--force_replan`) REGENERATES the plan from scratch, silently destroying this revision (plans live in gitignored `vault/output/` — unrecoverable). An audited bypass is `review_status: overridden` then write-change.
+- Prior verdict `approved` (nits-only revise) → primary next is `/os write-change <change>` (executes). Note a fresh re-review from approved requires resetting `review_status: pending` on the change first (dev-review-change refuses on approved).
+- Never suggest `--force_replan` after a revise without the data-loss warning above.
 
 ## Outputs
 

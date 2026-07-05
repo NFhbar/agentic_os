@@ -58,6 +58,14 @@ This is "give the OS a map," not "embed all the code." Detailed code reading hap
 
 ### 1. Discriminate the source
 
+**Source resolution when only a slug was passed.** If `source` is absent but a bare repo/slug id was supplied — e.g. the dashboard's dangling-repo affordance dispatches `dev-ingest-repo` with `repo: <slug>` and no `source` — resolve a source before discriminating:
+
+- If `repos/<slug>/` exists as a git clone, use its `origin` remote: `git -C repos/<slug> remote get-url origin`.
+- Otherwise scan change entries that reference this repo (`vault/wiki/*/change/*.md` whose frontmatter carries `repo: <slug>`) for a `pr_url`, and derive the `https://github.com/<owner>/<name>` remote from it.
+- If neither resolves, abort with: "got slug `<slug>` but no source — re-run with source: `<url|path>`".
+
+Once a source is resolved, treat `<slug>` as the `slug` input and continue with the resolved source.
+
 Decide whether `source` points at GitHub or a local path. Match in this order — first match wins:
 
 - Begins with `https://github.com/` or `http://github.com/` → **GitHub URL**
@@ -78,12 +86,14 @@ Otherwise infer:
 
 If a wiki entry at `vault/wiki/development/entity/<slug>.md` already exists AND `overwrite=false`, abort with: "entity `<slug>` already exists — pass `overwrite: true` to re-ingest, or use a different `slug`."
 
+If it exists AND `overwrite=true`, **read the existing entry first** and retain its `created`, `current_branch`, and any user-added tags (tags not in the derived `[repo, <language>, <ci>]` set). These are agent state, not derived from the repo — re-ingestion must preserve them (see [[standard-repo-ingestion]] § Re-ingestion). Only `ingested_at` / `updated` and repo-derived fields get refreshed.
+
 ### 3. Clone or reference
 
 **GitHub flow:**
 
 - Ensure `repos/` exists at the OS repo root (create if missing).
-- If `repos/<slug>/` already exists and is a clean git working tree on default branch, reuse it. Otherwise:
+- If `repos/<slug>/` already exists and is a clean git working tree on default branch, reuse it — and on re-ingestion (`overwrite=true`) run `git pull --ff-only` on the default branch to pull latest before re-reading metadata (the clone must be clean; the standard mandates re-ingestion pulls latest so refreshed metadata is not stale). Otherwise:
   - If it exists with uncommitted changes, **abort** with: "repos/<slug> has uncommitted changes — clean before re-ingesting."
   - If it exists on a non-default branch, **abort** with: "repos/<slug> is on branch `<X>` — check out default branch or pass a different `slug`."
   - If it does not exist, run: `gh repo clone <url> repos/<slug> -- --depth 50` (shallow clone with enough history for context). Fall back to `git clone --depth 50 <url> repos/<slug>` if `gh` is not authenticated.
@@ -101,7 +111,7 @@ If a wiki entry at `vault/wiki/development/entity/<slug>.md` already exists AND 
 From inside `local_path`:
 
 - `default_branch`: `git symbolic-ref refs/remotes/origin/HEAD` (strip prefix) — if no remote, use `git rev-parse --abbrev-ref HEAD`.
-- `current_branch`: same as `default_branch` immediately after ingest.
+- `current_branch`: same as `default_branch` immediately after ingest. **On re-ingestion (`overwrite=true`), preserve the existing entry's `current_branch` instead** — it is live agent state (e.g. an in-flight feature branch written by `dev-write-change` EXECUTE), not derived from the repo, and must not be reset under an active change.
 - `remote_url`: `git remote get-url origin` — null if no `origin`.
 - `ingestion_source`: `github` if remote_url points at github, else `local`.
 
@@ -152,6 +162,8 @@ Identify likely **entry points** (best-effort, language-aware):
 ### 7. Compose the entity entry
 
 Use `_templates/wiki-entry/entity.md.tmpl` as the base. Substitute placeholders and fill the body sections below. Final file path: `vault/wiki/development/entity/<slug>.md`.
+
+**On re-ingestion (`overwrite=true`):** carry forward the preserved fields from the existing entry read in step 2 — keep its original `created` (do not stamp a fresh datetime), its `current_branch` (from step 4), and merge any user-added tags (those beyond the derived `[repo, <language>, <ci>]` set) back into the `tags` array. Only `updated`, `ingested_at`, and repo-derived fields (`default_branch`, `language`, `build_command`, `test_command`, `ci`, `license`, structure/entry-points) are refreshed.
 
 ````markdown
 ---
@@ -269,6 +281,7 @@ Print a 5-line summary:
 ## Errors
 
 - Source ambiguous → reject with rule that failed (e.g. "looks like a path but does not exist")
+- Bare slug / `repo:` id with no `source` and no resolvable clone or `pr_url` remote hint → abort with "got slug `<slug>` but no source — re-run with source: `<url|path>`"
 - GitHub clone fails → surface stderr (auth issue? not found? rate limited?)
 - Slug collision without `overwrite: true` → reject with the slug name and how to override
 - Existing clone has uncommitted changes → abort with the path; user must clean first

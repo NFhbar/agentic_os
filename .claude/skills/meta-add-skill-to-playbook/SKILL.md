@@ -45,7 +45,7 @@ The companion skill is [[meta-add-skill-to-router-vocab]] — same pattern, but 
 
    Verify `domains/<domain>/playbook.md` exists. If not, reject with `domain "<domain>" claimed by the skill has no playbook at domains/<domain>/playbook.md — fix the skill's frontmatter or scaffold the domain first`.
 
-3. **Idempotency check.** Read the playbook. Scan its `## Skills` section for an existing line matching `` - `<skill>` `` (the exact backtick-wrapped skill name at the start of a list item). If found, succeed as a no-op:
+3. **Idempotency check.** Read the playbook. Scan its `## Skills` section — bounded exactly as the audit parses it: from the `## Skills` line to the FIRST of the next `## `/`### ` header OR a line starting with `Planned` (see `scripts/audit.mjs` `checkPlaybookSkillCoverage`; entries after a `Planned` marker are aspirational and invisible to the audit) — for an existing line matching `` - `<skill>` `` (the exact backtick-wrapped skill name at the start of a list item). A listing that appears ONLY inside a Planned block does NOT count as registered (the audit can't see it — treating it as registered would loop forever against the finding). If found within the audit-visible region, succeed as a no-op:
 
    ```
    ↻ Skill `<skill>` is already listed in domains/<domain>/playbook.md. Nothing to do.
@@ -53,15 +53,17 @@ The companion skill is [[meta-add-skill-to-router-vocab]] — same pattern, but 
 
    Record the event with `noop: true` per step 5 and stop.
 
-4. **Insert the registration.** Locate the `## Skills` section in the playbook. The section runs from the `## Skills` line until the next `## ` header (or EOF). Append a new list item at the end of the section, just before the next `## ` header (or at EOF if Skills is the last section):
+4. **Insert the registration.** Locate the `## Skills` section in the playbook. The insertion region runs from the `## Skills` line until the FIRST of: the next `## ` or `### ` header, a line starting with `Planned`, or EOF — the same boundary the audit's `checkPlaybookSkillCoverage` uses (`scripts/audit.mjs`: `/^##\s+Skills\s*\n([\s\S]*?)(?=^##\s|^###\s|^Planned\b|\Z)/m`). Append a new list item after the last list item WITHIN that region:
 
    ```
    - `<skill>` — <description-from-frontmatter>
    ```
 
-   Use the Edit tool with a surgical replace — find the last existing skill-list line in the section + replace it with `<existing>\n- \`<skill>\` — <description>`. Do NOT rewrite the whole section.
+   Use the Edit tool with a surgical replace — find the last existing skill-list line within the audit-visible region + replace it with `<existing>\n- \`<skill>\` — <description>`. Do NOT rewrite the whole section.
 
-   Edge case: if the Skills section is empty (header exists but no list items), insert the line right after the `## Skills` header + a blank line.
+   Edge cases:
+   - If the Skills section is empty (header exists but no list items), insert the line right after the `## Skills` header + a blank line.
+   - If the section contains a `Planned` block (e.g. `Planned for v1.5:` followed by aspirational list items — `domains/development/playbook.md` has this shape), the new line goes BEFORE the `Planned` marker, after the last real list item. Appending after the Planned items would place the registration outside the audit's parse boundary — the `playbook-skill-coverage` finding would never clear and the skill would be mislabeled as planned.
 
 5. **Record the event** via the dual-write wrapper:
 

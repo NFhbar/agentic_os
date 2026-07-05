@@ -961,7 +961,7 @@ function ChangeDetailPane({
       label: 'Close change',
       onClick: onCloseChange,
       tooltip:
-        'Runs dev-close-change: verifies the PR is merged via mcp__github__get_pull_request, then transitions status to merged + stamps merged_at. Idempotent — re-clickable safely.',
+        'Runs dev-close-change: verifies the PR is merged via mcp__github__get_pull_request, transitions status to merged + stamps merged_at, auto-checks Done-when boxes, and cleans up the local clone (checkout default branch, delete the feature branch). Idempotent on the vault side — but note the local checkout switch.',
     };
     stateHint = `PR was merged on GitHub${merged_at_iso ? ` ${formatRelative(merged_at_iso)}` : ''}. The change is still status: in-review locally — click Close change to transition it to merged (also flips the lifecycle stepper's "merged" stage to done).`;
   } else if (c.status === 'in-review' && readyForHuman) {

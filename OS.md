@@ -141,17 +141,21 @@ Local-only OS state. Never committed; never shipped. Distinct from vault — tel
 
 Every wiki entry must declare one of these `type:` values in its frontmatter.
 
-| archetype             | purpose                                                                                            |
-| --------------------- | -------------------------------------------------------------------------------------------------- |
-| `entity`              | person, project, repo, system you have ongoing relationship with                                   |
-| `decision`            | architectural or design decision + rationale                                                       |
-| `runbook`             | repeatable procedure for a recurring task                                                          |
-| `reference`           | pointer to an external resource (URL, dashboard, doc)                                              |
-| `project`             | active initiative with goals + status + deadline                                                   |
-| `change`              | atomic unit of code work — single repo, single branch, single PR                                   |
-| `research-report`     | structured research output: materials → findings → recommended changes                             |
-| `notification-config` | one routing rule for the dispatch engine — per (event, channel) with filters + rate-limit override |
-| `note`                | free-form (escape hatch)                                                                           |
+| archetype              | purpose                                                                                            |
+| ---------------------- | -------------------------------------------------------------------------------------------------- |
+| `entity`               | person, project, repo, system you have ongoing relationship with                                   |
+| `decision`             | architectural or design decision + rationale                                                       |
+| `runbook`              | repeatable procedure for a recurring task                                                          |
+| `reference`            | pointer to an external resource (URL, dashboard, doc)                                              |
+| `project`              | active initiative with goals + status + deadline                                                   |
+| `change`               | atomic unit of code work — single repo, single branch, single PR                                   |
+| `research-report`      | structured research output: materials → findings → recommended changes                             |
+| `notification-config`  | one routing rule for the dispatch engine — per (event, channel) with filters + rate-limit override |
+| `pr-review`            | multi-pass PR review record (passes, comments, verdict state)                                      |
+| `pr-review-repo-cache` | cached repo clone metadata backing PR-review reads                                                 |
+| `repo-knowledge`       | curated prose summary of a repo's stack, structure, conventions                                    |
+| `lifecycle-audit`      | Overseer audit of a completed change lifecycle (scores + tuning suggestions)                       |
+| `note`                 | free-form (escape hatch)                                                                           |
 
 Per-archetype frontmatter contracts: `vault/wiki/_seed/meta/` (one reference entry per archetype).
 

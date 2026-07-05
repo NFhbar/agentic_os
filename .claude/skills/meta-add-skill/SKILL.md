@@ -68,13 +68,13 @@ Create a new Claude Code skill at `.claude/skills/<name>/SKILL.md` from `_templa
 
      The phrases come from `inputs.intent_phrases.split('|')`. Wrap each in backticks. Match column widths to the surrounding rows so the table stays aligned (don't worry about pixel-perfect padding — biome/prettier won't reformat OS.md, but keep the pipe positions consistent enough to be human-readable). The right column is the skill name in backticks.
 
-   - **If `inputs.intent_phrases` is NOT set** AND `user-invocable: true`: still append a placeholder row so the gap is visible, but mark it TODO:
+   - **If `inputs.intent_phrases` is NOT set** AND `user-invocable: true`: still append a placeholder row so the gap is visible, but mark it TODO — and keep the right column as PLAIN TEXT (no backticks around the skill name):
 
      ```
-     | `TODO: add intent phrasings for <name>`         | `<name>`            |
+     | `TODO: add intent phrasings for <name>`         | TODO → <name>       |
      ```
 
-     This deliberately leaves the audit `router-vocab-skill-uncovered` warning unresolved — the placeholder won't satisfy the audit's vocab scan because the audit treats the skill name in the right column as the source-of-truth, not the placeholder phrase. Surface this in the final report (step 10) so the user knows to come back and fill it in.
+     The right column must NOT be the bare skill name in backticks: the audit's vocab scan (`scripts/audit.mjs`) extracts the first backtick-wrapped token from the RIGHT column as source-of-truth, so a backticked `<name>` would silently CLEAR the `router-vocab-skill-uncovered` warning and defeat the safety net. The plain-text form deliberately leaves the warning live until real phrasings are added. When filling in later (manually or via `meta-add-skill-to-router-vocab`), REPLACE this TODO row rather than adding a second row. Surface this in the final report (step 11) so the user knows to come back and fill it in.
 
    - **If the skill is not user-invocable** (rare; e.g. internal helper skills): skip this step entirely. The audit's router check only fires on `user-invocable: true` skills.
 

@@ -13,7 +13,7 @@ Meta holds the OS's self-knowledge: standards, evolution skills, scaffolding tem
 
 ## Entities
 
-- **Skill** — invokable action, lives in `.claude/skills/<name>.md`
+- **Skill** — invokable action, lives in `.claude/skills/<name>/SKILL.md`
 - **Playbook** — domain's markdown protocol, lives in `domains/<domain>/playbook.md`
 - **App** — optional visual UI for a domain, lives in `domains/<domain>/<app>/app/`
 - **Archetype** — typed wiki entry kind (entity, decision, runbook, reference, project, note + any registered later)
@@ -81,7 +81,7 @@ A future evolution might promote sub-domains to first-class (per-sub-domain roll
 
 ## Conventions
 
-- Skills live ONLY in `.claude/skills/` (flat, filename == skill name)
+- Skills live ONLY in `.claude/skills/<name>/SKILL.md` (one directory per skill, directory name == skill name)
 - Templates live in `_templates/` at repo root
 - Hooks are bash scripts in `.claude/hooks/` (+ .mjs helpers when needed)
 - Standards documented here + reference entries in `vault/wiki/_seed/meta/`
@@ -149,7 +149,7 @@ Every app at `domains/<x>/<app>/app/` contains:
 - `server/index.ts`, `server/auth.ts`, `server/routes/{vault,action}.ts`
 - `README.md`
 
-Launch skill lives at `.claude/skills/<domain>-<app>-app.md` (not in the app folder).
+Launch skill lives at `.claude/skills/<domain>-<app>-app/SKILL.md` (not in the app folder).
 
 Detail: `vault/wiki/_seed/meta/reference/standard-app-layout.md`
 
@@ -252,15 +252,21 @@ Detail: `vault/wiki/_seed/meta/reference/standard-index-schema.md`
 
 ## 10. Memory archetypes (current registry)
 
-| archetype             | purpose                                                                                            |
-| --------------------- | -------------------------------------------------------------------------------------------------- |
-| `entity`              | person, project, repo, system                                                                      |
-| `decision`            | architectural/design decision + rationale                                                          |
-| `runbook`             | repeatable procedure                                                                               |
-| `reference`           | pointer to external resource                                                                       |
-| `project`             | active initiative                                                                                  |
-| `notification-config` | one routing rule for the dispatch engine — per (event, channel) with filters + rate-limit override |
-| `note`                | free-form (escape hatch)                                                                           |
+| archetype              | purpose                                                                                            |
+| ---------------------- | -------------------------------------------------------------------------------------------------- |
+| `entity`               | person, project, repo, system                                                                      |
+| `decision`             | architectural/design decision + rationale                                                          |
+| `runbook`              | repeatable procedure                                                                               |
+| `reference`            | pointer to external resource                                                                       |
+| `project`              | active initiative                                                                                  |
+| `notification-config`  | one routing rule for the dispatch engine — per (event, channel) with filters + rate-limit override |
+| `change`               | atomic unit of code work — single repo, single branch, single PR                                   |
+| `research-report`      | structured research output: materials → findings → recommended changes                             |
+| `pr-review`            | multi-pass PR review record (passes, comments, verdict state)                                      |
+| `pr-review-repo-cache` | cached repo clone metadata backing PR-review reads                                                 |
+| `repo-knowledge`       | curated prose summary of a repo's stack, structure, conventions                                    |
+| `lifecycle-audit`      | Overseer audit of a completed change lifecycle (scores + tuning suggestions)                       |
+| `note`                 | free-form (escape hatch)                                                                           |
 
 Adding new archetypes: `/os add-archetype`. Detail per archetype: `vault/wiki/_seed/meta/reference/archetype-*.md`.
 

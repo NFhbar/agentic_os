@@ -61,9 +61,9 @@ This is the lifecycle bridge between local work (status: in-progress) and extern
   node scripts/check-mcp.mjs github
   ```
 
-  If missing: scaffold it via `/os add-mcp` (hosted mode, URL `https://api.githubcopilot.com/mcp/` for the official server).
+  If missing: the OS ships a custom PAT-based server at `mcps/github/` (see [[decision-github-mcp-custom-not-hosted]]) — restore `.mcp.json`'s github entry, or scaffold via `/os add-mcp`.
 
-- `github` MCP authenticated. If you've never run `/mcp` in this Claude Code installation, OAuth has not completed and tool calls will fail. Run `/mcp` once before invoking this skill.
+- `github` MCP authenticated. The deployed server is the custom stdio server (`mcps/github/server.mjs`) authenticated via `GITHUB_TOKEN` in `mcps/github/.env` — check-mcp catches a MISSING token pre-flight, but an expired/invalid PAT only surfaces as a 401 at call time (refresh the PAT; `/mcp` OAuth does not apply to it). Only a hosted-mode install (check-mcp reports `kind: hosted`) uses the `/mcp` OAuth flow.
 
 - The repo entity for the change's `repo:` field exists at `vault/wiki/<domain>/entity/<repo>.md` with at least: `local_path`, `remote_url` (or fields parseable to owner/name), `default_branch`.
 
@@ -224,7 +224,7 @@ This is the lifecycle bridge between local work (status: in-progress) and extern
     The tool returns the GitHub PR object — capture: `number`, `url` (a.k.a. `html_url`), `state`, `draft`, and **`user.login`** (the authenticated GitHub user who opened the PR). The `user.login` is the third identity from [[standard-git-hygiene]] § 4a — surfacing it here lets the report flag mismatches with the commit author.
 
     **On error:**
-    - If the response indicates auth (`401`, `unauthorized`, `token`) → reject with: `GitHub MCP auth failed. Run \`/mcp\` in Claude Code to complete OAuth, then re-run.`
+    - If the response indicates auth (`401`, `unauthorized`, `token`) → branch on the check-mcp `kind` captured in step 1: `custom` → reject with `GitHub MCP auth failed — GITHUB_TOKEN in mcps/github/.env is missing, expired, or lacks pull-requests:write scope; refresh the PAT and re-run.`; `hosted` → reject with `GitHub MCP auth failed. Run \`/mcp\` in Claude Code to complete OAuth, then re-run.`
     - If `A pull request already exists for <branch>` → query the MCP for the existing PR via `mcp__github__list_pull_requests` (or equivalent) filtered to the head branch, capture its URL **and `user.login`**, treat as success. Don't fail.
     - Other errors → surface the tool's error message and stop.
 
@@ -303,7 +303,7 @@ This is the lifecycle bridge between local work (status: in-progress) and extern
 
 - `change "<id>" not found` → verify the slug matches an existing wiki entry of type=change
 - `MCP github not configured` → run `/os add-mcp` to register the github MCP
-- `GitHub MCP auth failed` → run `/mcp` in Claude Code to complete OAuth
+- `GitHub MCP auth failed` → custom server (the default): refresh `GITHUB_TOKEN` in `mcps/github/.env`; hosted mode only: run `/mcp` to complete OAuth
 - `Plan review must complete before opening a PR` → review_status is not approved/overridden/not-required; run `/os review-change <id>` first
 - `Push failed — verify SSH key / token` → fix local git auth, then re-run
 - `Non-fast-forward push` → pull/rebase the branch and re-run

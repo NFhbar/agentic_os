@@ -33,15 +33,15 @@ A research-report is **single-project by design**. Cross-project syntheses are a
 
 ## Status enum
 
-| value             | meaning                                                                                                    |
-| ----------------- | ---------------------------------------------------------------------------------------------------------- |
-| `draft`           | Report just written, awaiting review                                                                       |
-| `reviewed`        | `research-review` completed with verdict `approve`; suggestions may exist but no blockers                  |
-| `request-changes` | Reviewer flagged blockers — author must revise via `research-revise`                                       |
-| `approved`        | Cleared for downstream consumption (`meta-scaffold-project-plan` can read `recommended_changes` from here) |
-| `updated`         | Report has received at least one `## Update N` since approval (new materials triggered a refresh)          |
+| value             | meaning                                                                                                           |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `draft`           | Report just written, awaiting review                                                                              |
+| `reviewed`        | `research-review` completed with verdict `approve`; suggestions may exist but no blockers                         |
+| `request-changes` | Reviewer flagged blockers — author must revise via `research-revise`                                              |
+| `approved`        | Cleared for downstream consumption (`research-scaffold-recommendations` can read `recommended_changes` from here) |
+| `updated`         | Report has received at least one `## Update N` since approval (new materials triggered a refresh)                 |
 
-The `reviewed → approved` transition is a **separate explicit user action**, not an automatic flip on a successful review. `research-review` writes `status: reviewed` on the `approved` verdict; an explicit human edit (or a future `research-approve` skill) flips `reviewed → approved` before `meta-scaffold-project-plan` consumes `recommended_changes`. This preserves the human-ack gate the archetype was designed to provide — the reviewer's verdict and the scaffolding green-light are deliberately distinct steps.
+The `reviewed → approved` transition is a **separate explicit user action**, not an automatic flip on a successful review. `research-review` writes `status: reviewed` on the `approved` verdict; an explicit human action (`meta-mark-research-approved`, or the dashboard's Mark approved banner) flips `reviewed → approved` before `research-scaffold-recommendations` consumes `recommended_changes`. This preserves the human-ack gate the archetype was designed to provide — the reviewer's verdict and the scaffolding green-light are deliberately distinct steps.
 
 ## Optional frontmatter
 
@@ -59,7 +59,7 @@ The `reviewed → approved` transition is a **separate explicit user action**, n
 Each item is an object:
 
 ```yaml
-- id: <change-id-or-null>      # set once meta-scaffold-project-plan creates the change
+- id: <change-id-or-null>      # set once research-scaffold-recommendations creates the change
   summary: <one-line>          # what the change should do
   domain: development          # target domain (almost always development)
   size: small | medium | large # informs downstream depth-of-analysis
@@ -69,7 +69,7 @@ Each item is an object:
 `status` lifecycle:
 
 - `proposed` — report recommends it; no change entry exists yet
-- `scaffolded` — `meta-scaffold-project-plan` has created the change (its `id` is set)
+- `scaffolded` — `research-scaffold-recommendations` has created the change (its `id` is set)
 - `merged` — the linked change reached `status: merged`
 - `abandoned` — the linked change reached `status: abandoned`, or the recommendation was overruled
 
@@ -172,13 +172,13 @@ The `## Update N` convention is load-bearing — `update_count` in frontmatter M
 
 ## Lifecycle
 
-| stage             | what it means                                                                                                                      |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `draft`           | Report written by `research-write`; review not yet run                                                                             |
-| `reviewed`        | `research-review` verdict was `approve`; no blockers. Waiting for the explicit human flip to `approved` before downstream consume. |
-| `request-changes` | Reviewer flagged blockers; awaiting `research-revise`                                                                              |
-| `approved`        | Cleared for downstream consumption by `meta-scaffold-project-plan` (manual flip from `reviewed`, or future `research-approve`)     |
-| `updated`         | Has at least one update past approval                                                                                              |
+| stage             | what it means                                                                                                                                       |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `draft`           | Report written by `research-write`; review not yet run                                                                                              |
+| `reviewed`        | `research-review` verdict was `approve`; no blockers. Waiting for the explicit human flip to `approved` before downstream consume.                  |
+| `request-changes` | Reviewer flagged blockers; awaiting `research-revise`                                                                                               |
+| `approved`        | Cleared for downstream consumption by `research-scaffold-recommendations` (flip from `reviewed` via `meta-mark-research-approved` or the dashboard) |
+| `updated`         | Has at least one update past approval                                                                                                               |
 
 There is no `abandoned` terminal state — research isn't "thrown away" the same way a change can be. A report that turned out to be wrong gets a final update saying so and stays in `updated`.
 
@@ -192,7 +192,7 @@ If the output is one short paragraph + one decision, use `note` + `decision` dir
 
 ## Composition with project
 
-A research-report ALWAYS owns a `project: <project-id>` field — the project is the umbrella the report lives under. The Projects view's detail panel surfaces all owned reports inline; `meta-scaffold-project-plan` reads `recommended_changes` from each approved report under a project to derive the project's change list.
+A research-report ALWAYS owns a `project: <project-id>` field — the project is the umbrella the report lives under. The Projects view's detail panel surfaces all owned reports inline; `research-scaffold-recommendations` reads `recommended_changes` from each approved report under a project to derive the project's change list.
 
 A research project is one project + N reports:
 

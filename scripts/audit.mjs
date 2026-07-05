@@ -738,9 +738,13 @@ function checkWiki(domains, archetypes, knownTargets) {
       // surfaces them at audit time as well.
       if (fm.status === 'planning' && body) {
         const lower = body.toLowerCase();
+        // Kept byte-aligned with the placeholder prose in
+        // _templates/wiki-entry/change.md.tmpl (## Why / ## Approach) and the
+        // identical checks in dev-write-change PLAN step 1a + the dashboard
+        // warning in routes/changes.ts. Reword the template → update all three.
         const placeholders = [
-          "what's broken / what's missing / what we're improving",
-          'how you plan to do it. touched files, key functions, test strategy',
+          "what's broken, what's missing, or what we're improving",
+          'how you plan to do it. files touched, key functions, test strategy',
         ];
         const placeholdersPresent = placeholders.filter((p) => lower.includes(p));
         const draftMarkerCount = (body.match(/\*\*DRAFT\*\*/g) || []).length;

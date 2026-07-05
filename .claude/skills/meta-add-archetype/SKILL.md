@@ -24,7 +24,7 @@ outputs:
   - kind: file
     path: _templates/wiki-entry/{{input.name}}.md.tmpl
   - kind: file
-    path: vault/wiki/_seed/meta/archetype-{{input.name}}.md
+    path: vault/wiki/_seed/meta/reference/archetype-{{input.name}}.md
 ---
 
 # meta-add-archetype
@@ -34,13 +34,13 @@ outputs:
 Add a new wiki archetype. Three artifacts are created or updated:
 
 1. A template at `_templates/wiki-entry/<name>.md.tmpl` so future entries can be scaffolded
-2. A `reference` archetype entry in `vault/wiki/_seed/meta/` documenting the new archetype's frontmatter contract
+2. A `reference` archetype entry in `vault/wiki/_seed/meta/reference/` documenting the new archetype's frontmatter contract
 3. The "Memory archetypes" table in `OS.md` and `domains/meta/playbook.md`
 
 ## Procedure
 
 1. Validate inputs.
-2. Verify `_templates/wiki-entry/<name>.md.tmpl` does not exist. If it does, reject and suggest `meta-evolve`.
+2. Verify `_templates/wiki-entry/<name>.md.tmpl` does not exist. Also verify the sibling seed reference `vault/wiki/_seed/meta/reference/archetype-<name>.md` does not exist. If either exists, reject and suggest `meta-evolve`.
 3. Compose the template:
 
    ```
@@ -64,7 +64,7 @@ Add a new wiki archetype. Three artifacts are created or updated:
    ```
 
 4. Write template to `_templates/wiki-entry/<name>.md.tmpl`.
-5. Create a `reference` archetype entry at `vault/wiki/_seed/meta/archetype-<name>.md`:
+5. Create a `reference` archetype entry at `vault/wiki/_seed/meta/reference/archetype-<name>.md`:
    - Frontmatter follows the reference archetype contract
    - `url:` field points to "internal://archetype/<name>"
    - Body lists the required fields, when to use, related archetypes

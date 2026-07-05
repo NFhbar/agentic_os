@@ -2,7 +2,7 @@
 name: research-update
 description: 'Delta-driven rewrite of a research-report when new materials land, a milestone fires, or a recommended change merges. Re-walks materials, rewrites the body, appends `## Update N`, mutates `recommended_changes` (preserves scaffolded/merged, abandons superseded, adds new proposals). May reset `review_status` when the update is substantive.'
 user-invocable: true
-recommended_effort: xhigh
+recommended_effort: max
 version: 1
 domain: research
 tags: [research, update, delta, lifecycle, report]
@@ -45,7 +45,7 @@ Three triggers motivate an update (the dashboard surfaces these as banners per [
 
 Also callable as `manual` when the user just wants a refresh without a specific trigger.
 
-**Updates produce proposals, never scaffolding.** This skill MUST NOT auto-dispatch [[meta-scaffold-project-plan]] or [[dev-add-change]]. New recommendations are surfaced for human triage; scaffolding remains an explicit user action.
+**Updates produce proposals, never scaffolding.** This skill MUST NOT auto-dispatch [[research-scaffold-recommendations]] (or [[dev-add-change]], which it spawns per item). New recommendations are surfaced for human triage; scaffolding remains an explicit user action.
 
 The update may **reset `review_status: pending`** when the rewrite is substantive (criteria in Step 5) — that signal lets the dashboard re-surface the review banner, and the user re-runs [[research-review]] explicitly.
 
@@ -104,10 +104,11 @@ Rewrite `## Findings` (and its subsections) to incorporate the new materials and
 Apply these rules in order:
 
 1. **Preserve** entries with `status: scaffolded` or `status: merged` — they describe work already in flight or shipped. Don't drop them.
-2. **Mark `status: abandoned`** for entries the new context supersedes. The `## Update N` block's `### What changed` sub-section must explain why (a sentence per abandoned entry is enough).
-3. **Append new proposals** with `status: proposed` for recommendations the update introduces.
-4. Re-emit `recommended_changes` as a single-line JSON array per [[archetype-research-report]] § Frontmatter caveats — multi-line YAML breaks the parser.
-5. Update the body's `## Recommended changes` bullets to mirror the new frontmatter array (per the body-vs-frontmatter mirror [[research-review]] checks).
+2. **Flip `status: scaffolded → merged`** for entries whose linked change entry (`row.id`) has reached `status: merged` (keep the `id`). Step 4.4 already tracked these; this writeback is what makes the `merged` enum value reachable — the dashboard's `recommended-change-merged` trigger fires on exactly this condition (linked change merged, row still `scaffolded`), and the flip is what resolves it. Count the flips for the `## Update N` block's Preserved line and the audit args.
+3. **Mark `status: abandoned`** for entries the new context supersedes. The `## Update N` block's `### What changed` sub-section must explain why (a sentence per abandoned entry is enough).
+4. **Append new proposals** with `status: proposed` for recommendations the update introduces.
+5. Re-emit `recommended_changes` as a single-line JSON array per [[archetype-research-report]] § Frontmatter caveats — multi-line YAML breaks the parser.
+6. Update the body's `## Recommended changes` bullets to mirror the new frontmatter array (per the body-vs-frontmatter mirror [[research-review]] checks).
 
 #### 5c. Append `## Update N` block
 
@@ -128,7 +129,7 @@ Append at the bottom of the body (after any prior `## Update K` sections, chrono
 
 - **Findings rewritten:** <true | false; if true, one-sentence summary of the substantive shift>
 - **Recommendations updated:**
-  - Preserved (scaffolded/merged): <N entries>
+  - Preserved (scaffolded/merged): <N entries> — of which <G> flipped `scaffolded → merged` this update (linked change reached `status: merged`)
   - Abandoned (superseded): <list — one bullet per, with one-sentence reason>
   - Added (new proposals): <list — one bullet per, with one-sentence motivation>
 - **Review-status reset decision:** <reset | preserved> — <reason; see §5d>
@@ -175,7 +176,7 @@ Preserve every other field — `report_revision`, `report_revised_at`, `report_r
 node scripts/record-dashboard-action.mjs \
   --action research-update \
   --skill research-update \
-  --args '{"report_id":"<id>","update_n":<update_count + 1>,"trigger_source":"<source>","new_materials":<M>,"recommendations_added":<A>,"recommendations_abandoned":<X>,"review_status_reset":<true|false>}' \
+  --args '{"report_id":"<id>","update_n":<update_count + 1>,"trigger_source":"<source>","new_materials":<M>,"recommendations_added":<A>,"recommendations_abandoned":<X>,"recommendations_merged":<G>,"review_status_reset":<true|false>}' \
   --files-touched '["vault/wiki/research/research-report/<report_id>.md"]'
 ```
 
@@ -190,10 +191,10 @@ node scripts/record-dashboard-action.mjs \
   recommendations:  +<A> added, <X> abandoned, <P> preserved (scaffolded/merged)
   status:           updated
   review_status:    <reset to pending — re-run /os research review <id> | preserved — prior verdict still applies>
-  next:             <re-run /os research review <id> if reset fired> | <consider re-scaffolding new proposals via /os scaffold project plan <project> if review status is approved>
+  next:             <re-run /os research review <id> if reset fired> | <consider scaffolding new proposals via /os scaffold research recommendations <report_id> if review status is approved>
 ```
 
-The `next:` line surfaces the review re-run as a recommendation when the reset fired — but this skill MUST NOT auto-dispatch [[research-review]] (the soft signal stops at the summary line). Likewise, MUST NOT auto-dispatch [[meta-scaffold-project-plan]] — new recommendations are proposals, not scaffolds.
+The `next:` line surfaces the review re-run as a recommendation when the reset fired — but this skill MUST NOT auto-dispatch [[research-review]] (the soft signal stops at the summary line). Likewise, MUST NOT auto-dispatch [[research-scaffold-recommendations]] — new recommendations are proposals, not scaffolds.
 
 ## Outputs
 
@@ -212,7 +213,7 @@ The `next:` line surfaces the review re-run as a recommendation when the reset f
 ## What this skill must NOT do
 
 - Auto-dispatch [[research-review]] (the reset is a signal; the user re-runs review explicitly)
-- Auto-dispatch [[meta-scaffold-project-plan]] (new recommendations are proposals; scaffolding stays user-driven)
+- Auto-dispatch [[research-scaffold-recommendations]] (new recommendations are proposals; scaffolding stays user-driven)
 - Mutate `report_revision` / `report_revised_at` / `report_revised_from_review` — those belong to [[research-revise]]
 - Drop `recommended_changes` entries with `status: scaffolded` or `merged` — those describe work in flight or shipped, not the report's current proposals
 - Touch `dismissed_triggers` — that's set by the dashboard banner when the user dismisses a trigger
@@ -224,5 +225,5 @@ The `next:` line surfaces the review re-run as a recommendation when the reset f
 - [[research-write]] — produces the initial report this skill updates
 - [[research-review]] — the natural followup when an update resets `review_status: pending`
 - [[research-revise]] — orthogonal sibling: revise reads review findings, update reads new materials / merged changes
-- [[meta-scaffold-project-plan]] — terminal phase; consumes `recommended_changes` from `status: approved` reports; this skill produces new proposals that scaffolding picks up next time it runs
+- [[research-scaffold-recommendations]] — terminal phase; per-item consumer of `status: proposed` rows once `review_status` is `approved`; this skill produces new proposals that scaffolding picks up next time it runs
 - [[dev-write-change]] — change-tier analog of the report lifecycle; no direct counterpart for update because changes are atomic (one PR, then close) while reports are durable (multiple updates over time)

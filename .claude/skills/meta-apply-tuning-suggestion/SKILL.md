@@ -2,7 +2,7 @@
 name: meta-apply-tuning-suggestion
 description: 'Phase 4 of the Overseer arc — converts an audit''s `tuning_suggestions[i]` into a concrete proposed edit to the target skill''s SKILL.md. Two modes: `propose` (default) writes a unified diff + rationale to vault/output/meta/tuning-proposals/ without modifying anything; `apply` requires a decision-entry that explicitly cites the audit + suggestion_index in its `implements_tuning_suggestions` block, then applies the edit. The decision-entry gate is the design discipline: skill changes are not auto-applied from suggestion text alone — they must pass through a human-authored decision artifact first.'
 user-invocable: true
-recommended_effort: xhigh
+recommended_effort: max
 version: 1
 domain: meta
 tags: [overseer, self-improvement, skill-tuning, distribution]
@@ -11,7 +11,7 @@ inputs:
     type: string
     required: true
     pattern: '^[a-z0-9][a-z0-9-]*$'
-    description: 'Audit id whose tuning_suggestions[] contains the suggestion to materialize. Must reference a real lifecycle-audit at vault/wiki/meta/lifecycle-audit/audit-<id>.md.'
+    description: 'Audit id whose tuning_suggestions[] contains the suggestion to materialize. Both id forms are accepted — the full frontmatter id (`audit-<change-id>`, what the dashboard dispatches) or the bare change id. Step 2 canonicalizes to the prefixed frontmatter id; the file lives at vault/wiki/meta/lifecycle-audit/audit-<change-id>.md.'
   suggestion_index:
     type: integer
     required: true
@@ -38,7 +38,7 @@ outputs:
     path: vault/wiki/development/change/<derived-slug>.md
     when: mode=propose AND the target is non-skill (resolved via scripts/tuning-targets.mjs) — scaffolded via dev-add-change
   - kind: event
-    path: '.claude/state/events.db (kind: meta, action: tuning-suggestion-propose | tuning-suggestion-apply, audit_id: <audit>, files_touched: [<diff-path>, <rationale-path>, <skill-path-if-apply>])'
+    path: '.claude/state/events.db (kind: dashboard, action: tuning-suggestion-propose | tuning-suggestion-apply, audit_id: <audit>, files_touched: [<diff-path>, <rationale-path>, <skill-path-if-apply>])'
 spawns: [dev-add-change]
 model: claude-fable-5
 effort: max
@@ -71,7 +71,7 @@ The design discipline is deliberate: **suggestion text is not enough authorizati
 
 ## Pre-conditions
 
-- The audit at `vault/wiki/meta/lifecycle-audit/audit-<audit>.md` exists and parses (frontmatter has `tuning_suggestions[]`).
+- The audit resolves to a file in `vault/wiki/meta/lifecycle-audit/` (step 2 tries both id shapes) and parses (frontmatter has `tuning_suggestions[]`).
 - `suggestion_index` is a valid 0-based index into that array.
 - For `apply` mode: the decision entry exists at `decision_entry_path`, has `type: decision`, and its frontmatter includes an `implements_tuning_suggestions` block containing `{audit_id: <audit>, suggestion_index: <suggestion_index>}`.
 - The target (derived from `tuning_suggestions[i].skill` + `target_kind`) resolves to a real directory at `.claude/skills/<skill>/SKILL.md`, OR to a path-map entry in `scripts/tuning-targets.mjs`, OR the suggestion's `target_change` prose explicitly names a file path.
@@ -84,7 +84,10 @@ The design discipline is deliberate: **suggestion text is not enough authorizati
    - `mode` is `propose` or `apply`. Default `propose`.
    - If `mode: apply` AND `decision_entry_path` is not provided → reject with `apply mode requires decision_entry_path — see meta-apply-tuning-suggestion procedure §5`.
 
-2. **Load the audit.** Read `vault/wiki/meta/lifecycle-audit/audit-<audit>.md`. If missing, reject with `audit "<id>" not found at vault/wiki/meta/lifecycle-audit/audit-<id>.md`.
+2. **Load the audit — normalize the id first.** Real audits carry `id: audit-<change-id>` in frontmatter, and the dashboard dispatches that FULL prefixed id; CLI users sometimes pass the bare change id. Accept both (mirroring the server's `loadAuditById` in `domains/meta/app/server/routes/tuning-suggestions.ts`):
+   - Try `vault/wiki/meta/lifecycle-audit/<audit>.md` first, then `vault/wiki/meta/lifecycle-audit/audit-<audit stripped of any leading "audit-">.md`.
+   - If neither exists, reject with `audit "<id>" not found in vault/wiki/meta/lifecycle-audit/ (tried <audit>.md and audit-<bare>.md)`.
+   - **Canonicalize `<audit>` to the resolved file's frontmatter `id` (the prefixed form)** for everything downstream: artifact filenames (step 8 — the dashboard probes `vault/output/meta/tuning-proposals/<frontmatter-id>-<i>.diff` for proposal_state), event payloads (step 9), the apply-gate `implements_tuning_suggestions` match (step 5 — promote-scaffolded decisions cite the prefixed id), and the step-6a wikilink.
 
 3. **Resolve the suggestion.** Parse the audit's frontmatter. Read `tuning_suggestions[suggestion_index]`. If index out of bounds, reject with `audit "<id>" has N suggestions; suggestion_index <i> is out of range`.
 
@@ -131,7 +134,7 @@ The design discipline is deliberate: **suggestion text is not enough authorizati
   - `domain`: `change_defaults.domain`, `repo`: `change_defaults.repo`
   - `type`: `feat` (default) or `fix` if the suggestion describes correcting broken behavior
   - `size`: `small` (most tuning edits) — `medium` if the suggestion spans multiple mapped files
-  - `description`: the full suggestion prose + ` — derived from lifecycle-audit [[audit-<audit>]] tuning suggestion #<i> (target: <map-id>)`
+  - `description`: the full suggestion prose + ` — derived from lifecycle-audit [[<audit>]] tuning suggestion #<i> (target: <map-id>)` (the canonical `<audit>` already carries the `audit-` prefix — do not prepend another)
   - `project`: search `vault/wiki/*/project/*.md` for an active project whose `repos` includes `change_defaults.repo`; exactly one match → use it, else omit
 - Surgical post-create edit on the new change entry (mirrors `derived_from_report` wiring in [[research-scaffold-recommendations]]): add `derived_from_audit: <audit>`, `suggestion_index: <i>`, `tuning_target: <map-id>` immediately before the closing `---`, and set `scope:` to the map entry's `paths` joined with `, ` so the change names its files up front.
 
@@ -227,7 +230,7 @@ Skip this step gracefully if the decision entry is unreadable or has no frontmat
 ## Errors
 
 - `audit must match ^[a-z0-9][a-z0-9-]*$` — invalid input.
-- `audit "<id>" not found at vault/wiki/meta/lifecycle-audit/audit-<id>.md` — audit doesn't exist.
+- `audit "<id>" not found in vault/wiki/meta/lifecycle-audit/ (tried <audit>.md and audit-<bare>.md)` — audit doesn't exist under either id shape.
 - `audit "<id>" has N suggestions; suggestion_index <i> is out of range` — invalid index.
 - `apply mode requires decision_entry_path` — missing arg in apply mode.
 - `decision entry not found at <path>` — invalid path in apply mode.

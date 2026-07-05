@@ -126,15 +126,15 @@ Every change passes through a peer-review gate by default. The gate is implement
 
 `dev-write-change` consults `review_status` and behaves accordingly:
 
-| `review_status`   | `plan_path` set? | `dev-write-change` does                                                                                                                         |
-| ----------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pending`         | no               | **PLAN phase** — compose structured plan, write to `vault/output/<domain>/changes/<slug>-plan.md`, set `plan_path` + `plan_generated_at`. Stop. |
-| `pending`         | yes              | "Plan exists at <path>. Run `/os review-change <id>` to gate execution."                                                                        |
-| `approved`        | yes              | **EXECUTE phase** — verify working tree, create `agent/<slug>` branch, follow the plan exactly, run tests, set `status: in-progress`.           |
-| `request-changes` | yes              | Surface review concerns. Three options: re-plan, override (set `review_status: overridden`), or set `status: abandoned`.                        |
-| `rejected`        | yes              | Surface review verdict. Suggest setting `status: abandoned`.                                                                                    |
-| `overridden`      | yes              | **EXECUTE phase** — but log the override in `vault/raw/dashboard-actions.jsonl` so the bypass is auditable.                                     |
-| `not-required`    | (irrelevant)     | Skip plan + review, go straight to EXECUTE. For trivial changes only (set via `review_required: false` at scaffolding).                         |
+| `review_status`   | `plan_path` set? | `dev-write-change` does                                                                                                                                                                                            |
+| ----------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pending`         | no               | **PLAN phase** — compose structured plan, write to `vault/output/<domain>/changes/<slug>-plan.md`, set `plan_path` + `plan_generated_at`. Stop.                                                                    |
+| `pending`         | yes              | "Plan exists at <path>. Run `/os review-change <id>` to gate execution."                                                                                                                                           |
+| `approved`        | yes              | **EXECUTE phase** — verify working tree, create `agent/<slug>` branch, follow the plan exactly, run tests, set `status: in-progress`.                                                                              |
+| `request-changes` | yes              | Surface review concerns. Three options: re-plan, override (set `review_status: overridden`), or set `status: abandoned`.                                                                                           |
+| `rejected`        | yes              | Surface review verdict. Suggest setting `status: abandoned`.                                                                                                                                                       |
+| `overridden`      | yes              | **EXECUTE phase** — but log the override in `vault/raw/dashboard-actions.jsonl` so the bypass is auditable.                                                                                                        |
+| `not-required`    | (irrelevant)     | Skip the review gate only: PLAN first when no plan exists, then EXECUTE without waiting for a verdict. EXECUTE always requires a plan. For trivial changes only (set via `review_required: false` at scaffolding). |
 
 ### Plan document template
 
@@ -245,7 +245,7 @@ For dep bumps, typo fixes, version constant updates, etc., scaffold with `review
 /os add-change --name=bump-biome-v2 --review_required=false
 ```
 
-This sets `review_status: not-required` from the start. `dev-write-change` goes straight to EXECUTE on first invocation.
+This sets `review_status: not-required` from the start. `dev-write-change` runs PLAN on first invocation (a plan is always required), then EXECUTE immediately on the next — no review verdict in between.
 
 The convention: opt-out is for **changes a careful human would skip review on too**. Anything that touches business logic, data flow, or external contracts should keep `review_required: true`.
 

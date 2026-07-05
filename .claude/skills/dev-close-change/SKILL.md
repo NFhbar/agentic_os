@@ -1,6 +1,6 @@
 ---
 name: dev-close-change
-description: 'Verify a PR is merged on GitHub and transition the linked change to status: merged. Writes merged_at + bumps updated. Idempotent stop when the PR is not yet merged or already closed.'
+description: 'Verify a PR is merged on GitHub, transition the linked change to status: merged (merged_at + updated), auto-check its Done-when boxes, and clean up the local clone (checkout default branch, ff-pull, delete the feature branch — skippable). Idempotent stop when the PR is not yet merged; already-merged re-runs complete any stranded cleanup.'
 user-invocable: true
 recommended_effort: medium
 version: 1
@@ -44,7 +44,7 @@ This is the symmetric counterpart of [[dev-mark-pr-ready]]:
 - `dev-mark-pr-ready` signals **the OS has signed off** on a PR (`pr_review_status: ready-for-human`)
 - `dev-close-change` signals **the human has merged** the PR (`status: merged`)
 
-Both are vault-mutation skills with a single state-transition writeback. dev-close-change adds one MCP read on top.
+dev-mark-pr-ready is a vault-mutation skill with a single state-transition writeback. dev-close-change does more: the MCP merge verification, the frontmatter transition, the Done-when auto-check (step 7b), and a local-repo mutation — step 7c-d switches the clone back to the default branch, ff-pulls, and deletes the feature branch (its most invasive side effect; opt out via `skip_branch_cleanup`).
 
 ## Pre-conditions
 
@@ -70,12 +70,12 @@ Both are vault-mutation skills with a single state-transition writeback. dev-clo
 
 3. **Parse the entry's frontmatter** and validate the gate:
 
-   | check                                                                           | failure mode                                                                                                                                           |
-   | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-   | `pr_url` is set                                                                 | reject: `Change \`<change>\` has no pr_url — open a PR first via dev-open-pr.`                                                                         |
-   | `status === 'in-review'`                                                        | **Idempotent stop** when `status === 'merged'`: `↻ Change \`<change>\` is already merged (since <merged_at>). Nothing to do.` (no event, no writeback) |
-   |                                                                                 | Reject for any other status: `Change \`<change>\` is in status: <X> — close-change only operates on in-review changes.`                                |
-   | `pr_url` parses as a GitHub PR URL `https://github.com/<owner>/<repo>/pull/<n>` | reject: `pr_url has unexpected shape: <pr_url>. Expected https://github.com/<owner>/<repo>/pull/<N>.`                                                  |
+   | check                                                                           | failure mode                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+   | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+   | `pr_url` is set                                                                 | reject: `Change \`<change>\` has no pr_url — open a PR first via dev-open-pr.`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+   | `status === 'in-review'`                                                        | **Already-merged path** when `status === 'merged'` (another writer — the PR-CI-monitor runbook or the PR-tab sync — won the merge-detection race; neither does housekeeping): before stopping, check for stranded cleanup. If the change's `branch:` still exists in the local clone → run step 7c-d anyway; if `## Done when` has unchecked boxes and the merge is GitHub-verified (or `merged_at` was stamped by a verified writer) → run step 7b. Report `↻ already merged — completed deferred cleanup: <details>`, record the event with `action_label: deferred-cleanup`. If nothing is stranded: `↻ Change \`<change>\` is already merged (since <merged_at>). Nothing to do.` (no event, no writeback) |
+   |                                                                                 | Reject for any other status: `Change \`<change>\` is in status: <X> — close-change only operates on in-review changes.`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+   | `pr_url` parses as a GitHub PR URL `https://github.com/<owner>/<repo>/pull/<n>` | reject: `pr_url has unexpected shape: <pr_url>. Expected https://github.com/<owner>/<repo>/pull/<N>.`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
 4. **Fetch live PR state via the github MCP.** Skip this step if `inputs.override === true`.
 
@@ -242,11 +242,13 @@ Both are vault-mutation skills with a single state-transition writeback. dev-clo
 
 - `change`: required. The slug only, NOT a path. The skill resolves the file via the manifest so callers don't need to know the owning domain.
 - `override`: optional. Defaults to false. Skips the MCP pre-flight + the merge-state validation, allowing the change to be force-closed. Recorded in the event row for the audit trail.
+- `skip_branch_cleanup`: optional. Defaults to false. Skips step 7c-d (the local checkout switch + feature-branch delete) — use when other work is in flight on the same clone.
 
 ## Outputs
 
 - The change entry's frontmatter mutated in-place: `status: merged`, `merged_at: <ISO>`, `updated: <ISO>`. All other fields preserved verbatim.
 - The change entry's body's `## Done when` checkboxes flipped from `- [ ]` to `- [x]` (step 7b), with an HTML comment marker noting the auto-check. Skipped on overrides + when no Done-when section exists.
+- The local clone mutated (step 7c-d, skippable via `skip_branch_cleanup`): checked out to `<default_branch>`, ff-pulled, and the change's feature branch deleted (`branch -d`, merged-only).
 - An `events.db` row with `kind: dashboard`, `action: close-change`, `skill: dev-close-change`, `change_id: <change>`, `files_touched: [<change-path>]`.
 - A short report to stdout.
 

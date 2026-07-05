@@ -2,7 +2,7 @@
 name: dev-analyze-repo-for-review
 description: 'Produce structured prose knowledge about a cached repo — overview, stack, structure, conventions, notable deps, docs digest. One Claude call against a representative file sample from the local cache; writes a repo-knowledge archetype entry that dev-pr-review consumes for repo-specific judgment.'
 user-invocable: true
-recommended_effort: xhigh
+recommended_effort: max
 version: 1
 domain: development
 tags: [analysis, repo, knowledge, review, indexing]
@@ -70,7 +70,7 @@ The `based_on_commit` field on the knowledge entry lets the audit / dashboard de
 ## Prerequisites
 
 - The repo must already be cached. The skill reads `pr-review-repo-cache-<owner>-<repo>` to find `local_path` + `head_sha`.
-- `git` CLI on PATH (only used to confirm `head_sha`).
+- `git` CLI on PATH (used by step 3 for the fetch / reset --hard refresh and to resolve `head_sha`).
 - Read access to the cache directory.
 
 ## Procedure
@@ -282,8 +282,8 @@ The `based_on_commit` field on the knowledge entry lets the audit / dashboard de
 
 ## What this skill must NOT do
 
-- **Edit code in the cache.** Read-only by contract. The cache dir is the cache skill's domain; this skill consults it but never writes there.
-- **Trigger a cache refresh.** If the cache is stale, that's the user's call — run `dev-cache-pr-review-repo` first. This skill operates on whatever the cache currently has.
+- **Edit source files in the cache.** Step 3's `fetch` + `reset --hard origin/<default_branch>` (and its head_sha writeback to the cache entry) is the ONLY permitted cache mutation — never hand-edit files there.
+- **Re-clone or re-index the cache.** Step 3's fetch+reset (skippable via `no_fetch`) is the full extent of refresh this skill performs; deeper cache repair (re-clone, path moves) belongs to `dev-cache-pr-review-repo`.
 - **Merge old + new knowledge.** Refreshes replace the body cleanly. Users editing the body manually will lose those edits on re-analysis; this is documented and intentional (treating the entry as derived data, not source-of-truth).
 - **Run multiple Claude analyses.** Single call, structured output. The cost discipline is the whole point of splitting Stage 1 (cheap, frequent) from Stage 2 (expensive, rare).
 

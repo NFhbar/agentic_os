@@ -126,11 +126,13 @@ The microkernel principle (see [[standard-app-architecture]]): apps consume OS s
 
    ```typescript
    // App-DB helper — calls openAppDb under the hood.
-   // Schema is declared in manifest.ts; the shell applies it at boot.
+   // Schema is declared in manifest.ts. NOTE: the dashboard shell does NOT yet
+   // apply app-DB schemas at boot (see § "Honesty caveat" below) — until that
+   // wiring lands, the starter table is not created and this helper is inert.
    // See standard-app-persistence.md.
 
    import type { DatabaseSync } from 'node:sqlite';
-   import { openAppDb } from '../../../../../scripts/app-db.mjs';
+   import { openAppDb } from '../../../../../../scripts/app-db.mjs';
 
    let _db: DatabaseSync | null = null;
 
@@ -150,7 +152,9 @@ The microkernel principle (see [[standard-app-architecture]]): apps consume OS s
 
    export const routes: FastifyPluginAsync = async (fastify) => {
      fastify.get('/health', async () => ({ ok: true, app: '<input.app_name>' }));
-     // Add more routes here. They auto-mount under /api/apps/<input.app_name>/.
+     // Add more routes here. INTENDED to auto-mount under /api/apps/<input.app_name>/,
+     // but that wiring is NOT yet live in the shell (see § "Honesty caveat" below) —
+     // server/index.ts does not scan apps/*/routes.ts today, so these routes are inert.
    };
 
    export default routes;
@@ -173,10 +177,19 @@ The microkernel principle (see [[standard-app-architecture]]): apps consume OS s
       id:        <input.app_name>
       path:      domains/meta/app/src/apps/<input.app_name>/
       nav:       <input.nav_group>
-      db:        <yes/no>
-      routes:    <yes/no>
+      db:        <yes/no>   ← when yes, append "(scaffolded — shell wiring not yet live; see § Honesty caveat)"
+      routes:    <yes/no>   ← when yes, append "(scaffolded — shell wiring not yet live; see § Honesty caveat)"
       next:      open the dashboard (the app auto-discovers); edit View.tsx to add behavior
     ```
+
+### Honesty caveat — needs_db / needs_routes wiring is not yet live
+
+The dashboard shell does **not** yet implement the app-routes auto-mount or the boot-time app-DB schema application that [[standard-app-architecture]] § 3 describes (those lifecycle claims are aspirational until the server catches up):
+
+- `domains/meta/app/server/index.ts` only statically imports its own `server/routes/*` modules — nothing scans `src/apps/*/routes.ts` and no `/api/apps/<app_name>/` prefix is registered, so a scaffolded `routes.ts` is dead code today.
+- No boot path calls `openAppDb(manifest.id, manifest.db)`, so `manifest.db.schema`'s starter table is never created and the scaffolded `db.ts` helper's first query would throw `no such table`.
+
+When either flag is set, still write the scaffold (the app is ready the day the shell catches up), but the step-11 confirmation MUST carry the caveat — do not report `db: yes` / `routes: yes` as if the artifacts are functional today.
 
 ### Output for module shape
 
@@ -209,6 +222,11 @@ Use when there's an explicit reason the app can't live inside the dashboard. The
    - Run `npm run dev` in the new app's directory
    - Use distinct ports (compute from `.claude/state/app-ports.json`)
    - Open the browser
+
+8b. **Regenerate the skill-id constants module**: `node scripts/generate-skill-ids.mjs` — the new launch skill is a real skill directory, so `domains/meta/app/server/lib/skill-ids.ts` must be regenerated or the audit's `skill-ids-module-stale` check ERRORs (mirrors `meta-add-skill` step 8b).
+
+8c. **Register the launch skill in OS.md's Intent vocabulary** — add a row mapping launch phrasings (e.g. `` `open <app_name>`, `launch <app_name>` ``) to `` `<launch-skill-name>` `` (or dispatch `meta-add-skill-to-router-vocab` with those phrasings). Without this, the `router-vocab-skill-uncovered` audit warning fires on the new user-invocable skill (mirrors `meta-add-skill` step 8).
+
 9. Append a line to the domain's playbook `## Apps` section.
 10. Record the audit event with `--args '{...,"shape":"standalone"}'`.
 
@@ -218,6 +236,8 @@ Use when there's an explicit reason the app can't live inside the dashboard. The
 - `STANDALONE.md` justifying the choice (load-bearing for the `standalone-justified` audit check)
 - Installed node_modules
 - New launch skill at `.claude/skills/<launch-skill-name>/SKILL.md`
+- Regenerated `domains/meta/app/server/lib/skill-ids.ts` (step 8b)
+- New OS.md Intent-vocabulary row for the launch skill (step 8c)
 - Updated domain playbook Apps section
 - Updated `.claude/state/app-ports.json`
 

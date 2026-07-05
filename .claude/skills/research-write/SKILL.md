@@ -2,7 +2,7 @@
 name: research-write
 description: 'Author a research-report entry under a project. Reads materials from the drop zone + wikilinks + URLs, composes a structured report, writes it to vault/wiki/research/research-report/. First phase of the research-domain lifecycle (graduated from meta-research-project).'
 user-invocable: true
-recommended_effort: xhigh
+recommended_effort: max
 version: 1
 domain: research
 tags: [research, write, lifecycle, report]
@@ -20,7 +20,7 @@ inputs:
   notes:
     type: string
     required: false
-    description: 'Free-form intent / additional context preserved verbatim. When non-empty, prefaces `## Why` as a `> User intent:` blockquote so the original phrasing isn`t lost behind the slug-safe `report_topic`. The deprecation alias `meta-research-project` uses this to preserve the dispatcher`s natural-language prompt while `report_topic` carries a derived slug.'
+    description: 'Free-form intent / additional context preserved verbatim. When non-empty, prefaces `## Why` as a `> User intent:` blockquote so the original phrasing isn`t lost behind the slug-safe `report_topic`. The dashboard`s research dispatcher (`projects.ts` POST `/:id/research`) uses this to preserve the natural-language prompt while `report_topic` carries a derived slug.'
   materials:
     type: object
     required: false
@@ -49,7 +49,7 @@ Compose a **research-report** entry — the durable, queryable artifact that cap
 
 This skill is the **entry phase** of the research-domain lifecycle. It mirrors [[dev-write-change]]'s PLAN phase and the original `meta-research-project` research phase — but produces a durable typed wiki entry (with its own review gate, update loop, and `recommended_changes` array) rather than a transient output markdown.
 
-Graduated from `meta-research-project` during the research-domain refactor (per-install project tracking the graduation phases). The legacy skill is retained as a deprecation alias that derives `report_topic` from its free-form `prompt` and delegates here — callers that haven't migrated continue to work transparently.
+Graduated from the now-deleted `meta-research-project` alias during the research-domain refactor (per-install project tracking the graduation phases). The slug-derivation + intent-preservation duty the alias performed now lives in the dashboard dispatcher prompt (`projects.ts` POST `/:id/research`), which derives a kebab-case `report_topic` from the user intent and passes the intent verbatim as `notes`.
 
 Downstream: [[research-review]] gates the report; [[research-revise]] folds review findings back in; [[research-update]] rewrites the report when new materials land or milestones fire.
 
@@ -130,7 +130,7 @@ The structured synthesis of the materials. Subsections as needed — `### <subto
 - [ ] ...
 - (or "(none — investigative report; no actions recommended)")
 
-Each bullet here MUST mirror an entry in the frontmatter's `recommended_changes` array — same `summary`, same `domain`, same `size`. The bullet text is what humans read; the frontmatter array is what `meta-scaffold-project-plan` consumes.
+Each bullet here MUST mirror an entry in the frontmatter's `recommended_changes` array — same `summary`, same `domain`, same `size`. The bullet text is what humans read; the frontmatter array is what `research-scaffold-recommendations` consumes.
 
 ## Notes
 
@@ -171,7 +171,7 @@ dismissed_triggers: []
 Defaults:
 
 - `recommended_changes: []` when the report is purely investigative (no actions proposed).
-- Each item's `status: proposed` on first write — `meta-scaffold-project-plan` flips to `scaffolded` once it creates the change; downstream skills flip to `merged` / `abandoned`.
+- Each item's `status: proposed` on first write — `research-scaffold-recommendations` flips to `scaffolded` once it creates the change; downstream skills flip to `merged` / `abandoned`.
 - `id: null` per-item until scaffold runs.
 
 ### Step 8: Write the report file
@@ -240,5 +240,5 @@ node scripts/record-dashboard-action.mjs \
 - [[research-review]] — gates the report's `review_status`
 - [[research-revise]] — folds review findings back in
 - [[research-update]] — delta-driven rewrite when new materials / milestones land
-- [[meta-scaffold-project-plan]] — consumes `recommended_changes` from `status: approved` reports
+- [[research-scaffold-recommendations]] — consumes `recommended_changes` once `review_status` is `approved`
 - [[dev-write-change]] — change-tier analog (PLAN phase mirrors this skill's research-then-compose pattern)

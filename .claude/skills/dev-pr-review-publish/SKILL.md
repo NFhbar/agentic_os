@@ -69,7 +69,7 @@ For OS-authored PRs, publish is usually skipped — the human merges based on th
    - `pass_count`
    - `status` — must be `completed`; reject otherwise (`Entry status is <status> — wait for the pass to finish.`)
 
-   Parse the body's `## Pass <N>` sections per [[archetype-pr-review]] § Body sections. Capture for each pass: started ISO, summary text, and the comment list with header fields (`file`, `line`, `status`, `accept_note`, `github_comment_id`, `github_review_id`, `severity`, `category`).
+   Parse the body's `## Pass <N>` sections per [[archetype-pr-review]] § Body sections. Capture for each pass: the pass-header timestamp (local-TZ readable form, not ISO) and the comment list with header fields (`file`, `line`, `status`, `accept_note`, `github_comment_id`, `github_review_id`, `severity`, `category`). Note: passes carry NO per-pass summary paragraph — the entry-level `## Summary` (rewritten each pass) is the only summary; step 9 sources from there.
 
 4. **Pick the target pass.**
    - If `inputs.pass` is set: use that. If no `## Pass <inputs.pass>` section exists, reject with `Pass <n> not found in entry — entry has passes 1..<pass_count>.`
@@ -106,10 +106,10 @@ For OS-authored PRs, publish is usually skipped — the human merges based on th
 7. **Get PR head SHA.** Inline review comments must anchor to a specific commit. Fetch via the github MCP's `get_pull_request` tool:
 
    ```json
-   { "owner": "<owner>", "repo": "<repo>", "pullNumber": <n> }
+   { "owner": "<owner>", "repo": "<repo>", "pull_number": <n> }
    ```
 
-   Capture `head.sha` as `<commit_id>`. Reject if PR is `closed` or `merged` with a clear message — can't review a closed PR.
+   Capture the flat `head_sha` field as `<commit_id>` (the custom github MCP returns a flat shape — there is no nested `head.sha`). Reject if PR is `closed` or `merged` with a clear message — can't review a closed PR.
 
 8. **Map verdict.** Translate the entry's `result` field to a GitHub review event:
 
@@ -134,7 +134,7 @@ For OS-authored PRs, publish is usually skipped — the human merges based on th
    _Generated from `vault/wiki/development/pr-review/<review>.md` via dev-pr-review-publish._
    ```
 
-   The summary line is the first paragraph of the target pass's `## Pass N` section. The OS attribution line keeps the audit trail intact on the GitHub side.
+   The summary line comes from the entry-level `## Summary` section (dev-pr-review rewrites it each pass; pass sections themselves open with config bullets, not prose). When publishing an OLDER pass via `inputs.pass` (the entry Summary then describes a later pass), or when `## Summary` is absent, fall back to the neutral line `Publishing <N> accepted comments from pass <n>.` The OS attribution line keeps the audit trail intact on the GitHub side.
 
 10. **Compose inline comments.** For each comment in the publish set, build a payload:
 
@@ -193,7 +193,7 @@ For OS-authored PRs, publish is usually skipped — the human merges based on th
     {
       "owner": "<owner>",
       "repo": "<repo>",
-      "pullNumber": <n>,
+      "pull_number": <n>,
       "commit_id": "<commit_id>",
       "event": "<event>",
       "body": "<review body from step 9>",

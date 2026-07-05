@@ -41,7 +41,7 @@ inputs: # OS extension — optional; dashboard renders a form
     description: <hint>
     default: <value> # optional
 outputs: # OS extension — optional, declarative side effects
-  - kind: folder|file|wiki-entry|skill|router-log|process|text
+  - kind: folder|file|folder-or-file|wiki-entry|skill|router-log|process|text|event|frontmatter|field|report|deletion
     path: <pathspec with {{input.x}} placeholders>
 spawns: [<other-skill-name>, ...] # OS extension — optional
 ---

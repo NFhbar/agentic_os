@@ -52,6 +52,8 @@ The companion skill is [[meta-add-skill-to-playbook]] — same pattern, but for 
 
    Record the event with `noop: true` per step 4 and stop.
 
+2b. **Duplicate-phrase guard.** Parse every existing row's LEFT cell and collect all backticked phrases already in the table. Drop any proposed phrasing that exactly matches a phrase already mapped to another skill — a phrase on two rows fires the audit's `router-vocab-duplicate-phrase` finding at severity ERROR (`/os dispatch is ambiguous`), strictly worse than the warn-level `router-vocab-skill-uncovered` this skill exists to resolve. Report each dropped phrasing in the step-5 summary as `skipped (duplicate — already routes to <other-skill>)`. If ALL proposed phrasings collide, reject with `all phrasings already map to other skills (<phrase> → <skill>, …) — supply distinct phrasings`.
+
 3. **Insert the row.** Locate the `### Intent vocabulary` section's markdown table. The table runs from the header line (`| if intent matches… | route to |`) through subsequent rows until a blank line or next `##`/`###` header.
 
    Compose the new row:
@@ -83,6 +85,7 @@ The companion skill is [[meta-add-skill-to-playbook]] — same pattern, but for 
    ```
    ✓ Registered <skill> in OS.md's Intent vocabulary
      phrasings: <comma-list>
+     skipped:   <any step-2b duplicates, as "<phrase> (duplicate — already routes to <other-skill>)"; omit line when none>
      route:     /os <first-phrasing> → <skill>
      next:      /os audit (or refresh the Overview action items) to verify the router-vocab-skill-uncovered finding clears.
    ```
@@ -99,6 +102,7 @@ The companion skill is [[meta-add-skill-to-playbook]] — same pattern, but for 
 - `skill is required and must match ^[a-z0-9][a-z0-9-]*$` — invalid or missing skill input.
 - `skill "<value>" not found at .claude/skills/<value>/SKILL.md` — the skill doesn't exist.
 - `phrasings is required — supply at least one natural-language phrasing` — empty or whitespace-only input.
+- `all phrasings already map to other skills (<phrase> → <skill>, …) — supply distinct phrasings` — every proposed phrasing collided in step 2b; inserting any of them would create the error-level `router-vocab-duplicate-phrase` finding.
 - `OS.md has no ### Intent vocabulary table` — OS.md is malformed; fix manually before retrying.
 
 ## See also
