@@ -18,6 +18,7 @@ outputs:
 spawns: []
 model: claude-fable-5
 effort: max
+wall_time_cap_minutes: 60
 ---
 
 # dev-review-change
