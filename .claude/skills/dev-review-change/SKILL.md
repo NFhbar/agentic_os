@@ -17,6 +17,7 @@ outputs:
     path: vault/output/{{input.domain}}/changes/{{input.change}}-review.md
 spawns: []
 model: claude-fable-5
+effort: max
 ---
 
 # dev-review-change

@@ -28,6 +28,7 @@ outputs:
     fields: [update_count, last_data_ingest, status, review_status, review_path, reviewed_at, recommended_changes, updated]
 spawns: []
 model: claude-fable-5
+effort: max
 ---
 
 # research-update

@@ -20,6 +20,7 @@ outputs:
     fields: [review_path, reviewed_at, review_status, updated]
 spawns: []
 model: claude-fable-5
+effort: max
 ---
 
 # meta-review-project-plan

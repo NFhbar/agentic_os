@@ -20,6 +20,7 @@ outputs:
     fields: [status, review_status, review_path, reviewed_at, updated]
 spawns: []
 model: claude-fable-5
+effort: max
 ---
 
 # research-review

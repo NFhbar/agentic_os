@@ -36,6 +36,7 @@ outputs:
   - kind: event
     path: '.claude/state/events.db (kind: dashboard, action: analyze-repo-for-review)'
 spawns: []
+effort: max
 ---
 
 # dev-analyze-repo-for-review

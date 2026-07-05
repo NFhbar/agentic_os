@@ -20,6 +20,7 @@ outputs:
     fields: [report_revision, report_revised_at, report_revised_from_review, report_generated_at, updated]
 spawns: []
 model: claude-fable-5
+effort: max
 ---
 
 # research-revise

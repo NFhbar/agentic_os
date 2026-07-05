@@ -25,6 +25,7 @@ outputs:
     description: 'Only written when EXECUTE phase hits test failures.'
 spawns: []
 model: claude-fable-5
+effort: max
 ---
 
 # dev-write-change

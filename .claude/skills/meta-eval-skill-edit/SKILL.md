@@ -34,6 +34,7 @@ outputs:
     path: '.claude/state/events.db (kind: meta, action: skill-edit-eval, files_touched: [<report>, <replay jsonls>])'
 spawns: []
 model: claude-fable-5
+effort: max
 ---
 
 # meta-eval-skill-edit
