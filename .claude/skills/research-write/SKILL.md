@@ -37,6 +37,7 @@ outputs:
     path: vault/wiki/{{project.domain}}/project/{{input.project}}.md
     fields: [research_paths, updated]
 spawns: []
+model: claude-fable-5
 ---
 
 # research-write

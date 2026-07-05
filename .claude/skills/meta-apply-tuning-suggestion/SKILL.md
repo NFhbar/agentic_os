@@ -40,6 +40,7 @@ outputs:
   - kind: event
     path: '.claude/state/events.db (kind: meta, action: tuning-suggestion-propose | tuning-suggestion-apply, audit_id: <audit>, files_touched: [<diff-path>, <rationale-path>, <skill-path-if-apply>])'
 spawns: [dev-add-change]
+model: claude-fable-5
 ---
 
 # meta-apply-tuning-suggestion

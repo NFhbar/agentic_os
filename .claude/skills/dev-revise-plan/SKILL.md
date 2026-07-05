@@ -16,6 +16,7 @@ outputs:
   - kind: file
     path: vault/output/{{input.domain}}/changes/{{input.change}}-plan.md
 spawns: []
+model: claude-fable-5
 ---
 
 # dev-revise-plan

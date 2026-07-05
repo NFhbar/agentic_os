@@ -19,6 +19,7 @@ outputs:
     path: vault/wiki/research/research-report/{{input.report_id}}.md
     fields: [status, review_status, review_path, reviewed_at, updated]
 spawns: []
+model: claude-fable-5
 ---
 
 # research-review
