@@ -270,6 +270,17 @@ When no `parent_change` is set, skip silently.
 
 _Rationale: added in response to the `parent_change frontmatter is load-bearing context that wasn't used` finding in audit `audit-abi-decoding-via-codegen-typed-event-structs-and-per-event` — the change's parent named the reorg handler, but execute introduced typed tables with no rewind hook (caught only at PR-review pass-3, ~$5+ in intermediate cycles). See decision `decision-dev-write-change-when-a-change-has-a-parent-change-field-execute` in your local vault (per-install — these references are intentionally NOT wikilinks because the targets live in gitignored audit/decision paths and won't resolve on other installs)._
 
+1b. **Review-concern disposition.** If the change entry's `review_path` is set, read the plan review at that path and enumerate every finding in its Concerns section — blockers, suggested changes, and nits alike. An approve verdict routinely carries non-blocking "fold into execution" guidance; those items are part of what EXECUTE implements, not optional color. Before touching any code, produce a per-concern disposition list:
+
+- **implemented** — the concern is addressed in this execution; name the file(s) or plan step where.
+- **declined** — the concern is intentionally not addressed; give a one-line reason (out of scope for this change, contradicts the approved plan, superseded).
+
+A concern with no disposition is an incomplete EXECUTE — do not proceed to the commit (step 6) until every enumerated concern carries one. The disposition list lands in the commit body (step 6 appends it as a `Review-concerns:` block), so the fold-or-decline record is auditable from git history alone.
+
+When `review_path` is null (e.g. `review_status: not-required`, or an override recorded without a review artifact), skip silently.
+
+_Rationale: added in response to the high-confidence tuning suggestion in audit `audit-pr-review-verdict-state-and-next-action-affordances` — the third audited recurrence of the EXECUTE concern-disposition class. The plan review's approve said "fold the four nits into execution"; EXECUTE folded at most one — one dropped nit became the next PR-review pass's bug, one became a pass-1 comment, and two doc rows never landed anywhere and were still stale three weeks post-merge. An enumerate-and-disposition step makes the silent drop impossible. See decision `decision-dev-write-change-execute-concern-disposition` in your local vault (per-install — these references are intentionally NOT wikilinks because the targets live in gitignored audit/decision paths and won't resolve on other installs)._
+
 2. If `review_status == "overridden"`: record an audit event BEFORE proceeding (makes overrides auditable):
    ```bash
    node scripts/record-dashboard-action.mjs \
@@ -299,7 +310,7 @@ _Rationale: added in response to the `parent_change frontmatter is load-bearing 
      - If it is `agent` (legacy default) or anything else not in the set → use `chore` as fallback AND emit a stderr warning: `warning: branch prefix "<prefix>" does not map to a semantic-release type; commit type defaulted to "chore". Future changes should use one of feat|fix|docs|style|refactor|test|chore per standard-git-hygiene.`
    - **Resolve commit scope** (optional): if the change entry's `scope:` field is set AND is short enough to be a meaningful scope (≤ 20 chars, ≤ 2 path segments), use it as `(<scope>)`. Otherwise omit.
    - **Compose subject**: `<type>[(<scope>)]: <subject>` where `<subject>` is the change's `title:` field, lowercased first character (Angular style: imperative, lowercase). Trim trailing period if any. Hard limit 72 chars — if longer, truncate the subject at a word boundary and end with `…`.
-   - **Compose body**: extract the first paragraph of the change's `## Why` section (verbatim, no DRAFT markers — they were stripped earlier). Hard-wrap at 72 cols.
+   - **Compose body**: extract the first paragraph of the change's `## Why` section (verbatim, no DRAFT markers — they were stripped earlier). Hard-wrap at 72 cols. When step 1b produced a review-concern disposition list, append it after the Why paragraph as a `Review-concerns:` block — one line per concern: `- <short concern label>: implemented (<where>)` or `- <short concern label>: declined (<reason>)`.
    - **Compose footer**: `refs: vault/wiki/<domain>/change/<slug>.md`. If the plan's § Risk identified any BREAKING CHANGE, add a line `BREAKING CHANGE: <description from plan>` BEFORE the refs line.
    - **Stage + commit**:
      ```bash
@@ -453,9 +464,30 @@ _Rationale: this obligation was added in response to the medium-confidence tunin
    Capture the new commit SHA.
 
 7a. **Auto-push the follow-up commit.** ADDRESS-COMMENTS runs on an existing PR (`pr_url` is set, `status: in-review`), so the commit MUST land on origin for CI to fire and for the next Re-review pass to see it. Push without prompting:
-`bash
+
+    ```bash
     git -C <local_path> push origin <branch>
-    ` - On success: capture the pushed range (`pushed_from`, `pushed_to`) for the audit event. - On failure: surface the stderr in the final summary block as `pushed: failed (<short stderr>)`, **do not** roll back the local commit, **do continue** to step 8 (the writeback). The user can recover via the manual Push button on the change's PR tab or by running `git push` themselves. - The branch is expected to exist on origin (dev-open-pr created it). If `git push` returns a non-fast-forward error, surface the stderr and stop — that means someone else pushed; the user must rebase/resolve manually.
+    ```
+
+    - Capture the push's exit code + stderr — they are inputs to step 7b's verdict, not the verdict. A zero exit alone is NOT proof the commit landed; only step 7b's remote-head check decides what this run reports.
+    - On any push problem: **do not** roll back the local commit (it's on disk; recovery is a re-push), and **do continue** to step 8 (the writeback) — the acted-on bookkeeping describes the local commit, which exists.
+    - The branch is expected to exist on origin (dev-open-pr created it). If `git push` returns a non-fast-forward error, surface the stderr and stop — that means someone else pushed; the user must rebase/resolve manually.
+
+7b. **Verify the push landed — mandatory remote-head check.** The run's reported outcome is decided here, never by the push command's exit code alone. Compare local HEAD against the remote branch head:
+
+    ```bash
+    git -C <local_path> rev-parse HEAD
+    git -C <local_path> ls-remote origin refs/heads/<branch>
+    # fallback if ls-remote fails for a reason other than auth:
+    # git -C <local_path> fetch origin <branch> && git -C <local_path> rev-parse origin/<branch>
+    ```
+
+    - **Verified** (remote head equals local HEAD): the push landed. Report `pushed: yes (verified)`; step 11 uses its success variant.
+    - **Mismatch or push error** (including the check itself failing on auth — the locked-agent case blocks reads too): the commit did NOT verifiably reach origin. This is a **blocking failure outcome — never report success over a failed push**:
+      - Step 11 MUST print its failure variant, naming the credential remedy: unlock the 1Password SSH agent, then `git -C <local_path> push origin <branch>` (or the manual Push button on the change's PR tab).
+      - Step 10 MUST record `"pushed":"failed"` with `--exit-status 1` so downstream affordances (re-review dispatch, dashboard state) see the failed side effect instead of a success event.
+
+_Rationale: added per tuning suggestion #1 of audit `audit-phase-aware-model-resolution-for-execute-dispatches` — the address run reported success while its push had failed on the re-locked 1Password SSH agent; commit ff22c0a sat stranded locally ~35 minutes, cost $4.44 in no-op review dispatches, and was exposed only by the next skill's head-sha debounce. First audited instance of success-reported-over-failed-side-effect. The first push is dev-open-pr's job, so this mandatory verification lives in the address phase's push step. (Per-install — the audit reference is intentionally NOT a wikilink because lifecycle-audit paths are gitignored and would dangle on other installs.)_
 
 8. **Write back to the pr-review entry.** For each comment in the kept list, surgically Edit its header block in the body via the Edit tool — same surgical pattern as Phase 2's accept/dismiss:
    - Replace `- status: accepted` (or `- status: published`) → `- status: acted-on`
@@ -476,10 +508,12 @@ _Rationale: this obligation was added in response to the medium-confidence tunin
       --skill dev-write-change \
       --args '{"change":"<id>","pr_review":"<pr_review_id>","pass":<latest_pass_n>,"addressed_count":<n>,"commit_sha":"<sha>","pushed":"<yes|failed>"}' \
       --files-touched '<[every file modified + the pr-review path + the change path, as JSON array]>' \
-      --exit-status 0
+      --exit-status <0, or 1 when step 7b could not verify the push landed>
     ```
 
-11. **Confirm to the user** with a tight report:
+11. **Confirm to the user** with a tight report. Which variant prints is decided by step 7b's verification — never by the push exit code alone:
+
+    Push verified (7b: remote head == local HEAD):
 
     ```
     ✓ Addressed review comments — <change>
@@ -487,10 +521,25 @@ _Rationale: this obligation was added in response to the medium-confidence tunin
       addressed:  <n> comment(s)
       branch:     <branch>
       commit:     <short-sha> <subject>
-      pushed:     yes (origin/<branch>) | failed (<short stderr>)
+      pushed:     yes (verified: origin/<branch> == <short-sha>)
       next:       run /os review-pr (continuation pass) to verify the new commit
                   clears the comments,
                   OR Mark ready for human + merge the PR on GitHub.
+    ```
+
+    Push failed or unverifiable (7b: mismatch, push error, or auth-blocked check) — the failure IS the outcome, not a footnote:
+
+    ```
+    ✗ Review comments addressed locally — PUSH DID NOT LAND — <change>
+      pass:       <latest_pass_n>
+      addressed:  <n> comment(s), committed locally as <short-sha> <subject>
+      branch:     <branch>
+      pushed:     FAILED — origin/<branch> at <remote-short-sha | unknown>; local HEAD at <short-sha>
+      remedy:     unlock the 1Password SSH agent, then:
+                    git -C <local_path> push origin <branch>
+                  (or use the manual Push button on the change's PR tab)
+      next:       re-push FIRST — do not dispatch a re-review pass until origin/<branch>
+                  matches <short-sha> (it would no-op on an unchanged PR head).
     ```
 
 ### Step 5: Request-changes path
