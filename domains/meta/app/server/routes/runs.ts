@@ -70,7 +70,10 @@ import { parseFrontmatter } from '../frontmatter.js';
 import { classifyChangeDispatchPhase } from '../lib/execute-phase.js';
 import { parseStreamJsonLine } from '../lib/stream-json.js';
 import { REPO_ROOT, safePath } from '../repo.js';
+import { evaluatePrReviewDebounce } from './automation-state-machine.js';
 import { onAutomationStepComplete, onChangeAutomationStepComplete } from './automation.js';
+import { lookupLinkedReview } from './pr-review-lookup.js';
+import { readBranchHead, resolveRepoLocalPath } from './repo-facts.js';
 import type { RunOrigin, RunRecord, RunTags } from './runs.types.js';
 
 // Re-export wire-shape types for backward-compat. New consumers should
@@ -87,6 +90,8 @@ interface StartBody {
   title?: string;
   tags?: RunTags;
   origin?: RunOrigin;
+  // Bypass the re-review debounce (dashboard force affordance / CLI force).
+  force?: boolean;
 }
 
 // In-memory per-run state. Lives only while the child is running.
@@ -203,9 +208,13 @@ export interface StartRunOptions extends StartRunInput {
 // per-domain beats a full-vault walk. Returns null on any miss (unknown
 // change, wrong type, parse failure) — the caller treats null as "phase
 // unknown" and skips the model_execute override (fail-open).
-function readChangeReviewGate(
-  changeId: string,
-): { review_status: string | null; plan_path: string | null } | null {
+function readChangeDispatchGate(changeId: string): {
+  review_status: string | null;
+  plan_path: string | null;
+  pr_review_path: string | null;
+  branch: string | null;
+  repo: string | null;
+} | null {
   // The id arrives from client-supplied tags / prompt-text attribution and is
   // joined straight into a filesystem path below, so a `../`-shaped value
   // could escape vault/wiki and read an arbitrary .md file. Gate on the change
@@ -222,6 +231,9 @@ function readChangeReviewGate(
       return {
         review_status: typeof fm.review_status === 'string' ? fm.review_status : null,
         plan_path: typeof fm.plan_path === 'string' ? fm.plan_path : null,
+        pr_review_path: typeof fm.pr_review_path === 'string' ? fm.pr_review_path : null,
+        branch: typeof fm.branch === 'string' ? fm.branch : null,
+        repo: typeof fm.repo === 'string' ? fm.repo : null,
       };
     }
   } catch {
@@ -267,6 +279,33 @@ export async function startRun(input: StartRunOptions): Promise<StartRunResult> 
         error: 'blocked',
         blocking: { run_id: blocking.id, skill: blocking.skill },
       };
+    }
+  }
+
+  // Re-review debounce (server-side): refuse a dev-pr-review dispatch whose
+  // target branch head is unchanged since the last reviewed pass — the no-op
+  // loop the audits costed at ≈$9. BOTH dispatch paths converge on startRun
+  // (orchestrator dispatchChangeStep + the dashboard Run-review button), so one
+  // placement covers both. Runs BEFORE createRun so a refusal spawns nothing
+  // and writes no run row (same zero-trace posture as the concurrency block
+  // above). force bypasses — via structured input OR a prompt sniff
+  // (CLI-composed prompts set the skill's own `force: true`). Fails OPEN on any
+  // unknown; dev-pr-review's own head_sha gate is the precise backstop.
+  const forced = input.force === true || /force\s*[:=]\s*true/i.test(prompt);
+  if (skill === 'dev-pr-review' && change_id && !forced) {
+    const gate = readChangeDispatchGate(change_id);
+    if (gate?.pr_review_path) {
+      const live = readBranchHead(await resolveRepoLocalPath(gate.repo), gate.branch);
+      const review = lookupLinkedReview(gate.pr_review_path);
+      const debounce = evaluatePrReviewDebounce({
+        last_head_sha: review.lastHeadSha,
+        live_head: live.head,
+        pass_count: review.passCount,
+        force: false,
+      });
+      if (debounce.refuse) {
+        return { ok: false, error: debounce.message, refusal: 'head-unchanged' };
+      }
     }
   }
 
@@ -324,8 +363,15 @@ export async function startRun(input: StartRunOptions): Promise<StartRunResult> 
     try {
       const modelExecute = (await resolveModelExecuteForRun(skill)) as string | null;
       if (modelExecute) {
-        const gate = readChangeReviewGate(change_id);
-        if (gate && classifyChangeDispatchPhase({ ...gate, prompt }) === 'execute-bound') {
+        const gate = readChangeDispatchGate(change_id);
+        if (
+          gate &&
+          classifyChangeDispatchPhase({
+            review_status: gate.review_status,
+            plan_path: gate.plan_path,
+            prompt,
+          }) === 'execute-bound'
+        ) {
           modelOverride = modelExecute;
         }
       }
@@ -933,11 +979,18 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
       title: body.title,
       tags: body.tags,
       origin: body.origin,
+      force: body.force,
     });
     if (result.ok) return { run_id: result.run_id };
     if ('blocking' in result) {
       reply.code(409);
       return { error: 'blocked', blocking: result.blocking };
+    }
+    // Re-review debounce refusal — client-actionable (offer a force retry), so
+    // 409 not 500 (same posture as the concurrency block above).
+    if ('refusal' in result) {
+      reply.code(409);
+      return { error: result.error, refusal: result.refusal };
     }
     reply.code(500);
     return { error: result.error };

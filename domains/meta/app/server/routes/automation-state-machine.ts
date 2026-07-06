@@ -417,3 +417,33 @@ export function decideParkReconciliation(args: {
 
   return { action: 'none' };
 }
+
+// Server-side re-review debounce decision. Refuses a dev-pr-review dispatch
+// ONLY when the last-reviewed head and the live branch head are both known,
+// equal, and force isn't set — every unknown fails OPEN to dispatch. Pure —
+// the caller gathers last_head_sha (from the linked review) + live_head (git).
+//
+// Deliberately compares the LOCAL branch head, not the GitHub PR head (no
+// PAT-dependent network call in the dispatch path). The stranded-unpushed
+// -commit case (local head moved, GitHub head didn't) intentionally PASSES
+// this gate and is caught by dev-pr-review's own in-skill head_sha gate with
+// its richer "unpushed commit" diagnosis — the audits' own division of labor.
+export type PrReviewDebounce = { refuse: false } | { refuse: true; message: string };
+
+export function evaluatePrReviewDebounce(args: {
+  last_head_sha: string | null;
+  live_head: string | null;
+  pass_count: number | null;
+  force: boolean;
+}): PrReviewDebounce {
+  const { last_head_sha, live_head, pass_count, force } = args;
+  // force, or any unknown head → dispatch (fail-open).
+  if (force || !last_head_sha || !live_head) return { refuse: false };
+  if (last_head_sha !== live_head) return { refuse: false };
+  const n = pass_count ?? 0;
+  const s7 = (s: string) => s.slice(0, 7);
+  return {
+    refuse: true,
+    message: `⊘ Re-review debounced — head unchanged since pass ${n} (last reviewed ${s7(last_head_sha)}, branch head ${s7(live_head)}); push new commits or re-dispatch with force: true for a fresh pass against the same head`,
+  };
+}

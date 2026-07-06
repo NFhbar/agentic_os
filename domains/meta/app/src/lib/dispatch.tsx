@@ -29,10 +29,11 @@ interface DispatchContextValue {
     prompt: string,
     title: string,
     tags?: RunTags,
+    opts?: { force?: boolean },
   ) => Promise<
     | { run_id: string; blocked?: false }
     | { blocked: true; blocking: { run_id: string; skill: string | null } }
-    | { error: string }
+    | { error: string; refusal?: 'head-unchanged' }
   >;
 }
 
@@ -122,13 +123,13 @@ export function DispatchProvider({ children, pollIntervalMs = 3000 }: ProviderPr
   }, [refresh, pollIntervalMs]);
 
   const startSkillRun = useCallback<DispatchContextValue['startSkillRun']>(
-    async (prompt, title, tags) => {
-      const res = await startRun({ prompt, title, tags });
+    async (prompt, title, tags, opts) => {
+      const res = await startRun({ prompt, title, tags, force: opts?.force });
       if (res.error === 'blocked' && res.blocking) {
         return { blocked: true as const, blocking: res.blocking };
       }
       if (res.error) {
-        return { error: res.error };
+        return { error: res.error, refusal: res.refusal };
       }
       if (!res.run_id) {
         return { error: 'unexpected response from /api/runs' };

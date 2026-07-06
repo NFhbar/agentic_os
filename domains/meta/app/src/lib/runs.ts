@@ -46,6 +46,9 @@ export interface StartRunResult {
   run_id?: string;
   error?: string;
   blocking?: { run_id: string; skill: string | null };
+  // Present on a 409 re-review debounce refusal (head unchanged). Callers can
+  // offer a force retry. The existing 409 branch already returns the JSON body.
+  refusal?: 'head-unchanged';
 }
 
 function toQuery(filter: RunFilter): string {
@@ -68,6 +71,7 @@ export async function startRun(body: {
   prompt: string;
   title?: string;
   tags?: RunTags;
+  force?: boolean;
 }): Promise<StartRunResult> {
   const r = await fetch('/api/runs', {
     method: 'POST',

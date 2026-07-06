@@ -21,14 +21,21 @@ afterAll(() => {
 });
 
 let fixtureN = 0;
-function writeFixture(body: string): string {
+// extraFrontmatter appends lines inside the fixture's frontmatter block — the
+// `last_head_sha:` plain/quoted variants can't be expressed otherwise (the
+// helper hardcodes id/type/published). Existing call sites pass only `body`.
+function writeFixture(body: string, extraFrontmatter: string[] = []): string {
   fixtureN += 1;
   const abs = join(tmpDir, `review-${fixtureN}.md`);
-  writeFileSync(
-    abs,
-    `---\nid: review-${fixtureN}\ntype: pr-review\npublished: false\n---\n\n${body}`,
-    'utf8',
-  );
+  const fm = [
+    '---',
+    `id: review-${fixtureN}`,
+    'type: pr-review',
+    'published: false',
+    ...extraFrontmatter,
+    '---',
+  ].join('\n');
+  writeFileSync(abs, `${fm}\n\n${body}`, 'utf8');
   return relative(REPO_ROOT, abs);
 }
 
@@ -93,10 +100,22 @@ describe('lookupLinkedReview — untriagedCount', () => {
       reviewPublished: false,
       reviewGithubReviewId: null,
       passCount: 0,
+      lastHeadSha: null,
       untriagedCount: 0,
       actedCount: 0,
       standingBlockerCount: 0,
     });
+  });
+});
+
+describe('lookupLinkedReview — lastHeadSha (re-review debounce input)', () => {
+  it('parses last_head_sha plain + quoted; null when absent', () => {
+    const plain = writeFixture('## Pass 1\n\n', ['last_head_sha: abc1234def']);
+    expect(lookupLinkedReview(plain).lastHeadSha).toBe('abc1234def');
+    const quoted = writeFixture('## Pass 1\n\n', ['last_head_sha: "abc1234def"']);
+    expect(lookupLinkedReview(quoted).lastHeadSha).toBe('abc1234def');
+    const absent = writeFixture('## Pass 1\n\n');
+    expect(lookupLinkedReview(absent).lastHeadSha).toBeNull();
   });
 });
 
