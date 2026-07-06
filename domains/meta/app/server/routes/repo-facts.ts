@@ -91,9 +91,10 @@ export function readBranchHead(
 // (trimmed) porcelain lines when clean-read, `degraded: true` on any git/spawn
 // failure so the caller fails OPEN (the skill's own pre-branch abort stays the
 // precise backstop).
-export function readWorkingTreeStatus(
-  localPath: string | null,
-): { dirty_files: string[]; degraded: boolean } {
+export function readWorkingTreeStatus(localPath: string | null): {
+  dirty_files: string[];
+  degraded: boolean;
+} {
   if (!localPath) return { dirty_files: [], degraded: true };
   try {
     if (!existsSync(localPath)) return { dirty_files: [], degraded: true };
