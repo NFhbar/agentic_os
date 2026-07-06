@@ -98,6 +98,17 @@ export async function resolveModelForRun(skillName) {
   return await readJsonKey(join(REPO_ROOT, '.claude', 'settings.json'), 'model');
 }
 
+// Phase-aware model override for dual-phase skills (`model_execute:`
+// frontmatter). Frontmatter-only — deliberately NO settings.local.json /
+// settings.json fallback, unlike resolveModelForRun: the phase split is a
+// property of the specific dual-phase skill, not an install preference.
+// Callers (startRun) apply it only when the dispatch classifies
+// EXECUTE-bound; PLAN-bound dispatches keep the `model:` chain.
+export async function resolveModelExecuteForRun(skillName) {
+  if (!skillName) return null;
+  return await readSkillField(skillName, 'model_execute');
+}
+
 // ---------------------------------------------------------------------------
 // Wall-time cap resolution — per-skill, derived from measured durations.
 //
@@ -237,10 +248,10 @@ export async function spawnClaude(
 // vault / settings resolution matches spawnClaude exactly. stdout/stderr go
 // straight to the journal files; the caller supervises by the returned PID.
 //
-// Resolves { pid, args, effort, model } on success, { pid: null, error } on
-// spawn failure — including the holder dying after reporting a pid, in which
-// case the reported pid is best-effort SIGKILLed so no unsupervised stray
-// survives.
+// Resolves { pid, args, effort, model } on success, { pid: null, error,
+// effort, model } on spawn failure — including the holder dying after
+// reporting a pid, in which case the reported pid is best-effort SIGKILLed
+// so no unsupervised stray survives.
 export async function spawnClaudeOrphaned(
   prompt,
   skillName,
@@ -310,5 +321,8 @@ export async function spawnClaudeOrphaned(
   }
   const error =
     stderr.trim() || `dispatch-holder exited ${exitCode}${pid !== null ? ' after reporting a pid' : ''}`;
-  return { pid: null, error };
+  // Resolved effort/model ride the failure return too — the caller stamps
+  // them on the run row, so even a spawn-level failure records what was
+  // attempted (the dispatch log line is otherwise the only trace).
+  return { pid: null, error, effort, model };
 }

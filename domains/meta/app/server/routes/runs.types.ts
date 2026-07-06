@@ -62,7 +62,11 @@ export interface RunRecord {
   tokens_out: number | null;
   tokens_cache_hit: number | null;
   tokens_cache_write: number | null;
+  // Two lifecycles: `model` is stamped at dispatch (resolved flags), then
+  // overwritten by the observed id when a result event lands; `effort` is
+  // dispatch-time only — result events carry no effort field.
   model: string | null;
+  effort: string | null;
   // Who dispatched the run. Null on legacy rows (read as `human`).
   origin: RunOrigin | null;
 }

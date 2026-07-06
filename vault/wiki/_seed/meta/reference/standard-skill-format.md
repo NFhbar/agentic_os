@@ -3,7 +3,7 @@ id: standard-skill-format
 type: reference
 domain: meta
 created: 2026-05-19T16:40:00Z
-updated: 2026-05-19T16:40:00Z
+updated: 2026-07-06T04:43:10Z
 tags: [standard, os, skill]
 source: manual
 private: false
@@ -53,13 +53,14 @@ spawns: [<other-skill-name>, ...] # OS extension — optional
 
 Read at `claude -p` spawn time by `scripts/dispatch-claude.mjs` (and surfaced in Settings → Effort & cost):
 
-| field                   | type    | effect                                                                                                                                                                                                                           |
-| ----------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `effort`                | enum    | `low\|medium\|high\|xhigh\|max` — per-skill override; beats `settings.local.json` / `settings.json` `effortLevel`                                                                                                                |
-| `model`                 | string  | Claude model id — per-skill override; same precedence chain as effort                                                                                                                                                            |
-| `wall_time_cap_minutes` | integer | Watchdog/supervisor kill threshold for this skill's runs. Absent → derived from history: max(25 min, 2 × p95 of the skill's successful durations), capped at 240 min. Cap-kills are artifact-verified before being marked failed |
-| `recommended_effort`    | enum    | UI-only guidance — never affects dispatch; Settings shows an "apply" action                                                                                                                                                      |
-| `recommended_model`     | string  | UI-only guidance — never affects dispatch                                                                                                                                                                                        |
+| field                   | type    | effect                                                                                                                                                                                                                                                                                                                                     |
+| ----------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `effort`                | enum    | `low\|medium\|high\|xhigh\|max` — per-skill override; beats `settings.local.json` / `settings.json` `effortLevel`                                                                                                                                                                                                                          |
+| `model`                 | string  | Claude model id — per-skill override; same precedence chain as effort                                                                                                                                                                                                                                                                      |
+| `model_execute`         | string  | Phase-aware override for dual-phase skills: when a change-scoped dispatch classifies EXECUTE-bound from the change's review gate (`approved`/`overridden`, or `not-required` with a plan; includes address-comments), `startRun` passes this instead of `model:`. Frontmatter-only — no settings fallback. v1 consumer: `dev-write-change` |
+| `wall_time_cap_minutes` | integer | Watchdog/supervisor kill threshold for this skill's runs. Absent → derived from history: max(25 min, 2 × p95 of the skill's successful durations), capped at 240 min. Cap-kills are artifact-verified before being marked failed                                                                                                           |
+| `recommended_effort`    | enum    | UI-only guidance — never affects dispatch; Settings shows an "apply" action                                                                                                                                                                                                                                                                |
+| `recommended_model`     | string  | UI-only guidance — never affects dispatch                                                                                                                                                                                                                                                                                                  |
 
 ## Body sections
 

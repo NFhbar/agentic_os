@@ -30,11 +30,15 @@ const mocks = vi.hoisted(() => ({
   markRunning: vi.fn(),
   recordEvent: vi.fn(),
   recoverUsageFromJournal: vi.fn((): Record<string, unknown> | null => null),
+  setDispatchConfig: vi.fn(),
   setHooksFired: vi.fn(),
   spawnClaudeOrphaned: vi.fn(),
 }));
 
 vi.mock('../../../scripts/dispatch-claude.mjs', () => ({
+  // null keeps every pre-existing behavioral pin unchanged — the
+  // model_execute override path only activates on a non-null resolution.
+  resolveModelExecuteForRun: vi.fn(async () => null),
   resolveWallTimeCapMs: vi.fn(async () => 25 * 60_000),
   spawnClaudeOrphaned: mocks.spawnClaudeOrphaned,
 }));
@@ -66,6 +70,7 @@ vi.mock('../../../scripts/runs-db.mjs', () => ({
   listUnhookedTerminalRuns: vi.fn(() => []),
   markCancelRequested: vi.fn(),
   markRunning: mocks.markRunning,
+  setDispatchConfig: mocks.setDispatchConfig,
   setHooksFired: mocks.setHooksFired,
   stderrPathFor: vi.fn((p: string) => `${p}.stderr`),
   unlinkOutput: vi.fn(),
@@ -87,7 +92,12 @@ vi.mock('../../../scripts/runs-finalize.mjs', async (importOriginal) => {
 vi.mock('../../../domains/meta/app/server/repo.js', async () => {
   const { join: j } = await import('node:path');
   const { tmpdir: t } = await import('node:os');
-  return { safePath: (rel: string) => j(t(), 'runs-wiring-test', rel) };
+  return {
+    // No vault/wiki exists under the tmp root, so readChangeReviewGate
+    // fail-opens to null — the model_execute path stays inert here.
+    REPO_ROOT: j(t(), 'runs-wiring-test'),
+    safePath: (rel: string) => j(t(), 'runs-wiring-test', rel),
+  };
 });
 
 vi.mock('../../../domains/meta/app/server/routes/automation.js', () => ({
@@ -301,5 +311,40 @@ describe('runs.ts wiring — PID-dead settle + spawn-failure early-finalize', ()
     expect(createdRow().origin).toBe('automation');
     await startRun({ prompt: 'wiring test', origin: 'scheduler' });
     expect(createdRow().origin).toBe('scheduler');
+  });
+
+  it('stamps dispatch-resolved model/effort on the row right after spawn', async () => {
+    mocks.spawnClaudeOrphaned.mockResolvedValue({
+      pid: DEAD_PID,
+      effort: 'max',
+      model: 'claude-opus-4-8',
+    });
+    await startRun({ prompt: 'wiring test' });
+    const row = createdRow();
+    expect(mocks.setDispatchConfig).toHaveBeenCalledWith(row.id, {
+      model: 'claude-opus-4-8',
+      effort: 'max',
+    });
+  });
+
+  it('spawn failure still stamps dispatch config, before the early finalize', async () => {
+    mocks.spawnClaudeOrphaned.mockResolvedValue({
+      pid: null,
+      error: 'holder exploded',
+      effort: 'max',
+      model: 'claude-opus-4-8',
+    });
+    const res = await startRun({ prompt: 'wiring test' });
+    expect(res.ok).toBe(true);
+    const row = createdRow();
+    expect(mocks.setDispatchConfig).toHaveBeenCalledWith(row.id, {
+      model: 'claude-opus-4-8',
+      effort: 'max',
+    });
+    // The stamp must land before finishRun finalizes the failed row —
+    // that ordering is what makes spawn-level failures recorded at all.
+    expect(mocks.setDispatchConfig.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.finishRun.mock.invocationCallOrder[0],
+    );
   });
 });

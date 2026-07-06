@@ -15,14 +15,15 @@ import {
   openSync,
   readFileSync,
   readSync,
+  readdirSync,
   statSync,
 } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 // biome-ignore format: one line keeps the ts-expect-error on the resolution error
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
-import { resolveWallTimeCapMs, spawnClaudeOrphaned } from '../../../../../scripts/dispatch-claude.mjs';
+import { resolveModelExecuteForRun, resolveWallTimeCapMs, spawnClaudeOrphaned } from '../../../../../scripts/dispatch-claude.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { recordEvent } from '../../../../../scripts/events-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
@@ -52,6 +53,8 @@ import { markCancelRequested } from '../../../../../scripts/runs-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { markRunning } from '../../../../../scripts/runs-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
+import { setDispatchConfig } from '../../../../../scripts/runs-db.mjs';
+// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { setHooksFired } from '../../../../../scripts/runs-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { stderrPathFor } from '../../../../../scripts/runs-db.mjs';
@@ -63,8 +66,10 @@ import { artifactFresh } from '../../../../../scripts/runs-finalize.mjs';
 import { inferTerminalState } from '../../../../../scripts/runs-finalize.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { recoverUsageFromJournal } from '../../../../../scripts/runs-finalize.mjs';
+import { parseFrontmatter } from '../frontmatter.js';
+import { classifyChangeDispatchPhase } from '../lib/execute-phase.js';
 import { parseStreamJsonLine } from '../lib/stream-json.js';
-import { safePath } from '../repo.js';
+import { REPO_ROOT, safePath } from '../repo.js';
 import { onAutomationStepComplete, onChangeAutomationStepComplete } from './automation.js';
 import type { RunOrigin, RunRecord, RunTags } from './runs.types.js';
 
@@ -193,6 +198,32 @@ export interface StartRunOptions extends StartRunInput {
 // dispatch-spawn-outside-helper). Same precedence chain as before: per-skill
 // SKILL.md frontmatter > settings.local.json > settings.json > CLI default.
 
+// Read the review-gate fields off a change entry. Changes live at the
+// archetype's canonical path vault/wiki/<domain>/change/<id>.md, so probing
+// per-domain beats a full-vault walk. Returns null on any miss (unknown
+// change, wrong type, parse failure) — the caller treats null as "phase
+// unknown" and skips the model_execute override (fail-open).
+function readChangeReviewGate(
+  changeId: string,
+): { review_status: string | null; plan_path: string | null } | null {
+  try {
+    const wikiRoot = join(REPO_ROOT, 'vault', 'wiki');
+    for (const domain of readdirSync(wikiRoot)) {
+      const path = join(wikiRoot, domain, 'change', `${changeId}.md`);
+      if (!existsSync(path)) continue;
+      const { fm, parseError } = parseFrontmatter(readFileSync(path, 'utf8'));
+      if (parseError || fm.type !== 'change') return null;
+      return {
+        review_status: typeof fm.review_status === 'string' ? fm.review_status : null,
+        plan_path: typeof fm.plan_path === 'string' ? fm.plan_path : null,
+      };
+    }
+  } catch {
+    /* fail-open */
+  }
+  return null;
+}
+
 export async function startRun(input: StartRunOptions): Promise<StartRunResult> {
   const { prompt } = input;
   const promptAttribution = extractFromPrompt(prompt) as {
@@ -274,12 +305,42 @@ export async function startRun(input: StartRunOptions): Promise<StartRunResult> 
   // scripts/runs-supervisor.mjs.
   const errPath = stderrPathFor(output_path) as string;
   const wallCapMs = (await resolveWallTimeCapMs(skill)) as number;
+
+  // Phase-aware model override: when the dispatched skill declares
+  // `model_execute:` AND the target change's review gate classifies this
+  // dispatch EXECUTE-bound, that model replaces the skill's `model:` pin
+  // (dual-phase skills like dev-write-change plan and execute from one
+  // skill, so a static pin can't split phases). Fail-open by design — any
+  // read/parse/classify failure keeps today's behavior; the feature can
+  // only ever swap the model, never block a dispatch.
+  let modelOverride: string | null = null;
+  if (skill && change_id) {
+    try {
+      const modelExecute = (await resolveModelExecuteForRun(skill)) as string | null;
+      if (modelExecute) {
+        const gate = readChangeReviewGate(change_id);
+        if (gate && classifyChangeDispatchPhase({ ...gate, prompt }) === 'execute-bound') {
+          modelOverride = modelExecute;
+        }
+      }
+    } catch {
+      /* fail-open — dispatch proceeds on the model: chain */
+    }
+  }
+
   mkdirSync(dirname(output_path), { recursive: true });
   const spawned = (await spawnClaudeOrphaned(prompt, skill, {
     outputPath: output_path,
     stderrPath: errPath,
     logPrefix: 'runs',
-  })) as { pid: number | null; error?: string };
+    model: modelOverride,
+  })) as { pid: number | null; error?: string; effort?: string | null; model?: string | null };
+
+  // Stamp the dispatch-resolved model/effort on the row now — before the
+  // spawn-failure early-finalize below — so pre-init deaths and even
+  // spawn-level failures record what was attempted. finishRun's COALESCE
+  // keeps the model stamp unless a result event supplies the observed id.
+  setDispatchConfig(id, { model: spawned.model ?? null, effort: spawned.effort ?? null });
 
   const session: RunSession = {
     id,

@@ -134,10 +134,18 @@ export function RunRow({ run, onCancel, compact, defaultExpanded = false }: Prop
           <span className="run-row-title">{label}</span>
           {tag && <span className="run-row-tag mono">{tag}</span>}
           <span className="run-row-elapsed">{durationLabel(run)}</span>
+          {(run.model || run.effort) && (
+            <span
+              className="run-row-tag mono"
+              title={`${run.model ?? '(model unset)'}${run.effort ? ` · effort: ${run.effort}` : ''} — resolved at dispatch`}
+            >
+              {[run.model?.replace(/^claude-/, ''), run.effort].filter(Boolean).join(' · ')}
+            </span>
+          )}
           {run.cost_usd != null && run.cost_usd > 0 && (
             <span
               className="run-row-cost"
-              title={`Model: ${run.model ?? '(unknown)'} · in: ${(run.tokens_in ?? 0).toLocaleString()} · out: ${(run.tokens_out ?? 0).toLocaleString()} · cache hit: ${(run.tokens_cache_hit ?? 0).toLocaleString()} · cache write: ${(run.tokens_cache_write ?? 0).toLocaleString()}`}
+              title={`Model: ${run.model ?? '(unknown)'}${run.effort ? ` · effort: ${run.effort}` : ''} · in: ${(run.tokens_in ?? 0).toLocaleString()} · out: ${(run.tokens_out ?? 0).toLocaleString()} · cache hit: ${(run.tokens_cache_hit ?? 0).toLocaleString()} · cache write: ${(run.tokens_cache_write ?? 0).toLocaleString()}`}
             >
               ${run.cost_usd.toFixed(4)}
             </span>
