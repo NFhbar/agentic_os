@@ -21,14 +21,21 @@ afterAll(() => {
 });
 
 let fixtureN = 0;
-function writeFixture(body: string): string {
+// extraFrontmatter appends lines inside the fixture's frontmatter block — the
+// `last_head_sha:` plain/quoted variants can't be expressed otherwise (the
+// helper hardcodes id/type/published). Existing call sites pass only `body`.
+function writeFixture(body: string, extraFrontmatter: string[] = []): string {
   fixtureN += 1;
   const abs = join(tmpDir, `review-${fixtureN}.md`);
-  writeFileSync(
-    abs,
-    `---\nid: review-${fixtureN}\ntype: pr-review\npublished: false\n---\n\n${body}`,
-    'utf8',
-  );
+  const fm = [
+    '---',
+    `id: review-${fixtureN}`,
+    'type: pr-review',
+    'published: false',
+    ...extraFrontmatter,
+    '---',
+  ].join('\n');
+  writeFileSync(abs, `${fm}\n\n${body}`, 'utf8');
   return relative(REPO_ROOT, abs);
 }
 
@@ -93,9 +100,64 @@ describe('lookupLinkedReview — untriagedCount', () => {
       reviewPublished: false,
       reviewGithubReviewId: null,
       passCount: 0,
+      lastHeadSha: null,
       untriagedCount: 0,
+      actedCount: 0,
       standingBlockerCount: 0,
     });
+  });
+});
+
+describe('lookupLinkedReview — lastHeadSha (re-review debounce input)', () => {
+  it('parses last_head_sha plain + quoted; null when absent', () => {
+    const plain = writeFixture('## Pass 1\n\n', ['last_head_sha: abc1234def']);
+    expect(lookupLinkedReview(plain).lastHeadSha).toBe('abc1234def');
+    const quoted = writeFixture('## Pass 1\n\n', ['last_head_sha: "abc1234def"']);
+    expect(lookupLinkedReview(quoted).lastHeadSha).toBe('abc1234def');
+    const absent = writeFixture('## Pass 1\n\n');
+    expect(lookupLinkedReview(absent).lastHeadSha).toBeNull();
+  });
+});
+
+describe('lookupLinkedReview — actedCount', () => {
+  it('counts status:acted-on comments on the latest pass only', () => {
+    const rel = writeFixture(
+      [
+        '## Pass 1',
+        '',
+        // Older pass's acted-on comment must be ignored by the latest-pass scope.
+        comment(1, [
+          '- file: src/a.ts',
+          '- line: 1',
+          '- status: acted-on',
+          '- acted_on_at: 2026-06-12T00:00:00Z',
+        ]),
+        '## Pass 2',
+        '',
+        comment(1, [
+          '- file: src/a.ts',
+          '- line: 10',
+          '- status: acted-on',
+          '- acted_on_at: 2026-07-06T00:00:00Z',
+        ]),
+        comment(2, [
+          '- file: src/b.ts',
+          '- line: 20',
+          '- status: acted-on',
+          '- acted_on_at: 2026-07-06T00:00:00Z',
+        ]),
+        comment(3, ['- file: src/c.ts', '- line: 30', '- status: new']),
+      ].join('\n'),
+    );
+    const lookup = lookupLinkedReview(rel);
+    // Latest pass (2) has 2 acted-on; the older pass's acted-on is out of scope.
+    expect(lookup.actedCount).toBe(2);
+    // acted-on comments don't count as curated; only the new one is untriaged.
+    expect(lookup.commentsToAddress).toBe(0);
+    expect(lookup.untriagedCount).toBe(1);
+    // This is the latest_pass_acted signal for the entry classifier:
+    // actedCount > 0 && commentsToAddress === 0 → the pass is fully handled.
+    expect(lookup.actedCount > 0 && lookup.commentsToAddress === 0).toBe(true);
   });
 });
 

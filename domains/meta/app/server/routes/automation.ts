@@ -9,9 +9,8 @@
 // tick-on-run-terminate.
 
 import { spawnSync } from 'node:child_process';
-import { createReadStream, existsSync } from 'node:fs';
-import type { Dirent } from 'node:fs';
-import { readFile, readdir, writeFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { FastifyPluginAsync } from 'fastify';
@@ -96,24 +95,11 @@ function defaultAutomationConfig(): AutomationConfig {
 
 // ---------------------------------------------------------------------------
 // Helpers — file walks + frontmatter I/O
+//
+// walkMd / resolveRepoLocalPath / readBranchHead moved to ./repo-facts.ts so
+// runs.ts can share them without importing this route module (the same
+// leaf-helper split pr-review-lookup.ts uses). Imported back below.
 // ---------------------------------------------------------------------------
-
-async function walkMd(dir: string): Promise<string[]> {
-  const out: string[] = [];
-  let entries: Dirent[];
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return out;
-  }
-  for (const e of entries) {
-    if (e.name.startsWith('.')) continue;
-    const p = join(dir, e.name);
-    if (e.isDirectory()) out.push(...(await walkMd(p)));
-    else if (e.isFile() && e.name.endsWith('.md')) out.push(p);
-  }
-  return out;
-}
 
 // Locate the project entry by id. Returns frontmatter + path; null when no
 // project entry exists (typo guard for every endpoint).
@@ -603,6 +589,25 @@ export async function checkMergedChangesAndAdvance(): Promise<void> {
     }
     const { fm, parseError } = parseFrontmatter(content);
     if (parseError) continue;
+    // Fold per-change park reconciliation into this same walk (no new timer,
+    // server/index.ts untouched): a paused/terminal change whose step
+    // completed out-of-band clears on the 60s cadence even when no dashboard
+    // poll or gesture touched it. The pre-filter inside makes healthy changes
+    // free.
+    if (fm.type === 'change') {
+      const changeId = typeof fm.id === 'string' ? fm.id : null;
+      if (changeId) {
+        try {
+          await reconcileChangeAutomationIfStale({ fm: fm as Record<string, unknown>, path: file });
+        } catch (e) {
+          console.error(
+            `reconcile-sweep: error for change ${changeId}:`,
+            e instanceof Error ? e.message : e,
+          );
+        }
+      }
+      continue;
+    }
     if (fm.type !== 'project') continue;
     const projectId = typeof fm.id === 'string' ? fm.id : null;
     if (!projectId) continue;
@@ -852,65 +857,22 @@ export { decideNextChangeStep } from './automation-state-machine.js';
 import {
   type ArtifactMovement,
   type ArtifactObservation,
+  TREE_WRITING_STEPS,
   checkChangeAutomationEligibility,
   composeArtifactDetail,
+  composeDirtyTreeRefusal,
   decideNextChangeStep,
+  decideParkReconciliation,
+  deriveCompletedStepFromArtifacts,
   evaluateArtifactMovement,
 } from './automation-state-machine.js';
 import { lookupLinkedReview } from './pr-review-lookup.js';
-
-// Resolve the change's repo entity → local_path. Mirrors the inline walk in
-// changes.ts's replay endpoint (that version lives inside a route handler and
-// isn't exported; duplicating locally beats coupling route modules).
-async function resolveRepoLocalPath(repoId: string | null): Promise<string | null> {
-  if (!repoId) return null;
-  const wikiDir = join(REPO_ROOT, 'vault', 'wiki');
-  const files = await walkMd(wikiDir);
-  for (const file of files) {
-    try {
-      const { fm, parseError } = parseFrontmatter(await readFile(file, 'utf8'));
-      if (parseError) continue;
-      if (fm.type !== 'entity' || fm.kind !== 'repo' || fm.id !== repoId) continue;
-      return typeof fm.local_path === 'string' ? fm.local_path : null;
-    } catch {
-      /* skip */
-    }
-  }
-  return null;
-}
-
-// Read the change branch's head SHA, classifying the outcome for
-// evaluateArtifactMovement:
-//   - head set            — ref resolved
-//   - 'ref-not-found'     — repo dir present, git ran, ref doesn't exist
-//                           (determinate: the branch has no commits)
-//   - 'degraded'          — no branch configured / dir missing / git or
-//                           spawn failure (unknown — gate must stay inert)
-function readBranchHead(
-  localPath: string | null,
-  branch: string | null,
-): { head: string | null; head_error: 'ref-not-found' | 'degraded' | null } {
-  if (!localPath || !branch) return { head: null, head_error: 'degraded' };
-  try {
-    if (!existsSync(localPath)) return { head: null, head_error: 'degraded' };
-    const res = spawnSync(
-      'git',
-      ['-C', localPath, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`],
-      { encoding: 'utf8' },
-    );
-    if (res.error) return { head: null, head_error: 'degraded' };
-    if (res.status === 0) {
-      const sha = (res.stdout ?? '').trim();
-      return sha ? { head: sha, head_error: null } : { head: null, head_error: 'degraded' };
-    }
-    // `--verify --quiet` exits 1 (silently) for a missing ref; other codes
-    // (128 = not a repo, etc.) are infrastructure failures.
-    if (res.status === 1) return { head: null, head_error: 'ref-not-found' };
-    return { head: null, head_error: 'degraded' };
-  } catch {
-    return { head: null, head_error: 'degraded' };
-  }
-}
+import {
+  readBranchHead,
+  readWorkingTreeStatus,
+  resolveRepoLocalPath,
+  walkMd,
+} from './repo-facts.js';
 
 // Gather the caller-side facts evaluateArtifactMovement judges. I/O only —
 // the movement decision itself is the pure function in
@@ -953,12 +915,19 @@ async function readRunSummaryLine(runId: string): Promise<string | null> {
       }
     }
     if (!lastText) return null;
-    const firstLine = lastText
+    const lines = lastText
       .split('\n')
       .map((l) => l.trim())
-      .find((l) => l !== '');
-    if (!firstLine) return null;
-    return firstLine.length > 200 ? `${firstLine.slice(0, 200)}…` : firstLine;
+      .filter((l) => l !== '');
+    if (lines.length === 0) return null;
+    // Prefer the first line that opens with a report glyph — the skill's actual
+    // verdict heading — over narrative preamble. signing #0's tail: the old
+    // first-non-empty-line rule quoted "Everything is now clear on provenance…"
+    // instead of the ✗/✓ report heading.
+    const REPORT_GLYPHS = ['✗', '✓', '⚠', '↻', '⊘'];
+    const glyphLine = lines.find((l) => REPORT_GLYPHS.some((g) => l.startsWith(g)));
+    const chosen = glyphLine ?? lines[0];
+    return chosen.length > 200 ? `${chosen.slice(0, 200)}…` : chosen;
   } catch {
     return null;
   }
@@ -988,7 +957,23 @@ async function dispatchChangeStep(args: {
   // for "branch absent" and reading any later head as movement.
   const branch = typeof fm.branch === 'string' ? fm.branch : null;
   const prReviewPath = typeof fm.pr_review_path === 'string' ? fm.pr_review_path : null;
-  const baselineHead = readBranchHead(await resolveRepoLocalPath(repo), branch);
+  const localPath = await resolveRepoLocalPath(repo);
+  // Clean-tree gate: a tree-writing dispatch (execute / address-comments)
+  // against a dirty clone burns a full run to learn what `git status
+  // --porcelain` says in 10ms — dev-write-change aborts pre-branch anyway.
+  // localPath is already resolved here for the baseline (hoisted, no double
+  // walk). Degraded git read → proceed (fail-open; the skill's own abort is
+  // the precise backstop).
+  if (TREE_WRITING_STEPS.has(step)) {
+    const tree = readWorkingTreeStatus(localPath);
+    if (!tree.degraded && tree.dirty_files.length > 0) {
+      return {
+        ok: false,
+        error: composeDirtyTreeRefusal(step, localPath ?? '<unknown path>', tree.dirty_files),
+      };
+    }
+  }
+  const baselineHead = readBranchHead(localPath, branch);
   const dispatchBaseline: ChangeAutomationDispatchBaseline = {
     head_sha: baselineHead.head,
     head_degraded: baselineHead.head_error === 'degraded',
@@ -1363,13 +1348,177 @@ export async function onChangeAutomationStepComplete(
   }
 }
 
+// Read-time park reconciliation. Re-runs the artifact classifier for a change
+// whose automation block is stale relative to out-of-band completion, and
+// applies the pure decideParkReconciliation result — STATE-ONLY, never
+// dispatches a run (the artifact-aware Start then does the right thing on the
+// next gesture/tick). Returns the POST-reconciliation state (re-read from disk
+// after any write) so callers that gate on phase/eligibility see the cleared
+// block, not the stale one they read before the hook ran. `action: none`
+// returns the caller's own inputs untouched — and a cheap phase/reason
+// pre-filter runs BEFORE any git spawn, so healthy changes cost zero extra I/O.
+async function reconcileChangeAutomationIfStale(found: {
+  fm: Record<string, unknown>;
+  path: string;
+}): Promise<{
+  fm: Record<string, unknown>;
+  path: string;
+  automation: ChangeAutomation | null;
+  reconciled: boolean;
+}> {
+  const automation = readChangeAutomationLocal(found.fm);
+  const noop = { fm: found.fm, path: found.path, automation, reconciled: false };
+  if (!automation) return noop;
+  const phase = automation.state.phase;
+  const change_status = typeof found.fm.status === 'string' ? found.fm.status : null;
+  const isTerminalStatus = change_status === 'merged' || change_status === 'abandoned';
+  const reason = automation.state.paused_reason ?? '';
+  const reasonAutoUnparkable =
+    phase === 'paused' &&
+    (reason.startsWith('skill-failure') || reason.startsWith('skill-refused'));
+  const terminalCandidate =
+    isTerminalStatus &&
+    (phase === 'paused' || phase === 'running') &&
+    automation.state.current_step !== null;
+  // Pre-filter: only paused-auto-unparkable or terminal-with-live-block
+  // changes ever pay for a git spawn.
+  if (!reasonAutoUnparkable && !terminalCandidate) return noop;
+
+  const observed = await gatherArtifactObservation(found.fm);
+  const prReviewPath = typeof found.fm.pr_review_path === 'string' ? found.fm.pr_review_path : null;
+  const review = prReviewPath ? lookupLinkedReview(prReviewPath) : null;
+  const latest_pass_acted = review
+    ? review.actedCount > 0 && review.commentsToAddress === 0
+    : false;
+
+  const decision = decideParkReconciliation({
+    change_status,
+    phase,
+    paused_reason: automation.state.paused_reason,
+    current_step: automation.state.current_step,
+    baseline: automation.state.dispatch_baseline ?? null,
+    observed,
+    latest_pass_acted,
+  });
+  if (decision.action === 'none') return noop;
+
+  const changeId = typeof found.fm.id === 'string' ? found.fm.id : '';
+  const nowIso = new Date().toISOString();
+  if (decision.action === 'complete-terminal') {
+    // Direct write — NOT completeChangeAutomation, whose pr_review_status
+    // pending → approved upgrade must not fire as a side effect of terminal
+    // cleanup on a merged change.
+    const next: ChangeAutomation = {
+      ...automation,
+      state: {
+        ...automation.state,
+        phase: 'complete',
+        paused_reason: null,
+        paused_at: null,
+        last_transition: nowIso,
+      },
+    };
+    await writeChangeAutomation(found.path, next);
+    recordAudit(
+      'change-automation-complete',
+      { change: changeId, reconciled: true, change_status, detail: decision.detail },
+      [relative(REPO_ROOT, found.path)],
+    );
+  } else {
+    // unpark → idle. KEEP current_step + dispatch_baseline so the next Start's
+    // re-evaluate sees artifact_moved: true and advances PAST the completed
+    // step. Null last_run_id neutralizes the stale non-zero exit that produced
+    // the verdict-state resume → re-park-in-339ms loop (safe under the
+    // tightened bar — unpark fires only when the step verifiably completed).
+    const next: ChangeAutomation = {
+      ...automation,
+      state: {
+        ...automation.state,
+        phase: 'idle',
+        paused_reason: null,
+        paused_at: null,
+        last_run_id: null,
+        last_transition: nowIso,
+      },
+    };
+    await writeChangeAutomation(found.path, next);
+    recordAudit(
+      'change-automation-reconciled',
+      {
+        change: changeId,
+        step: automation.state.current_step,
+        prior_reason: automation.state.paused_reason,
+        detail: decision.detail,
+      },
+      [relative(REPO_ROOT, found.path)],
+    );
+  }
+
+  // Re-read fresh state from the just-written file (cheaper than a full
+  // findChange re-walk — we already hold the path).
+  try {
+    const { fm: freshFm } = parseFrontmatter(await readFile(found.path, 'utf8'));
+    const fresh = freshFm as Record<string, unknown>;
+    return {
+      fm: fresh,
+      path: found.path,
+      automation: readChangeAutomationLocal(fresh),
+      reconciled: true,
+    };
+  } catch {
+    return {
+      fm: found.fm,
+      path: found.path,
+      automation: readChangeAutomationLocal(found.fm),
+      reconciled: true,
+    };
+  }
+}
+
+// Derive the step a Start would dispatch NEXT from artifacts — the same
+// classifier composition /start's null-branch uses, factored for the
+// enable-time clean-tree gate. Returns the dispatch step, or null when the
+// entry derivation would park/complete (not a tree-writing dispatch, so the
+// gate is moot). iteration_count/cap only matter for the needs-changes tier;
+// the default cap is fine for deciding "would the next dispatch write the tree".
+async function deriveEntryDispatchStep(
+  fm: Record<string, unknown>,
+): Promise<ChangeAutomationStep | null> {
+  const observed = await gatherArtifactObservation(fm);
+  const prReviewPath = typeof fm.pr_review_path === 'string' ? fm.pr_review_path : null;
+  const review = prReviewPath ? lookupLinkedReview(prReviewPath) : null;
+  const latest_pass_acted = review
+    ? review.actedCount > 0 && review.commentsToAddress === 0
+    : false;
+  const change_status = typeof fm.status === 'string' ? fm.status : null;
+  const completed = deriveCompletedStepFromArtifacts({
+    change_status,
+    observed,
+    latest_pass_acted,
+  });
+  if (completed === null) return 'execute';
+  const decision = decideNextChangeStep({
+    current_step: completed,
+    iteration_count: 0,
+    iteration_cap: DEFAULT_ITERATION_CAP,
+    last_exit: 0,
+    pr_review_status: typeof fm.pr_review_status === 'string' ? fm.pr_review_status : null,
+    comments_to_address: review ? review.commentsToAddress : null,
+    artifact_moved: true,
+  });
+  return decision.action === 'dispatch' ? decision.step : null;
+}
+
 // Snapshot helper for the change-status endpoint. Builds the
 // ChangeAutomationStatusResponse shape — the wire contract documented in
-// automation.types.ts.
+// automation.types.ts. Accepts an optional pre-read `{ fm, path }` so callers
+// that already walked (GET → reconcile) build from the fresh state without a
+// second wiki walk.
 async function buildChangeStatusResponse(
   changeId: string,
+  preRead?: { fm: Record<string, unknown>; path: string },
 ): Promise<ChangeAutomationStatusResponse> {
-  const found = await findChange(changeId);
+  const found = preRead ?? (await findChange(changeId));
   if (!found) {
     return { ok: false, automation: null, change_summary: null };
   }
@@ -1672,11 +1821,16 @@ export const changeAutomationRoutes: FastifyPluginAsync = async (fastify) => {
   // detail endpoint also surfaces this via `change.automation`, but a
   // dedicated GET lets the dashboard's Automation panel poll cheaply.
   fastify.get<{ Params: { id: string } }>('/:id/automation', async (req, reply) => {
-    const status = await buildChangeStatusResponse(req.params.id);
-    if (!status.ok) {
+    const found = await findChange(req.params.id);
+    if (!found) {
       reply.code(404);
+      return { ok: false, automation: null, change_summary: null };
     }
-    return status;
+    // Poll-time park reconciliation: a stale paused/terminal block clears here
+    // (state-only) so the panel reflects out-of-band completion. Build from the
+    // post-reconciliation state to avoid a second wiki walk.
+    const reconciled = await reconcileChangeAutomationIfStale(found);
+    return buildChangeStatusResponse(req.params.id, { fm: reconciled.fm, path: reconciled.path });
   });
 
   // GET /api/changes/:id/automation/decisions — orchestrator decision log.
@@ -1768,6 +1922,29 @@ export const changeAutomationRoutes: FastifyPluginAsync = async (fastify) => {
       reply.code(400);
       return { ok: false, error: eligibility.reason };
     }
+    // Clean-tree gate at enable time too (the audit's "at enable time AND again
+    // immediately before dispatching"). If the entry step is tree-writing and
+    // the clone is dirty, refuse to arm — an EXECUTE-bound Start would just burn
+    // a run learning that. A change whose next step is pr-review/open-pr can
+    // still arm with a dirty tree (the tree is irrelevant to those dispatches).
+    const enableStep = await deriveEntryDispatchStep(found.fm);
+    if (enableStep && TREE_WRITING_STEPS.has(enableStep)) {
+      const localPath = await resolveRepoLocalPath(
+        typeof found.fm.repo === 'string' ? found.fm.repo : null,
+      );
+      const tree = readWorkingTreeStatus(localPath);
+      if (!tree.degraded && tree.dirty_files.length > 0) {
+        reply.code(400);
+        return {
+          ok: false,
+          error: composeDirtyTreeRefusal(
+            enableStep,
+            localPath ?? '<unknown path>',
+            tree.dirty_files,
+          ),
+        };
+      }
+    }
     const current = readChangeAutomationLocal(found.fm);
     const next: ChangeAutomation = current
       ? {
@@ -1842,19 +2019,23 @@ export const changeAutomationRoutes: FastifyPluginAsync = async (fastify) => {
     Body: { reset_iteration?: boolean };
   }>('/:id/automation/resume', async (req, reply) => {
     const changeId = req.params.id;
-    const found = await findChange(changeId);
-    if (!found) {
+    const found0 = await findChange(changeId);
+    if (!found0) {
       reply.code(404);
       return { ok: false, error: `change "${changeId}" not found` };
     }
-    const current = readChangeAutomationLocal(found.fm);
+    // Reconcile first — a park that completed out-of-band clears to idle here,
+    // so Resume correctly no-ops (nothing to resume) rather than re-dispatching.
+    const reconciledResume = await reconcileChangeAutomationIfStale(found0);
+    const found = { fm: reconciledResume.fm, path: reconciledResume.path };
+    const current = reconciledResume.automation;
     if (!current) {
       reply.code(400);
       return { ok: false, error: 'automation not configured — call enable first' };
     }
     if (current.state.phase !== 'paused') {
-      // Already idle/running/complete — noop.
-      return buildChangeStatusResponse(changeId);
+      // Already idle/running/complete (possibly just reconciled) — noop.
+      return buildChangeStatusResponse(changeId, found);
     }
     const nowIso = new Date().toISOString();
     const next: ChangeAutomation = {
@@ -1889,12 +2070,18 @@ export const changeAutomationRoutes: FastifyPluginAsync = async (fastify) => {
   //                        previous run's recorded exit status
   fastify.post<{ Params: { id: string } }>('/:id/automation/start', async (req, reply) => {
     const changeId = req.params.id;
-    const found = await findChange(changeId);
-    if (!found) {
+    const found0 = await findChange(changeId);
+    if (!found0) {
       reply.code(404);
       return { ok: false, error: `change "${changeId}" not found` };
     }
-    const current = readChangeAutomationLocal(found.fm);
+    // Reconcile a stale park BEFORE the gates so Start acts on the fresh
+    // (possibly just-cleared) state — an out-of-band-completed step unparks to
+    // idle here, and the artifact-derived re-evaluate below then advances PAST
+    // it rather than re-dispatching the completed step.
+    const reconciledStart = await reconcileChangeAutomationIfStale(found0);
+    const found = { fm: reconciledStart.fm, path: reconciledStart.path };
+    const current = reconciledStart.automation;
     if (!current) {
       reply.code(400);
       return { ok: false, error: 'automation not configured — call enable first' };
@@ -1921,16 +2108,53 @@ export const changeAutomationRoutes: FastifyPluginAsync = async (fastify) => {
       reply.code(400);
       return { ok: false, error: eligibility.reason };
     }
-    // Decide the next step. First dispatch (current_step null) defaults to
-    // execute. Subsequent restarts (post-Resume) re-evaluate the state
-    // machine with the previous run's recorded exit — and, when a dispatch
-    // baseline was recorded, verify the step's artifact actually moved so a
-    // skill-refused park can't be skipped past via Resume → Start.
+    // Decide the next step from ARTIFACTS, not status alone. First dispatch
+    // (current_step null) derives the completed step from the change's branch
+    // commits + pr_url + pr-review pass state, so a change with completed
+    // execute/open-pr artifacts advances to the right step instead of a
+    // redundant execute dispatch (the 2026-07-06 double-cancel). Subsequent
+    // restarts (post-Resume) re-evaluate with the previous run's recorded exit
+    // — and, when a dispatch baseline was recorded, verify the step's artifact
+    // actually moved so a skill-refused park can't be skipped past via
+    // Resume → Start.
     const pr_review_status =
       typeof found.fm.pr_review_status === 'string' ? found.fm.pr_review_status : null;
+    // Linked-review facts, computed ONCE — feeds both the Task-#427 no-op-loop
+    // guard (comments_to_address, previously absent on the manual Start path)
+    // and the entry classifier's latest_pass_acted.
+    const startPrReviewPath =
+      typeof found.fm.pr_review_path === 'string' ? found.fm.pr_review_path : null;
+    const startReview = startPrReviewPath ? lookupLinkedReview(startPrReviewPath) : null;
+    const comments_to_address = startReview ? startReview.commentsToAddress : null;
+    const latest_pass_acted = startReview
+      ? startReview.actedCount > 0 && startReview.commentsToAddress === 0
+      : false;
     let decision: ChangeAutomationDecision;
     if (current.state.current_step === null) {
-      decision = { action: 'dispatch', step: 'execute' };
+      // Derive the completed step from artifacts. null = genuinely fresh →
+      // dispatch execute (today's behavior). Otherwise re-use the transition
+      // table (artifact_moved: true — the postcondition is what the classifier
+      // just proved) so open-pr follows execute, pr-review follows open-pr, and
+      // the full verdict/cap/needs-triage logic follows pr-review — ONE table.
+      const observed = await gatherArtifactObservation(found.fm);
+      const change_status = typeof found.fm.status === 'string' ? found.fm.status : null;
+      const completed = deriveCompletedStepFromArtifacts({
+        change_status,
+        observed,
+        latest_pass_acted,
+      });
+      decision =
+        completed === null
+          ? { action: 'dispatch', step: 'execute' }
+          : decideNextChangeStep({
+              current_step: completed,
+              iteration_count: current.state.iteration_count,
+              iteration_cap: current.iteration_cap,
+              last_exit: 0,
+              pr_review_status,
+              comments_to_address,
+              artifact_moved: true,
+            });
     } else {
       // Thread the recorded exit of the run being re-evaluated rather than
       // asserting 0 — a re-driven skill-failure park should report the exit
@@ -1974,6 +2198,7 @@ export const changeAutomationRoutes: FastifyPluginAsync = async (fastify) => {
         iteration_cap: current.iteration_cap,
         last_exit,
         pr_review_status,
+        comments_to_address,
         artifact_moved,
         artifact_detail,
       });
@@ -2016,8 +2241,15 @@ export const changeAutomationRoutes: FastifyPluginAsync = async (fastify) => {
       step: decision.step,
     });
     if (!dispatched.ok) {
-      reply.code(500);
-      return { ok: false, error: `dispatch failed: ${dispatched.error}` };
+      // Guard refusals (dirty-tree, ⊘ debounce) are client-actionable → 409;
+      // infrastructure dispatch errors stay 500.
+      const isGuard =
+        dispatched.error.startsWith('dirty-tree:') || dispatched.error.startsWith('⊘');
+      reply.code(isGuard ? 409 : 500);
+      return {
+        ok: false,
+        error: isGuard ? dispatched.error : `dispatch failed: ${dispatched.error}`,
+      };
     }
     return buildChangeStatusResponse(changeId);
   });

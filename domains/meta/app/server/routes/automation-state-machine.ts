@@ -11,7 +11,7 @@
 // rules should be encoded here. The tests in
 // tests/unit/automation/decideNextChangeStep.test.ts cover every row.
 
-import type { ChangeAutomationDecision } from './automation.types.js';
+import type { ChangeAutomationDecision, ChangeAutomationStep } from './automation.types.js';
 import type { ChangeAutomationDispatchBaseline } from './changes.types.js';
 
 // Eligibility gate for the change-automation entry points (enable + start).
@@ -135,6 +135,67 @@ export function composeArtifactDetail(
   return detail;
 }
 
+// Lifecycle ordering of the v1 steps — the rank the park-reconciliation
+// postcondition check compares against (a parked step's postcondition holds
+// when the classifier returns a step of equal-or-higher rank). Kept beside
+// the classifier it's read with so the two never drift.
+export const STEP_RANK: Readonly<Record<ChangeAutomationStep, number>> = Object.freeze({
+  execute: 1,
+  'open-pr': 2,
+  'pr-review': 3,
+  'address-comments': 4,
+});
+
+// Classify the highest lifecycle step whose postcondition artifacts already
+// exist — `null` means nothing is done yet. This is the artifact-aware
+// boundary the tick-advance already implies, extracted so BOTH entry points
+// (`/start`'s first dispatch and park reconciliation) derive the step from
+// artifacts rather than from `status` alone. Pure — no I/O; the caller gathers
+// the ArtifactObservation.
+//
+// `latest_pass_acted` = the linked review's latest pass has ≥1 acted-on
+// comment AND zero still-curated (the caller computes it as
+// `actedCount > 0 && commentsToAddress === 0`).
+export function deriveCompletedStepFromArtifacts(args: {
+  change_status: string | null;
+  observed: ArtifactObservation;
+  latest_pass_acted: boolean;
+}): ChangeAutomationStep | null {
+  const { change_status, observed, latest_pass_acted } = args;
+
+  // A linked pr-review with ≥1 pass means pr-review ran. If every curated
+  // comment on that pass is already acted-on the loop's last completed step
+  // was address-comments — so the next derived step is a re-review, not a
+  // needs-triage park.
+  //
+  // Known pre-existing edge (shared with the auto-tick path): a needs-changes
+  // pass whose comments are ALL dismissed (zero curated, zero acted) derives
+  // 'pr-review' completed, and the reused decideNextChangeStep table then
+  // parks needs-triage with nothing left to triage. Kept as-is — identical to
+  // today's tick behavior; recovery is re-triage or a forced re-review —
+  // documented here so it isn't rediscovered as a bug.
+  if (observed.pr_review_path_set && (observed.pass_count ?? 0) > 0) {
+    return latest_pass_acted ? 'address-comments' : 'pr-review';
+  }
+  // A linked PR but no review pass yet → open-pr completed (dev-open-pr is
+  // idempotent, so any non-empty pr_url is the satisfied postcondition).
+  if (typeof observed.pr_url === 'string' && observed.pr_url !== '') return 'open-pr';
+  // A branch ref exists AND status left 'planning' → execute completed.
+  // EXECUTE's own writeback flips status planning → in-progress; a branch at
+  // status planning means EXECUTE committed but never reached its writeback
+  // (the wall-cap-commit class) — so it did NOT complete.
+  if (observed.head !== null && change_status !== 'planning') return 'execute';
+  // Degraded head read → trust frontmatter status alone (conservative — same
+  // dispatch as today when git is unreadable).
+  if (observed.head_error === 'degraded') {
+    if (change_status === 'in-progress') return 'execute';
+    if (change_status === 'in-review') return 'open-pr';
+    return null;
+  }
+  // ref-not-found, no PR, no passes → nothing done yet.
+  return null;
+}
+
 // Decide the next gesture given the change's current state + the outcome of
 // the most recent run. Pure function — no side effects, no I/O.
 export function decideNextChangeStep(args: {
@@ -248,4 +309,163 @@ export function decideNextChangeStep(args: {
         reason: `unknown-step: '${args.current_step}' — orchestrator vocabulary out of sync`,
       };
   }
+}
+
+// Result of the park-reconciliation decision (read-time, state-only — never
+// dispatches). `complete-terminal` cleans up a stale block on a merged/
+// abandoned change (restores the on-complete audit trigger that a stuck
+// `paused` block suppressed); `unpark` clears a park whose step completed
+// out-of-band so the next Start advances; `none` = leave the block alone.
+export type ParkReconciliation =
+  | { action: 'complete-terminal'; detail: string }
+  | { action: 'unpark'; detail: string }
+  | { action: 'none' };
+
+// Pause-reason prefixes whose parks auto-reconcile — but ONLY when BOTH the
+// movement bar AND the postcondition bar hold (see decideParkReconciliation).
+// Deliberately EXCLUDES:
+//   - user-paused                 explicit human stop — never overridden
+//   - needs-triage                waits on comment triage; its step artifact
+//                                 already moved at park time, so movement
+//                                 alone would flip-flop every poll
+//   - iteration-cap-reached       documented Reset/Resume recovery
+//   - verification-unavailable    documented Reset recovery (degraded baseline)
+//   - dispatch-failure            current_step is the completed PREVIOUS step,
+//                                 so both bars hold by construction at park
+//                                 time — auto-unpark would erase the new
+//                                 debounce/dirty-tree refusal that IS the
+//                                 operator's cue, within one poll
+// See standard-automation-loop § Park reconciliation.
+const AUTO_UNPARK_PREFIXES = ['skill-failure', 'skill-refused'] as const;
+
+function stepRank(step: string | null): number {
+  return (STEP_RANK as Record<string, number | undefined>)[step ?? ''] ?? 0;
+}
+
+// Decide whether a change's automation block should reconcile against
+// out-of-band artifact state. Pure — the caller gathers observations and
+// applies the result (state-only write, no dispatch).
+export function decideParkReconciliation(args: {
+  change_status: string | null;
+  phase: string;
+  paused_reason: string | null;
+  current_step: string | null;
+  baseline: ChangeAutomationDispatchBaseline | null;
+  observed: ArtifactObservation;
+  latest_pass_acted: boolean;
+}): ParkReconciliation {
+  const {
+    change_status,
+    phase,
+    paused_reason,
+    current_step,
+    baseline,
+    observed,
+    latest_pass_acted,
+  } = args;
+
+  // Terminal: a merged/abandoned change with a live (paused|running) block +
+  // a current_step never fired the on-complete audit trigger (phase-aware #0's
+  // Exit case). Deliberately NARROW to phase ∈ {paused, running}: an `idle`
+  // block with a live current_step on a terminal change pre-exists this
+  // mechanism (nothing reconciles it today either, and the absorbed audit
+  // case was `paused`). Widening to "any block with current_step != null"
+  // would be strictly safe — a merged/abandoned status makes the lifecycle
+  // terminally done regardless of phase — but is kept out of scope so this
+  // change lands exactly the plan the review approved.
+  if (
+    (change_status === 'merged' || change_status === 'abandoned') &&
+    (phase === 'paused' || phase === 'running') &&
+    current_step !== null
+  ) {
+    return {
+      action: 'complete-terminal',
+      detail: `change ${change_status} with a live ${phase} block at ${current_step} — completing terminal cleanup`,
+    };
+  }
+
+  // Unpark: only skill-failure/skill-refused parks, and only when BOTH bars
+  // hold — movement since this park's own dispatch (evaluateArtifactMovement
+  // === true) AND the parked step's postcondition (classifier rank ≥ parked
+  // step's rank). Movement alone proves commits landed, not that
+  // execute/address-comments finished — the wall-cap partial-completion class
+  // (commits landed, status still planning → classifier null) must stay
+  // parked. The postcondition alone is satisfiable by a PRIOR pass for a
+  // re-review park (pass_count > 0 already holds → would unpark on stale
+  // evidence, then the next Start re-parks). The conjunction never loosens:
+  // for open-pr and a first-pass pr-review the two bars coincide. Absent/
+  // degraded baseline → movement is not `true` → no unpark (legacy parks
+  // recover via Resume/Reset as today).
+  if (
+    phase === 'paused' &&
+    AUTO_UNPARK_PREFIXES.some((p) => (paused_reason ?? '').startsWith(p)) &&
+    baseline !== null &&
+    evaluateArtifactMovement(current_step, baseline, observed) === true
+  ) {
+    const completed = deriveCompletedStepFromArtifacts({
+      change_status,
+      observed,
+      latest_pass_acted,
+    });
+    if (completed !== null && stepRank(completed) >= stepRank(current_step)) {
+      return {
+        action: 'unpark',
+        detail: `${current_step} postcondition satisfied out-of-band (completed step: ${completed}) — clearing ${(paused_reason ?? 'park').split(':')[0]}`,
+      };
+    }
+  }
+
+  return { action: 'none' };
+}
+
+// Server-side re-review debounce decision. Refuses a dev-pr-review dispatch
+// ONLY when the last-reviewed head and the live branch head are both known,
+// equal, and force isn't set — every unknown fails OPEN to dispatch. Pure —
+// the caller gathers last_head_sha (from the linked review) + live_head (git).
+//
+// Deliberately compares the LOCAL branch head, not the GitHub PR head (no
+// PAT-dependent network call in the dispatch path). The stranded-unpushed
+// -commit case (local head moved, GitHub head didn't) intentionally PASSES
+// this gate and is caught by dev-pr-review's own in-skill head_sha gate with
+// its richer "unpushed commit" diagnosis — the audits' own division of labor.
+export type PrReviewDebounce = { refuse: false } | { refuse: true; message: string };
+
+export function evaluatePrReviewDebounce(args: {
+  last_head_sha: string | null;
+  live_head: string | null;
+  pass_count: number | null;
+  force: boolean;
+}): PrReviewDebounce {
+  const { last_head_sha, live_head, pass_count, force } = args;
+  // force, or any unknown head → dispatch (fail-open).
+  if (force || !last_head_sha || !live_head) return { refuse: false };
+  if (last_head_sha !== live_head) return { refuse: false };
+  const n = pass_count ?? 0;
+  const s7 = (s: string) => s.slice(0, 7);
+  return {
+    refuse: true,
+    message: `⊘ Re-review debounced — head unchanged since pass ${n} (last reviewed ${s7(last_head_sha)}, branch head ${s7(live_head)}); push new commits or re-dispatch with force: true for a fresh pass against the same head`,
+  };
+}
+
+// Steps that write the working tree (create a branch, commit) — the dispatches
+// the clean-tree gate probes before spawning. address-comments is included
+// deliberately: it is EXECUTE-bound per classifyChangeDispatchPhase and hits
+// the same dirty-tree wall inside dev-write-change's Step 4b. open-pr and
+// pr-review don't touch the tree, so a dirty clone is irrelevant to them.
+export const TREE_WRITING_STEPS: ReadonlySet<string> = new Set(['execute', 'address-comments']);
+
+// Single-line dirty-tree refusal for a tree-writing dispatch. Park reasons
+// serialize into one-line YAML flow via rewriteFrontmatter, so the whole
+// message — including the file list — must stay on one line. Caps the list at
+// 10 porcelain lines with a `+N more` tail.
+export function composeDirtyTreeRefusal(
+  step: string,
+  localPath: string,
+  dirtyFiles: string[],
+): string {
+  const CAP = 10;
+  const shown = dirtyFiles.slice(0, CAP).join(' · ');
+  const extra = dirtyFiles.length > CAP ? ` · +${dirtyFiles.length - CAP} more` : '';
+  return `dirty-tree: cannot dispatch ${step} — working tree at ${localPath} has ${dirtyFiles.length} uncommitted change(s): ${shown}${extra} — commit/stash/discard first (mirrors dev-write-change's own pre-branch abort)`;
 }

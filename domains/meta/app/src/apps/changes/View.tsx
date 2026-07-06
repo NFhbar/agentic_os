@@ -293,19 +293,25 @@ export default function Changes() {
       project?: string | null;
       domain?: string | null;
     },
+    opts?: { force?: boolean },
   ) {
     setLastDispatchToast(null);
-    const res = await startSkillRun(prompt, title, tags);
+    const res = await startSkillRun(prompt, title, tags, opts);
     if ('blocked' in res && res.blocked) {
       setLastDispatchToast(
         `Already running on this change: ${res.blocking.skill ?? 'unknown skill'} (${res.blocking.run_id}). Cancel or wait.`,
       );
-      return;
+      return res;
     }
     if ('error' in res && res.error) {
-      setLastDispatchToast(`Dispatch failed: ${res.error}`);
-      return;
+      // head-unchanged refusals are actionable — invokeReviewPr offers a force
+      // retry, so skip the dead-end toast for those; toast every other error.
+      if (!('refusal' in res && res.refusal === 'head-unchanged')) {
+        setLastDispatchToast(`Dispatch failed: ${res.error}`);
+      }
+      return res;
     }
+    return res;
   }
 
   // Resolve change tags (domain, repo, project) from the loaded detail when
@@ -542,7 +548,7 @@ export default function Changes() {
     });
   }
 
-  function invokeReviewPr(changeId: string, prUrl: string) {
+  async function invokeReviewPr(changeId: string, prUrl: string, force?: boolean) {
     const prompt = [
       `Run the dev-pr-review skill against the PR opened for change "${changeId}".`,
       'Read .claude/skills/dev-pr-review/SKILL.md and follow its Procedure exactly.',
@@ -550,6 +556,9 @@ export default function Changes() {
       'Inputs:',
       `- pr: ${JSON.stringify(prUrl)}`,
       `- change: ${JSON.stringify(changeId)}`,
+      // A forced pass carries the skill's own force: true so the in-skill
+      // head_sha gate is bypassed too (belt-and-braces with the server gate).
+      ...(force ? ['- force: true'] : []),
       '',
       'IMPORTANT — headless dashboard-driven call:',
       '- Do NOT use AskUserQuestion or any interactive prompt.',
@@ -557,10 +566,20 @@ export default function Changes() {
       '- Write the pr-review archetype entry to vault/wiki/development/pr-review/.',
       '- Report a tight summary (counts by category + final result) at the end.',
     ].join('\n');
-    dispatchSkill(prompt, `Reviewing PR for ${changeId}`, {
-      ...tagsForChange(changeId),
-      skill: 'dev-pr-review',
-    });
+    const res = await dispatchSkill(
+      prompt,
+      `Reviewing PR for ${changeId}`,
+      { ...tagsForChange(changeId), skill: 'dev-pr-review' },
+      { force },
+    );
+    // Server-side re-review debounce refused (head unchanged since the last
+    // pass). Offer a forced fresh pass — confirm-only modal per the UI
+    // convention (modals for confirmations, not forms).
+    if ('error' in res && res.refusal === 'head-unchanged' && !force) {
+      if (window.confirm(`${res.error}\n\nForce a fresh pass against the same head?`)) {
+        invokeReviewPr(changeId, prUrl, true);
+      }
+    }
   }
 
   const refresh = useCallback(async () => {

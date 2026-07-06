@@ -119,6 +119,20 @@ export async function resolveModelExecuteForRun(skillName) {
   return v && isValidModel(v) ? v : null;
 }
 
+// Phase-aware effort override for dual-phase skills (`effort_execute:`
+// frontmatter) — the sibling of resolveModelExecuteForRun. Same shape:
+// frontmatter-only (no settings.local.json / settings.json fallback, since the
+// phase split is a property of the specific dual-phase skill, not an install
+// preference), applied by startRun only when the dispatch classifies
+// EXECUTE-bound; PLAN-bound keeps the `effort:` chain. Validated against
+// VALID_EFFORTS — invalid → null → the existing effort chain (fail-open: this
+// feature can only ever swap the effort, never block a dispatch).
+export async function resolveEffortExecuteForRun(skillName) {
+  if (!skillName) return null;
+  const v = await readSkillField(skillName, 'effort_execute');
+  return v && VALID_EFFORTS.has(v) ? v : null;
+}
+
 // ---------------------------------------------------------------------------
 // Wall-time cap resolution — per-skill, derived from measured durations.
 //
@@ -204,9 +218,13 @@ export async function resolveWallTimeCapMs(skillName) {
 }
 
 // Build the full `claude` argv for a headless skill dispatch.
-export async function buildClaudeArgs(prompt, skillName, { model: modelOverride = null } = {}) {
+export async function buildClaudeArgs(
+  prompt,
+  skillName,
+  { model: modelOverride = null, effort: effortOverride = null } = {},
+) {
   const [effort, model] = await Promise.all([
-    resolveEffortForRun(skillName ?? null),
+    effortOverride ? Promise.resolve(effortOverride) : resolveEffortForRun(skillName ?? null),
     modelOverride ? Promise.resolve(modelOverride) : resolveModelForRun(skillName ?? null),
   ]);
   const args = [
@@ -233,9 +251,9 @@ export async function buildClaudeArgs(prompt, skillName, { model: modelOverride 
 export async function spawnClaude(
   prompt,
   skillName,
-  { logPrefix = 'dispatch', stdio = ['ignore', 'pipe', 'pipe'], detached = false, model: modelOverride = null } = {},
+  { logPrefix = 'dispatch', stdio = ['ignore', 'pipe', 'pipe'], detached = false, model: modelOverride = null, effort: effortOverride = null } = {},
 ) {
-  const { args, effort, model } = await buildClaudeArgs(prompt, skillName, { model: modelOverride });
+  const { args, effort, model } = await buildClaudeArgs(prompt, skillName, { model: modelOverride, effort: effortOverride });
   if (effort || model) {
     // stderr: callers like eval-skill-edit's replay subcommand print JSON
     // on stdout; the dispatch log must not corrupt it.
@@ -265,9 +283,9 @@ export async function spawnClaude(
 export async function spawnClaudeOrphaned(
   prompt,
   skillName,
-  { outputPath, stderrPath, logPrefix = 'dispatch', model: modelOverride = null },
+  { outputPath, stderrPath, logPrefix = 'dispatch', model: modelOverride = null, effort: effortOverride = null },
 ) {
-  const { args, effort, model } = await buildClaudeArgs(prompt, skillName, { model: modelOverride });
+  const { args, effort, model } = await buildClaudeArgs(prompt, skillName, { model: modelOverride, effort: effortOverride });
   if (effort || model) {
     console.error(
       `${logPrefix}: spawning ${skillName ?? '(unknown skill)'}${effort ? ` --effort ${effort}` : ''}${model ? ` --model ${model}` : ''}`,

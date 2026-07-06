@@ -6,7 +6,16 @@ The canonical version is recorded at [`vault/wiki/_seed/meta/reference/os-versio
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **Artifact-aware orchestrator boundaries + dispatch hygiene (absorbs 7 recurrence-backed audit suggestions).** The per-change automation orchestrator's tick-forward advance was artifact-aware but its boundaries weren't — one pure artifact-state classifier (`deriveCompletedStepFromArtifacts`) now drives all of them:
+  - **Artifact-derived entry.** `/start` derives the completed step from branch commits + `pr_url` + pr-review pass state instead of mapping from `status` alone, then re-uses the existing `decideNextChangeStep` table — a change with completed execute/open-pr artifacts advances to the right step instead of a redundant Fable execute dispatch (the live 2026-07-06 double-cancel: two cancelled dispatches in one lifecycle).
+  - **Park reconciliation.** A paused block whose step completed out-of-band (operator hand-finished it — e.g. open-pr 19s after a park) unparks on the next read/tick/gesture, and a merged/abandoned change with a live block completes-terminal (restoring the on-complete audit trigger a stuck park suppressed) — both STATE-ONLY (never dispatch from a poll), logged as `change-automation-reconciled` / `-complete`. The unpark bar is a conjunction (artifact movement AND the classifier postcondition), so a wall-capped partial EXECUTE (committed but never wrote its status) and a stale re-review park both stay parked; `user-paused` / `needs-triage` / `iteration-cap-reached` / `verification-unavailable` / `dispatch-failure` never auto-reconcile (the last so the new guard refusals persist as the operator's cue). Hooked at `GET /automation`, `/start`, `/resume`, and the existing 60s merge-watcher walk (no new timer).
+  - **Server-side re-review debounce.** A `dev-pr-review` dispatch against an unchanged branch head refuses in `startRun` (`⊘ Re-review debounced …`, HTTP 409) before spawning — the ≈$9 no-op-loop three audits cited. Both dispatch paths (orchestrator + dashboard Run-review) converge on `startRun`; `force: true` (a dashboard confirm affordance or the CLI's own input) bypasses. Compares the LOCAL head — the unpushed-commit divergence passes and is caught by dev-pr-review's own head_sha gate.
+  - **Clean-tree dispatch gate.** An EXECUTE-bound dispatch (`execute` / `address-comments`) — and `/enable` — against a dirty clone refuses with the capped `git status --porcelain` file list instead of burning a full run to learn it in 10ms (dev-write-change aborts pre-branch anyway).
+  - **`effort_execute` frontmatter — sibling of `model_execute`.** An EXECUTE-bound dispatch swaps the skill's `effort:` pin (frontmatter-only, validated, fail-open), stamped in run telemetry like model. `dev-write-change` ships `effort_execute: xhigh` — Opus executes at the posture's xhigh floor while Fable plans at `max`.
+
+  All additive, no migration: optional `effort_execute:` frontmatter (absent = today's behavior), optional `force` on the wire, extra optional `ReviewLookup` fields (`lastHeadSha`, `actedCount`), a new `StartRunResult` refusal variant. New leaf module `server/routes/repo-facts.ts` (shared git/entity fact-gathering). Documented in `standard-automation-loop` (§ Entry derivation, § Park reconciliation, § Dispatch guards) + `standard-skill-format`.
 
 ## [0.5.0] — 2026-07-06 — Autonomous change lifecycles + Fable/Opus posture + fleet hygiene
 

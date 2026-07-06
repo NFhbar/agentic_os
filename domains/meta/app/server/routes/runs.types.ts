@@ -93,6 +93,11 @@ export interface StartRunInput {
   // Defaults to `human` when unset. The orchestrator passes `automation`,
   // the scheduler `scheduler`; an explicit value wins (the future `driver`).
   origin?: RunOrigin;
+  // Bypass the server-side re-review debounce (a dev-pr-review dispatch whose
+  // target branch head is unchanged since the last reviewed pass). Also
+  // sniffed from the prompt (`/force\s*[:=]\s*true/i`) so CLI-composed prompts
+  // that set the skill's own `force: true` input bypass the server gate too.
+  force?: boolean;
 }
 
 // Result of startRun(). Server uses a discriminated union (ok: boolean +
@@ -102,4 +107,7 @@ export interface StartRunInput {
 export type StartRunResult =
   | { ok: true; run_id: string }
   | { ok: false; error: 'blocked'; blocking: { run_id: string; skill: string | null } }
+  // Re-review debounce refusal — the target head is unchanged since the last
+  // reviewed pass. `POST /api/runs` maps this to HTTP 409 { error, refusal }.
+  | { ok: false; error: string; refusal: 'head-unchanged' }
   | { ok: false; error: string };

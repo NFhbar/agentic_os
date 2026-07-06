@@ -25,10 +25,19 @@ export interface ReviewLookup {
   // automation orchestrator's artifact-verified advance: a pr-review step
   // only counts as done when this number incremented past the baseline.
   passCount: number;
+  // The `last_head_sha:` frontmatter value — the PR head SHA the latest pass
+  // reviewed. Feeds the server-side re-review debounce (refuse a re-review
+  // when the live branch head equals this). Null when absent/unparseable.
+  lastHeadSha: string | null;
   // Count of latest-pass comments still `status: new` — untriaged. Comment
   // disposition is a merge invariant (new → acted-on | dismissed); this count
   // gates the Mark-ready affordances.
   untriagedCount: number;
+  // Count of latest-pass comments with `status: acted-on` — the OS already
+  // re-implemented them via address-comments. Disambiguates a needs-changes
+  // pass whose comments are all handled (→ derive a re-review, not a
+  // needs-triage park) for the entry classifier's `latest_pass_acted` input.
+  actedCount: number;
   // Count of latest-pass comments with severity blocker|bug whose status is
   // still standing (not resolved/dismissed/acted-on/wontfix). Mirrors
   // dev-pr-review's step-14 roll-up rule for `pr_review_status: approved`;
@@ -47,7 +56,9 @@ export const EMPTY_REVIEW_LOOKUP: Readonly<ReviewLookup> = Object.freeze({
   reviewPublished: false,
   reviewGithubReviewId: null,
   passCount: 0,
+  lastHeadSha: null,
   untriagedCount: 0,
+  actedCount: 0,
   standingBlockerCount: 0,
 });
 
@@ -63,6 +74,10 @@ export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
   }
   const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n?/);
   const reviewPublished = !!fmMatch?.[1]?.match(/^published:\s*true\s*$/m);
+  // Single-line frontmatter parse, same style as `published:` above — captures
+  // a plain or quoted hex head sha; null/~/absent don't match → null.
+  const lastHeadShaM = fmMatch?.[1]?.match(/^last_head_sha:\s*['"]?([0-9a-fA-F]+)['"]?\s*$/m);
+  const lastHeadSha = lastHeadShaM ? lastHeadShaM[1] : null;
   const body = raw.replace(/^---\n[\s\S]*?\n---\n?/, '');
   // Locate every `## Pass <N>` header — the latest-N section is the one we
   // care about (re-implementation always targets the most-recent pass).
@@ -73,7 +88,7 @@ export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
     headers.push({ n: Number(m[1]), start: m.index });
     m = passHeaderRe.exec(body);
   }
-  if (headers.length === 0) return { ...empty, reviewPublished };
+  if (headers.length === 0) return { ...empty, reviewPublished, lastHeadSha };
   headers.sort((a, b) => a.n - b.n);
   const latest = headers[headers.length - 1];
   const passCount = latest.n;
@@ -90,6 +105,7 @@ export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
   }
   let count = 0;
   let untriaged = 0;
+  let acted = 0;
   let standingBlockers = 0;
   let firstReviewId: number | null = null;
   for (let i = 0; i < commentStarts.length; i++) {
@@ -110,6 +126,7 @@ export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
     const ghReviewM = header.match(/^- github_review_id:\s*(\d+)/m);
     if (ghReviewM && firstReviewId == null) firstReviewId = Number(ghReviewM[1]);
     if (status === 'new') untriaged++;
+    if (status === 'acted-on') acted++;
     // wontfix is a user rejection — semantically equivalent to dismissed for
     // the standing test, else a wontfix'd bug pins the roll-up at pending.
     if (
@@ -131,7 +148,9 @@ export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
     reviewPublished,
     reviewGithubReviewId: firstReviewId,
     passCount,
+    lastHeadSha,
     untriagedCount: untriaged,
+    actedCount: acted,
     standingBlockerCount: standingBlockers,
   };
 }
