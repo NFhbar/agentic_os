@@ -223,7 +223,9 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   echo "  Install the launchd agent that ticks scheduler-tick.mjs every 60s?"
   echo "  This enables seeded schedules (morning brief, weekly curation check)"
   echo "  and any future schedules to fire automatically."
-  read -r -p "  Install scheduler now? [y/N] " ans
+  # `|| ans=""` keeps a non-interactive stdin (EOF → read exits non-zero) from
+  # failing the whole install — same guard as the signing prompt above.
+  read -r -p "  Install scheduler now? [y/N] " ans || ans=""
   if [[ "${ans}" =~ ^[Yy]$ ]]; then
     ./scripts/install-scheduler.sh
   else
