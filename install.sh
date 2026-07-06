@@ -191,6 +191,33 @@ else
 fi
 
 echo ""
+echo "→ Headless commit signing (optional)..."
+# Dedicated signing-only key + repo-local git config so automated changes
+# commit (signed) and push past GitHub's email-privacy block without agent
+# prompts. Repo-local writes only — global git config is never touched. See
+# vault/wiki/_seed/development/reference/standard-git-hygiene.md § 4a.
+signing_setup_ran=0
+echo "  Configures a dedicated signing-only key + repo-local git identity across"
+echo "  your ingested repos (and this clone) so headless lifecycles can commit."
+# `|| ans=""` keeps a non-interactive stdin (EOF → read exits non-zero) from
+# aborting the whole install under `set -e`; default is skip.
+read -r -p "  Set up headless commit signing for your repos? [y/N] " ans || ans=""
+if [[ "${ans}" =~ ^[Yy]$ ]]; then
+  # Run inside `if` so a failure (no ssh-keygen on minimal Linux, one malformed
+  # entity) can't abort the rest of the install under `set -e` — this step is
+  # optional. Failure skips the "Next steps" key-registration hint, but exit 0
+  # can also print no key (zero targets, or every target skipped as non-git) —
+  # hence the hint's "If a public key was printed above" phrasing.
+  if node scripts/setup-repo-identity.mjs --all; then
+    signing_setup_ran=1
+  else
+    echo "  ✗ signing setup failed — re-run later: node scripts/setup-repo-identity.mjs --all"
+  fi
+else
+  echo "  ⊘ skipped — run /os setup repo identity <repo> later (or node scripts/setup-repo-identity.mjs --repo-path <path>)"
+fi
+
+echo ""
 echo "→ Scheduler (optional)..."
 if [[ "$(uname -s)" == "Darwin" ]]; then
   echo "  Install the launchd agent that ticks scheduler-tick.mjs every 60s?"
@@ -217,3 +244,7 @@ echo "     bot-token vs webhook tradeoffs). Skip to ignore notifications."
 echo "  3. Run \`claude\` from this directory"
 echo "  4. Try /os brief"
 echo "  5. Try /os dashboard"
+if [[ "${signing_setup_ran}" == "1" ]]; then
+  echo "  6. If a public key was printed above, register it on GitHub:"
+  echo "     Settings → SSH and GPG keys → New SSH key → key type: Signing Key"
+fi
