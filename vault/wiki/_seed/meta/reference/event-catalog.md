@@ -35,13 +35,14 @@ Each row is `event_type | description | entity | entity_filter_field | lifecycle
 
 ## Project events
 
-| event_type                     | description                                      | entity  | entity_filter_field | lifecycle_step  |
-| ------------------------------ | ------------------------------------------------ | ------- | ------------------- | --------------- |
-| dashboard.add-project          | Project scaffolded                               | project | project             | project:pending |
-| dashboard.project-research-add | Research note added to a project                 | project | project             | —               |
-| dashboard.status-report        | Status report generated (kickoff/status/wrap-up) | project | project             | —               |
-| dashboard.project-complete     | Project marked complete                          | project | project             | —               |
-| dashboard.project-reopen       | Completed project reopened                       | project | project             | —               |
+| event_type                     | description                                                                                                              | entity  | entity_filter_field | lifecycle_step  |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------ | ------- | ------------------- | --------------- |
+| dashboard.add-project          | Project scaffolded                                                                                                       | project | project             | project:pending |
+| dashboard.project-research-add | Research note added to a project                                                                                         | project | project             | —               |
+| dashboard.status-report        | Status report generated (kickoff/status/wrap-up)                                                                         | project | project             | —               |
+| dashboard.project-close        | Project closed — completed or cancelled — with owned-work disposition                                                    | project | project             | —               |
+| dashboard.project-complete     | Project marked complete (legacy — route removed 2026-07; superseded by `project-close`. Historical events remain valid.) | project | project             | —               |
+| dashboard.project-reopen       | Completed or cancelled project reopened                                                                                  | project | project             | —               |
 
 ## Change events
 
