@@ -132,6 +132,10 @@ Threshold guidance:
 - Use **request-changes** when at least one concern is `concern` or `blocker` severity.
 - Use **reject** sparingly — only when the right path forward is "throw out this plan and start over".
 
+**Severity floor (behavioral consequence)** — a finding that describes incorrect runtime behavior on a code path the plan introduces (an affordance enabled when its own contract requires it disabled, state written from the wrong source) may NOT be labeled below `concern`. Reserve `nit` for findings with no behavioral consequence (style, naming, docs, phrasing). Via the threshold rule above, the floor makes behavioral findings verdict-forcing: a `concern` yields **request-changes**, so the writer must address or explicitly decline the finding before executing — whereas a behavioral defect labeled `nit` inside an **approve** verdict has no gate that keeps EXECUTE from silently dropping it.
+
+_Rationale: added per `audit-pr-review-verdict-state-and-next-action-affordances` tuning suggestion #2 — a plan-review finding that the Mark-ready gate was evaluated against the viewed pass rather than the latest was filed as a fold-in nit inside an approve verdict; EXECUTE dropped it and the identical defect was re-derived one cycle later as the PR review's pass-1 bug. (Per-install: the audit id is intentionally NOT a wikilink — lifecycle-audit entries live in gitignored per-install paths.)_
+
 ### Step 6: Write the review
 
 Write to `vault/output/<domain>/changes/<change>-review.md`. Use this exact structure:
