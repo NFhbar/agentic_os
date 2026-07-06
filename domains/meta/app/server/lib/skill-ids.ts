@@ -19,6 +19,7 @@ export const SKILL = {
   DEV_PULL_PR_COMMENTS: 'dev-pull-pr-comments',
   DEV_REVIEW_CHANGE: 'dev-review-change',
   DEV_REVISE_PLAN: 'dev-revise-plan',
+  DEV_SETUP_REPO_IDENTITY: 'dev-setup-repo-identity',
   DEV_WRITE_CHANGE: 'dev-write-change',
   META_ADD_APP: 'meta-add-app',
   META_ADD_ARCHETYPE: 'meta-add-archetype',

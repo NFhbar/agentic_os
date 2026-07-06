@@ -6,9 +6,20 @@ The canonical version is recorded at [`vault/wiki/_seed/meta/reference/os-versio
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.5.0] — 2026-07-06 — Autonomous change lifecycles + Fable/Opus posture + fleet hygiene
+
 ### Upgrading from ≤ 0.4.x (existing installs)
 
-This release carries the Fable self-review wave (18 recommendations from `research-fable-os-review-2026-06-11`). Code upgrades ship via `git pull` as usual; four things touch per-install state:
+This release carries the Fable self-review wave (18 recommendations from `research-fable-os-review-2026-06-11`), the guarded change-automation orchestrator, the Fable/Opus model-and-effort posture, and the 50-skill fleet hygiene wave. Code upgrades ship via `git pull` as usual. **Read items 5–8 before your first dispatched run — this release changes your install's default model, effort, and cost profile.**
+
+5. **The OS now ships a model/effort posture as defaults.** 13 planning/review/self-improvement skills pin `model: claude-fable-5` + `effort: max` in their SKILL.md frontmatter (per-skill layer — outranks your `settings.local.json`), and the team baseline `effortLevel` rose `high → xhigh`. If your account lacks Fable access, or you want different economics: strip any pin via Settings → Model / Effort (writes the skill's frontmatter), and set your own `effortLevel` in `settings.local.json` (local always beats the shipped baseline for the floor — per-skill pins need per-skill edits).
+6. **Cost posture if you run on an Anthropic API key.** The defaults are subscription-tuned; on pay-per-token they translate to roughly $20–40 per full change lifecycle at list rates. The two-minute API-lean recipe: set `effortLevel: high` locally, optionally step the deep skills' `effort` pins to `xhigh`, optionally point mechanical skills at Sonnet — all in Settings. Also: scheduled runs fire from launchd, which does not source your shell profile — if `ANTHROPIC_API_KEY` lives only in `.zshrc`, cron dispatches will fail auth; use `claude setup-token` or an `apiKeyHelper`. Subscription auth is unaffected.
+7. **Wall-time caps.** Four deep skills ship explicit `wall_time_cap_minutes` (60/60/60/90) sized for max-effort runs; other skills derive caps from your install's own duration history (2×p95, 25-min floor). If you tune effort down, the explicit caps are simply generous; if you had hand-set caps, yours win only where the frontmatter field is absent.
+8. **Headless commit signing is opt-in.** `./install.sh` now offers `dev-setup-repo-identity` across your ingested repos (default: no). Say yes and unattended lifecycles can commit with verified signatures and no agent prompts; the security trade (disk-resident signing-only key) is documented in `standard-git-hygiene` § 4a. Your push/pull auth is untouched either way — bring your own SSH/HTTPS setup.
+
+Items 1–4 carry over from the wave:
 
 1. **Review-state migration (required if you have project entries).** Project frontmatter moved to the shared review-state contract — `plan_status` is lifecycle-only and verdicts live in `review_status` (see `standard-review-state`). Run `node scripts/migrate-review-state.mjs` once (idempotent, `--dry-run` to preview; re-running `./install.sh` also applies it). Until you do, `node scripts/audit.mjs` ERRORs on legacy values like `plan_status: reviewed-pending`, and the old `plan_review_path` / `plan_reviewed_at` fields are no longer read. Change and research-report entries need nothing — their existing values are subsets of the shared enum. events.db and the runs table migrate themselves on first boot.
 2. **Historical cost rows are ~3× overstated until recomputed.** The model registry had wrong Opus-family rates; pricing is now validated against CLI-reported `total_cost_usd`. Run `node scripts/import-session-usage.mjs --recompute-costs` once to fix history (idempotent; new imports are correct regardless).
