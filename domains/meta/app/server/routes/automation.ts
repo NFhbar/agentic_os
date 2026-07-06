@@ -9,9 +9,8 @@
 // tick-on-run-terminate.
 
 import { spawnSync } from 'node:child_process';
-import { createReadStream, existsSync } from 'node:fs';
-import type { Dirent } from 'node:fs';
-import { readFile, readdir, writeFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { FastifyPluginAsync } from 'fastify';
@@ -96,24 +95,11 @@ function defaultAutomationConfig(): AutomationConfig {
 
 // ---------------------------------------------------------------------------
 // Helpers — file walks + frontmatter I/O
+//
+// walkMd / resolveRepoLocalPath / readBranchHead moved to ./repo-facts.ts so
+// runs.ts can share them without importing this route module (the same
+// leaf-helper split pr-review-lookup.ts uses). Imported back below.
 // ---------------------------------------------------------------------------
-
-async function walkMd(dir: string): Promise<string[]> {
-  const out: string[] = [];
-  let entries: Dirent[];
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return out;
-  }
-  for (const e of entries) {
-    if (e.name.startsWith('.')) continue;
-    const p = join(dir, e.name);
-    if (e.isDirectory()) out.push(...(await walkMd(p)));
-    else if (e.isFile() && e.name.endsWith('.md')) out.push(p);
-  }
-  return out;
-}
 
 // Locate the project entry by id. Returns frontmatter + path; null when no
 // project entry exists (typo guard for every endpoint).
@@ -858,59 +844,7 @@ import {
   evaluateArtifactMovement,
 } from './automation-state-machine.js';
 import { lookupLinkedReview } from './pr-review-lookup.js';
-
-// Resolve the change's repo entity → local_path. Mirrors the inline walk in
-// changes.ts's replay endpoint (that version lives inside a route handler and
-// isn't exported; duplicating locally beats coupling route modules).
-async function resolveRepoLocalPath(repoId: string | null): Promise<string | null> {
-  if (!repoId) return null;
-  const wikiDir = join(REPO_ROOT, 'vault', 'wiki');
-  const files = await walkMd(wikiDir);
-  for (const file of files) {
-    try {
-      const { fm, parseError } = parseFrontmatter(await readFile(file, 'utf8'));
-      if (parseError) continue;
-      if (fm.type !== 'entity' || fm.kind !== 'repo' || fm.id !== repoId) continue;
-      return typeof fm.local_path === 'string' ? fm.local_path : null;
-    } catch {
-      /* skip */
-    }
-  }
-  return null;
-}
-
-// Read the change branch's head SHA, classifying the outcome for
-// evaluateArtifactMovement:
-//   - head set            — ref resolved
-//   - 'ref-not-found'     — repo dir present, git ran, ref doesn't exist
-//                           (determinate: the branch has no commits)
-//   - 'degraded'          — no branch configured / dir missing / git or
-//                           spawn failure (unknown — gate must stay inert)
-function readBranchHead(
-  localPath: string | null,
-  branch: string | null,
-): { head: string | null; head_error: 'ref-not-found' | 'degraded' | null } {
-  if (!localPath || !branch) return { head: null, head_error: 'degraded' };
-  try {
-    if (!existsSync(localPath)) return { head: null, head_error: 'degraded' };
-    const res = spawnSync(
-      'git',
-      ['-C', localPath, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`],
-      { encoding: 'utf8' },
-    );
-    if (res.error) return { head: null, head_error: 'degraded' };
-    if (res.status === 0) {
-      const sha = (res.stdout ?? '').trim();
-      return sha ? { head: sha, head_error: null } : { head: null, head_error: 'degraded' };
-    }
-    // `--verify --quiet` exits 1 (silently) for a missing ref; other codes
-    // (128 = not a repo, etc.) are infrastructure failures.
-    if (res.status === 1) return { head: null, head_error: 'ref-not-found' };
-    return { head: null, head_error: 'degraded' };
-  } catch {
-    return { head: null, head_error: 'degraded' };
-  }
-}
+import { readBranchHead, resolveRepoLocalPath, walkMd } from './repo-facts.js';
 
 // Gather the caller-side facts evaluateArtifactMovement judges. I/O only —
 // the movement decision itself is the pure function in
