@@ -37,6 +37,7 @@ export const SKILL = {
   META_AUDIT: 'meta-audit',
   META_AUDIT_FOLLOWUPS: 'meta-audit-followups',
   META_BRIEF: 'meta-brief',
+  META_CLOSE_PROJECT: 'meta-close-project',
   META_CURATE: 'meta-curate',
   META_DASHBOARD: 'meta-dashboard',
   META_DELETE: 'meta-delete',
