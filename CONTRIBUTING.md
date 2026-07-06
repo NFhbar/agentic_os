@@ -46,12 +46,12 @@ For changes against external repos (your team's product code), use the canonical
 Run before opening a PR:
 
 ```bash
-npm test                                       # 568+ structural + unit tests
+npm test                                       # 840+ structural + unit tests
 cd domains/meta/app && npx tsc --noEmit       # typecheck the dashboard app
 node .claude/hooks/rebuild-vault-index.mjs    # rebuild manifest (idempotent)
 ```
 
-The pre-commit hook (see `.husky/pre-commit` or equivalent — installed by `install.sh`) runs these automatically. CI runs them on every PR.
+The pre-commit hook (`.git/hooks/pre-commit`, symlinked to `scripts/git-hooks/pre-commit` by `install.sh`) runs these automatically. CI runs them on every PR.
 
 Tests are in two tiers:
 
@@ -78,12 +78,12 @@ The `_seed/` boundary is load-bearing: anything under `vault/wiki/_seed/` ships 
 
 ## Dependencies
 
-- **Node 20+** — the dashboard app + scripts require it
+- **Node** — version pinned in `.nvmrc` (currently v26); the dashboard app + scripts require it
 - **GitHub PAT** — for the github MCP (PR review, open-PR, etc.). Set `GITHUB_TOKEN` in `mcps/github/.env` (copy from `.env.example`)
-- **Optional Slack** — for notification delivery. See `mcps/github/.env.example` for the env shape (vault MCP is read-only and needs no secrets)
-- **Claude Code** — the harness that runs skills. Install separately
+- **Optional Slack** — for notification delivery. See `domains/meta/app/.env.example` for the env shape (the vault MCP is read-only and needs no secrets)
+- **Claude Code** — the harness that runs skills. Install separately; `scripts/check-cc-contract.mjs` verifies your CLI version exposes the dispatch contract (`--effort`/`--model`, stream-json result fields)
 
-`./install.sh` handles `npm install` + manifest rebuild + initial vault scaffolding. Run it after cloning.
+`./install.sh` handles `npm install` + manifest rebuild + initial vault scaffolding + per-surface `.env` scaffolds, applies any pending data migrations, and offers two opt-in steps: headless commit signing (`dev-setup-repo-identity` across your ingested repos) and the launchd scheduler. Run it after cloning; it's idempotent.
 
 ## Upgrading
 
@@ -112,7 +112,7 @@ node scripts/audit.mjs    # surfaces any drift
 For loose tracking, teams stay on `main` and pull periodically. For strict control, teams pin to a specific tag or SHA and update deliberately:
 
 ```bash
-git checkout v0.2.0      # pin to release tag
+git checkout v0.5.0      # pin to release tag
 git checkout <sha>       # pin to specific commit
 ```
 

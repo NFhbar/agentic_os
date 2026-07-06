@@ -10,7 +10,7 @@ You clone this repo, run `./install.sh`, then `claude`. You now have:
 - A **lifecycle for engineering work**: scaffold a change → plan it → peer-review the plan → execute it → open a PR → review the PR → publish the review → close on merge. Each step is a skill; the orchestrator can drive them automatically.
 - A **dashboard** (`/os dashboard`) with live views over changes, projects, PR reviews, runs, costs, notifications, and audit findings.
 - A **vault** (`vault/wiki/`) that accumulates structured knowledge as you work — every change, decision, review, and research report is a markdown file with frontmatter the OS understands.
-- **GitHub + Slack integration** via MCPs (set up in 2 minutes after install with your PAT/webhook).
+- **GitHub integration** via a shipped MCP (2-minute PAT setup) and **Slack delivery** via the notification engine (bot token or webhook).
 - **Cost telemetry + event tracking** for every skill run, queryable + visible per-project.
 
 Teams of 2-10 engineers fork this repo, customize for their stack, and each engineer runs their own instance. See [`vault/wiki/_seed/meta/decision/decision-distribution-v1-architecture.md`](vault/wiki/_seed/meta/decision/decision-distribution-v1-architecture.md) for the team-install model and [`CONTRIBUTING.md`](CONTRIBUTING.md) for how to extend.
@@ -38,6 +38,11 @@ Verifies prerequisites (node version pinned in `.nvmrc` — currently `v26.1.0`,
 - `domains/meta/app/.env` — `SLACK_BOT_TOKEN` or `SLACK_WEBHOOK_URL` for notification delivery (see **Notifications**); optional `GITHUB_TOKEN` for server-side GitHub calls separate from the MCP
 
 The `.env` files are gitignored per `standard-env-config`; the loader (`server/load-env.ts` for apps, the MCP's own `loadEnv()` for MCPs) populates `process.env` at process start with shell-exported values winning.
+
+The installer also offers two opt-in steps (both default to no; both re-runnable later):
+
+- **Headless commit signing** — runs `dev-setup-repo-identity` across your ingested repos + this clone: a dedicated signing-only SSH key with repo-local git config, so unattended lifecycles produce Verified commits without agent prompts. See `standard-git-hygiene` § 4a for the security trade.
+- **Scheduler** — the launchd agent that fires scheduled runbooks (see **Heartbeat** below).
 
 ## First run
 
@@ -153,11 +158,15 @@ node scripts/scheduler-tick.mjs --dry-run # show what would fire right now
 
 From the dashboard, the **Schedules** view lists every scheduled runbook with its cron, next run, last run + exit code, and a **Run now** button for manual firing. Scaffold new ones with **+ New Schedule** or `/os add-schedule`.
 
-Three schedules ship by default:
+Seven schedules ship by default:
 
 - `runbook-morning-brief` — fires `/os brief` daily at 9am
+- `runbook-pr-ci-monitor` — every 15 min, polls open PRs for in-review changes and stamps `ci_state` + merge detection onto the change entries
+- `runbook-daily-audit-followups` — daily Overseer follow-up sweep: links later changes back to prior lifecycle audits, advances decision validation windows
 - `runbook-weekly-curation-check` — Sunday 8am scan for stale `vault/raw/` items
 - `runbook-weekly-health-check` — Sunday 8:30am runs `/os audit`, writes a dated summary to `vault/output/meta/health-checks/<date>.md` (proactive drift surfacing — the audit is otherwise pull-based)
+- `runbook-weekly-change-triage` — weekly sweep of stalled/aging changes
+- `runbook-weekly-session-mining` — clusters interactive-session turns into an automation-candidates report (`meta-mine-sessions`)
 
 Edit or delete the seed entries in `vault/wiki/_seed/meta/runbook/`.
 
@@ -280,7 +289,7 @@ The human's job is to **review and accept** the draft — not write it from scra
 | `approved`              | **EXECUTE phase** — creates branch (per [[standard-git-hygiene]]), follows plan exactly, runs tests, commits with conventional-commit format, sets `status: in-progress`  |
 | `request-changes`       | Surface concerns. User picks: re-plan / override (`review_status: overridden`) / abandon                                                                                  |
 | `rejected`              | Surface verdict; suggests `status: abandoned`                                                                                                                             |
-| `not-required`          | Skip review; go straight to EXECUTE. Set at scaffolding via `review_required: false` for trivial changes (dep bumps, typo fixes)                                          |
+| `not-required`          | Skip the review gate only — PLAN first when no plan exists, then EXECUTE without a verdict. Set at scaffolding via `review_required: false` for trivial changes           |
 
 `dev-review-change` is **read-only**: walks the plan + repo + conventions, runs a 6-category checklist (scope discipline / convention alignment / risk / test coverage / existing code respect / git hygiene), writes a structured verdict to `vault/output/<domain>/changes/<slug>-review.md`, updates `review_status`. **Cannot edit code, create branches, or run tests** — the separation is the safety property.
 
@@ -404,7 +413,16 @@ Full standards:
 
 ## Process automation
 
-Projects can opt into running the change lifecycle (write → open PR → review → merge) without a human in the driver's seat. Automation is **per-project**, configured under the project's `automation:` frontmatter block; the orchestrator lives in the dashboard server and ticks state forward as each step lands.
+Automation runs at two tiers, both guarded and both optional — manual dashboard operation stays first-class at every step.
+
+**Change-level automation** (the workhorse): any single change with an approved plan can be handed to the orchestrator — enable + Start on the change's Automation panel. It drives execute → open-pr → pr-review → address-comments autonomously with the safety properties earned through live use:
+
+- **Eligibility gate at start** — refuses unless the plan exists and `review_status` is approved/overridden/not-required, the clone's working tree is clean for EXECUTE-bound starts, and re-derives the correct entry step from _artifacts_ (branch commits, `pr_url`, review passes), not just status — so resuming mid-lifecycle never re-runs completed work.
+- **Artifact-verified advance** — a step only advances when its postcondition moved (commits landed, PR exists, review pass recorded). Exit-0-without-movement parks as `skill-refused` with the run's own summary; failures park with reason instead of ghost-advancing.
+- **Park reconciliation** — if you complete a parked step by hand (mixed-mode is expected), the orchestrator notices the artifact landed and advances instead of staying stuck.
+- **Human gates preserved** — completion sets `pr_review_status: approved`; comment triage (accept/dismiss with rationale) and Mark-ready remain yours, and merging is always yours.
+
+**Project-level automation** sequences a project's queue of changes through that loop. It's configured under the project's `automation:` frontmatter block; the orchestrator lives in the dashboard server and ticks state forward as each step lands.
 
 ```
 project.automation: { enabled: true, mode: 'sequential-changes', pause_on: [...] }
@@ -439,6 +457,14 @@ state machine ──▶  WRITE         ← dev-write-change      (PLAN → REVIE
 - **Audit hooks** — `automation-paused` (info), `automation-skill-failure` (warn), `automation-stalled` (warn, when in MERGE state for >24h without GitHub reporting merged).
 
 **Why no global automation.** Automation is project-scoped on purpose: different projects have different review tolerances, different cost budgets, different stakeholder expectations. A single "auto-merge everything" toggle would lose that nuance. The per-project block makes the consent explicit and the scope obvious.
+
+## Models & effort (cost posture)
+
+Every headless dispatch resolves its model and effort per skill: SKILL.md frontmatter (`model:` / `effort:`) → `.claude/settings.local.json` → `.claude/settings.json` → CLI default — and passes explicit `--model` / `--effort` flags. The **Settings app** (Model + Effort tabs) edits the whole matrix and explains, per skill, which layer won.
+
+The OS ships an opinionated default posture: the deep planning/review/self-improvement skills pin the strongest model at `effort: max`, execution-bound dispatches drop to a cheaper model via `model_execute:` / `effort_execute:` (plans get the judgment, executes get the typing), the team baseline is `xhigh`, and per-skill wall-time caps bound runaway runs. **Every piece is per-install overridable** — strip any pin from Settings → Model/Effort, lower the baseline in `settings.local.json`. If you run on an Anthropic API key rather than a subscription, read the cost-posture note in the CHANGELOG's 0.5.0 upgrade section before your first dispatched run.
+
+Dispatch-time model + effort are stamped on every run row, so the Insights view and the runs drawer always show what actually ran.
 
 ## Observability (event store)
 
@@ -532,6 +558,6 @@ vault/               3-stage memory lifecycle
 
 ## Status
 
-v1 build, distribution-ready for small-team installs. The architecture is locked (see [`vault/wiki/_seed/meta/decision/decision-distribution-v1-architecture.md`](vault/wiki/_seed/meta/decision/decision-distribution-v1-architecture.md)), the standards are documented in [`vault/wiki/_seed/meta/reference/`](vault/wiki/_seed/meta/reference/), and the OS scaffolds itself for everything beyond the initial bootstrap. End-to-end automation has been validated on real changes through the full lifecycle (research → plan → review → execute → PR → review → publish → close).
+**v0.5.0** (tagged; canonical version at [`vault/wiki/_seed/meta/reference/os-version.md`](vault/wiki/_seed/meta/reference/os-version.md), history in [`CHANGELOG.md`](CHANGELOG.md)) — distribution-ready for small-team installs. The architecture is locked (see [`vault/wiki/_seed/meta/decision/decision-distribution-v1-architecture.md`](vault/wiki/_seed/meta/decision/decision-distribution-v1-architecture.md)), the standards are documented in [`vault/wiki/_seed/meta/reference/`](vault/wiki/_seed/meta/reference/), and the OS scaffolds itself for everything beyond the initial bootstrap. End-to-end automation has been validated on real changes through the full lifecycle (research → plan → review → execute → PR → review → publish → close).
 
 Deferred to v2+: bot-account separation for true PR APPROVE events (currently auto-downgrades to COMMENT when the PAT-holder is also the PR author), team-shared metrics aggregation across engineers, skill marketplace / upstream-tracking model.
