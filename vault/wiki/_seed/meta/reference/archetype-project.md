@@ -37,13 +37,15 @@ below. Other primitives reference it via `[[project-id]]` wikilinks; the
 manifest's backlinks make those references queryable. Full pattern is
 documented in `standard-project-workflow.md`.
 
-| field             | type   | notes                                                                                                                                                              |
-| ----------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `repos`           | array  | list of entity ids (each `kind: repo`) — projects can span multiple repos (web + api, monorepo + service, etc.). Empty/omitted for projects that don't touch code. |
-| `lifecycle_stage` | enum   | `planning`, `active`, `review`, `shipped`, `archived` (finer-grained than `status`)                                                                                |
-| `milestones`      | array  | list of `{date, label, status}` objects — checkpoints toward the deadline                                                                                          |
-| `reporting`       | object | reporting cadence + target — see below                                                                                                                             |
-| `research_paths`  | array  | optional list of `[[research-report-id]]` references — the research-reports this project owns (see below).                                                         |
+| field             | type   | notes                                                                                                                                                                        |
+| ----------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `repos`           | array  | list of entity ids (each `kind: repo`) — projects can span multiple repos (web + api, monorepo + service, etc.). Empty/omitted for projects that don't touch code.           |
+| `lifecycle_stage` | enum   | `planning`, `active`, `review`, `shipped`, `archived` (finer-grained than `status`)                                                                                          |
+| `milestones`      | array  | list of `{date, label, status}` objects — checkpoints toward the deadline                                                                                                    |
+| `reporting`       | object | reporting cadence + target — see below                                                                                                                                       |
+| `research_paths`  | array  | optional list of `[[research-report-id]]` references — the research-reports this project owns (see below).                                                                   |
+| `completed_at`    | string | ISO timestamp — stamped by `meta-close-project` (`mode: complete`) when the project closes as `status: completed`. Cleared by `meta-reopen-project`. See § Closure contract. |
+| `cancelled_at`    | string | ISO timestamp — stamped by `meta-close-project` (`mode: abandon`) when the project closes as `status: cancelled`. Cleared by `meta-reopen-project`. See § Closure contract.  |
 
 With the research domain landing, **research-reports become the source of `recommended_changes`**: each approved `research-report` (`type: research-report`) under a project carries a `recommended_changes` array, and phase B's `meta-scaffold-project-plan` extension reads those arrays in addition to the project plan when materializing the project's owned changes. `research_paths` is the optional explicit list — the manifest's backlinks already make `report.project: <project-id>` → owning-project queries cheap, so `research_paths` is mostly documentation (skills derive it from backlinks at scaffold time).
 
@@ -94,6 +96,29 @@ but in code-review phase, not feature-development phase.
 Project-scoped scheduled runbooks (runbooks with `project: <id>`) only fire when
 `status: active`. The scheduler tick skips them otherwise — pausing a project
 pauses its scheduled work automatically.
+
+### Closure contract
+
+Closing a project is **not** a bare status flip — it goes through
+[[meta-close-project]] (dispatched by the dashboard's Complete / Abandon buttons or
+`/os close project`), which enforces an owned-work disposition gate. The inverse is
+[[meta-reopen-project]].
+
+- **Owned open work** — the items a project must resolve before it can close:
+  - non-terminal owned changes (`project == <id>`, `status ∉ {merged, abandoned}`);
+  - approved-family reports' (`status: approved | updated`) `recommended_changes` rows
+    that are `proposed`, or `scaffolded` with an unmerged linked change (a `scaffolded`
+    row whose change is itself in the change list is **covered** — dispositioning the
+    change flips the row);
+  - `notes_log` items with an empty `considered_by` on any report under the project.
+- **Disposition gate** — every open item must carry a disposition: `abandon`
+  (rationale required), `transfer` (changes only, to an existing non-terminal project),
+  or `block`. If any item blocks, closure **refuses** with an itemized list and mutates
+  nothing.
+- **Terminal mapping** — `complete` → `status: completed` + `completed_at`; `abandon` →
+  `status: cancelled` + `cancelled_at`; both → `lifecycle_stage: archived` + `updated`.
+- **Reopen inverse** — `meta-reopen-project` flips `completed | cancelled → active`,
+  restores `lifecycle_stage: active`, and clears whichever closure stamp is present.
 
 ## When to use
 

@@ -1828,103 +1828,17 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary of 
     };
   });
 
-  // POST /api/projects/:id/complete — vault-only project closure. Flips
-  // `status: completed`, `lifecycle_stage: archived`, and stamps a
-  // `completed_at` field. Refuses when any owned change is still in-flight
-  // (planning / in-progress / in-review) — the user must close those first
-  // (or abandon them) so the audit trail stays honest. Idempotent: calling
-  // on an already-completed project is a no-op with `already_completed: true`.
-  fastify.post<{ Params: { id: string } }>('/:id/complete', async (req, reply) => {
-    const projectId = req.params.id;
-    const found = await findProjectFrontmatter(projectId);
-    if (!found) {
-      reply.code(404);
-      return { ok: false, error: `project "${projectId}" not found` };
-    }
-    const foundFile = found.path;
-    const foundFm = found.fm;
-    let foundContent: string;
-    try {
-      foundContent = await readFile(foundFile, 'utf8');
-    } catch {
-      reply.code(500);
-      return { ok: false, error: 'failed to read project entry' };
-    }
-    if (foundFm.status === 'completed') {
-      return { ok: true, already_completed: true };
-    }
-    // Gate: refuse if any owned change isn't terminal. The user must close
-    // (or abandon) every owned change first so the project closure can't
-    // hide orphaned in-flight work.
-    const aggregates = await buildChangeAggregates();
-    const agg = aggregates.get(projectId);
-    if (agg && (agg.planning > 0 || agg.in_progress > 0 || agg.in_review > 0)) {
-      reply.code(409);
-      return {
-        ok: false,
-        error: `project has ${agg.planning + agg.in_progress + agg.in_review} in-flight change(s) — close or abandon them before completing the project.`,
-        in_flight: {
-          planning: agg.planning,
-          in_progress: agg.in_progress,
-          in_review: agg.in_review,
-        },
-      };
-    }
-
-    const nowIso = new Date().toISOString();
-    // Surgical frontmatter edit — preserve every other field and the body.
-    // The status / lifecycle_stage replacements use anchored regex so we
-    // only touch the canonical lines; the new `completed_at` is appended
-    // immediately before the closing `---` to keep frontmatter compact.
-    let updated = foundContent;
-    const replaceField = (s: string, key: string, val: string): string => {
-      const re = new RegExp(`^${key}:[^\\n]*$`, 'm');
-      if (re.test(s)) return s.replace(re, `${key}: ${val}`);
-      // Field missing — insert before frontmatter close.
-      return s.replace(/\n---\n/, `\n${key}: ${val}\n---\n`);
-    };
-    updated = replaceField(updated, 'status', 'completed');
-    updated = replaceField(updated, 'lifecycle_stage', 'archived');
-    updated = replaceField(updated, 'completed_at', nowIso);
-    updated = replaceField(updated, 'updated', nowIso);
-
-    try {
-      await writeFile(foundFile, updated, 'utf8');
-    } catch (e) {
-      reply.code(500);
-      return { ok: false, error: `write failed: ${(e as Error).message}` };
-    }
-
-    // Best-effort audit event.
-    try {
-      const { spawnSync } = await import('node:child_process');
-      spawnSync(
-        'node',
-        [
-          join(REPO_ROOT, 'scripts', 'record-dashboard-action.mjs'),
-          '--action',
-          'project-complete',
-          '--args',
-          JSON.stringify({ project: projectId, owned_changes_total: agg?.total ?? 0 }),
-          '--files-touched',
-          JSON.stringify([relative(REPO_ROOT, foundFile)]),
-          '--exit-status',
-          '0',
-        ],
-        { cwd: REPO_ROOT, stdio: 'ignore' },
-      );
-    } catch {
-      /* best-effort */
-    }
-
-    return { ok: true, completed_at: nowIso };
-  });
-
-  // POST /api/projects/:id/reopen — inverse of /complete. Flips
-  // `status: completed` → `active`, `lifecycle_stage: archived` → `in-progress`,
-  // drops `completed_at`, bumps `updated`. 409 if the project isn't currently
-  // completed (nothing to reopen). Used when post-Complete gaps surface and
-  // the project needs to absorb additional work before re-closing.
+  // POST /api/projects/:id/reopen — inverse of the meta-close-project skill's
+  // close paths. Flips `status: completed | cancelled` → `active`,
+  // `lifecycle_stage: archived` → `active`, drops whichever of `completed_at` /
+  // `cancelled_at` is stamped, bumps `updated`. 409 if the project isn't
+  // currently terminal (nothing to reopen). Used when a post-close gap surfaces
+  // and the project needs to absorb additional work before re-closing.
+  //
+  // Note: project closure itself (complete / abandon) is no longer a route —
+  // it dispatches the `meta-close-project` skill via the AI bridge so the
+  // owned-work disposition gate can run. This route stays as the fast sync
+  // path for the reverse (un-close) transition, which needs no gate.
   fastify.post<{ Params: { id: string } }>('/:id/reopen', async (req, reply) => {
     const projectId = req.params.id;
     const found = await findProjectFrontmatter(projectId);
@@ -1932,11 +1846,12 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary of 
       reply.code(404);
       return { ok: false, error: `project "${projectId}" not found` };
     }
-    if (found.fm.status !== 'completed') {
+    const prevStatus = typeof found.fm.status === 'string' ? found.fm.status : null;
+    if (prevStatus !== 'completed' && prevStatus !== 'cancelled') {
       reply.code(409);
       return {
         ok: false,
-        error: `project "${projectId}" is not completed (status: ${String(found.fm.status ?? 'unset')}) — nothing to reopen`,
+        error: `project "${projectId}" is not completed or cancelled (status: ${String(found.fm.status ?? 'unset')}) — nothing to reopen`,
       };
     }
     let content: string;
@@ -1955,7 +1870,10 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary of 
       lifecycle_stage: 'active',
       updated: nowIso,
     });
-    updated = removeFrontmatterFields(updated, ['completed_at']);
+    // Clear both closure stamps — only one is ever set, but removing both keeps
+    // the reverse transition symmetric whether the project was completed or
+    // cancelled.
+    updated = removeFrontmatterFields(updated, ['completed_at', 'cancelled_at']);
     try {
       await writeFile(found.path, updated, 'utf8');
     } catch (e) {
@@ -1981,7 +1899,7 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary of 
     } catch {
       /* best-effort */
     }
-    return { ok: true, reopened_at: nowIso };
+    return { ok: true, reopened_at: nowIso, prev_status: prevStatus };
   });
 
   // POST /api/projects/:id/schedule-report?cadence=daily|weekly

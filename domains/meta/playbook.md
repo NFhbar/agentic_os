@@ -38,7 +38,8 @@ Meta holds the OS's self-knowledge: standards, evolution skills, scaffolding tem
 - `meta-add-schedule` — scaffold a scheduled runbook (cron + prompt the OS fires when due)
 - `meta-add-project` — scaffold a project (scope + lifecycle + reporting cadence; optionally linked to an ingested repo)
 - `meta-add-entity` — scaffold a non-repo entity (person / system / other / project) so entity-id wikilink references resolve; repo entities stay with `dev-ingest-repo`
-- `meta-reopen-project` — flip a completed project back to `status: active` (vault-only frontmatter edit). CLI equivalent of the dashboard's Reopen button on the project status banner.
+- `meta-close-project` — complete or abandon a project behind an owned-work disposition gate: refuses to close while any owned change / report recommendation / note lacks a disposition (abandon-with-rationale / transfer / block). The dashboard's Complete + Abandon buttons dispatch it via the AI bridge (replacing the old bare status-flip route).
+- `meta-reopen-project` — flip a completed or cancelled project back to `status: active` (vault-only frontmatter edit). Inverse of `meta-close-project`; CLI equivalent of the dashboard's Reopen button on the project status banner.
 - `meta-status-report` — generate a project status report — synthesizes commits, decisions, scheduler activity, milestones into structured markdown
 - `meta-audit` — audit the OS for compliance with documented standards (skills, wiki, domains, archetypes, router, logs)
 - `meta-vault-query` — typed query interface over the OS vault via the `vault` MCP. Three modes: `search` (full-text + filters), `get` (fetch entry by id/path), `list-archetypes` (enumeration). Read-only. The canonical access pattern when skills or the user need vault context richer than a manifest read.

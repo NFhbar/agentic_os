@@ -7,6 +7,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { EditableMarkdown, Rendered } from '../../components/EditableMarkdown';
 import { ScaffoldForm } from '../../components/ScaffoldForm';
 import { getJson } from '../../lib/api';
+import { buildCloseProjectPrompt } from '../../lib/destructive';
 import { useDispatch, useRunTerminal } from '../../lib/dispatch';
 import { useNavigation } from '../../lib/navigation';
 import { danglingRepos } from '../../lib/repos';
@@ -509,39 +510,53 @@ export default function Projects() {
                   /* keep prior */
                 }
               }}
-              onCompleteProject={async () => {
+              onCompleteProject={() => {
                 const pid = detail.project.id;
                 if (!pid) return;
-                try {
-                  const r = await fetch(`/api/projects/${encodeURIComponent(pid)}/complete`, {
-                    method: 'POST',
-                  });
-                  const j = (await r.json()) as {
-                    ok: boolean;
-                    error?: string;
-                    completed_at?: string;
-                    already_completed?: boolean;
-                  };
-                  if (!j.ok) {
-                    alert(`Cannot complete project: ${j.error ?? 'unknown error'}`);
-                    return;
-                  }
-                  // Refetch detail so the banner + badges reflect the new
-                  // status/lifecycle_stage_derived/completed_at fields.
-                  const d = await getJson<ProjectDetail>(
-                    `/api/projects/${encodeURIComponent(pid)}`,
-                  );
-                  setDetail(d);
-                } catch (e) {
-                  alert(`Complete failed: ${(e as Error).message}`);
+                // Dispatch meta-close-project (mode: complete) instead of the
+                // old bare status-flip route. The skill runs the owned-work
+                // disposition gate — refusal-first, so open recommendations /
+                // notes surface instead of being silently archived. The
+                // project-scoped useRunTerminal subscription refetches list +
+                // detail when the run lands.
+                if (
+                  !window.confirm(
+                    `Complete "${pid}"?\n\nRuns meta-close-project (mode: complete). It enumerates owned open work and refuses if any change / recommendation / note lacks a disposition. status → completed, lifecycle_stage → archived, stamps completed_at.`,
+                  )
+                ) {
+                  return;
                 }
+                dispatch(
+                  buildCloseProjectPrompt(pid, 'complete'),
+                  `Closing ${pid}…`,
+                  'meta-close-project',
+                  pid,
+                );
+              }}
+              onAbandonProject={() => {
+                const pid = detail.project.id;
+                if (!pid) return;
+                // Abandon requires a rationale — a short single-input prompt
+                // (not a modal form). Cancel or empty aborts. The rationale is
+                // applied to every abandon disposition (disposition_default:
+                // abandon) so a deliberate abandon-all closes cleanly.
+                const rationale = window.prompt(
+                  `Abandon "${pid}"?\n\nRuns meta-close-project (mode: abandon) — every owned change / recommendation / note is abandoned with the rationale below. status → cancelled, lifecycle_stage → archived, stamps cancelled_at.\n\nRationale (required):`,
+                );
+                if (rationale == null || rationale.trim() === '') return;
+                dispatch(
+                  buildCloseProjectPrompt(pid, 'abandon', rationale.trim()),
+                  `Abandoning ${pid}…`,
+                  'meta-close-project',
+                  pid,
+                );
               }}
               onReopenProject={async () => {
                 const pid = detail.project.id;
                 if (!pid) return;
                 if (
                   !window.confirm(
-                    `Reopen "${pid}"?\n\nstatus: completed → active, lifecycle_stage: archived → in-progress, completed_at cleared. The project will return to the Active group.`,
+                    `Reopen "${pid}"?\n\nstatus: completed | cancelled → active, lifecycle_stage: archived → active, completed_at / cancelled_at cleared. The project will return to the Active group.`,
                   )
                 ) {
                   return;
@@ -829,6 +844,7 @@ function ProjectDetailPane({
   onAddChange,
   onAddSchedule,
   onCompleteProject,
+  onAbandonProject,
   onReopenProject,
   onScheduleReport,
   onRefetchDetail,
@@ -853,9 +869,12 @@ function ProjectDetailPane({
   onAddChange: () => void;
   // Opens meta-add-schedule scaffold form with `project:` pre-filled.
   onAddSchedule: () => void;
-  // POSTs /api/projects/:id/complete — vault-only closure transition.
+  // Dispatches meta-close-project (mode: complete) via the AI bridge — the
+  // owned-work disposition gate runs before the terminal status flip.
   onCompleteProject: () => void;
-  // POSTs /api/projects/:id/reopen — inverse transition (completed → active).
+  // Dispatches meta-close-project (mode: abandon) with an operator rationale.
+  onAbandonProject: () => void;
+  // POSTs /api/projects/:id/reopen — inverse transition (completed | cancelled → active).
   onReopenProject: () => void;
   // POSTs /api/projects/:id/schedule-report?cadence=daily|weekly — scaffolds
   // a runbook entry for recurring status reports.
@@ -1066,6 +1085,7 @@ function ProjectDetailPane({
         researchUpdatesPending={detail.research_reports.filter((r) => r.has_updates_pending).length}
         onGenerateReport={onGenerateReport}
         onCompleteProject={onCompleteProject}
+        onAbandonProject={onAbandonProject}
         onReopenProject={onReopenProject}
         onViewResearch={() => {
           navigate(`/research?project=${encodeURIComponent(p.id ?? '')}`);
@@ -2067,6 +2087,7 @@ function ProjectStateBanner({
   researchUpdatesPending,
   onGenerateReport,
   onCompleteProject,
+  onAbandonProject,
   onReopenProject,
   onViewResearch,
 }: {
@@ -2074,6 +2095,7 @@ function ProjectStateBanner({
   researchUpdatesPending: number;
   onGenerateReport: (type?: ReportType) => void;
   onCompleteProject: () => void;
+  onAbandonProject: () => void;
   onReopenProject: () => void;
   onViewResearch: () => void;
 }) {
@@ -2162,6 +2184,47 @@ function ProjectStateBanner({
     );
   }
 
+  // Terminal: project is abandoned (status: cancelled). Neutral/warn banner +
+  // Reopen escape hatch. Parallels the completed branch; meta-close-project
+  // (mode: abandon) dispositions every owned item, so there is no dangling
+  // work to surface here.
+  if (project.status === 'cancelled') {
+    return (
+      <>
+        {researchBanner}
+        <div
+          className="card"
+          style={{
+            padding: '12px 16px',
+            background: 'var(--warning-soft, rgba(190, 130, 30, 0.08))',
+            border: '1px solid var(--warning-border, var(--warning-text))',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            flexWrap: 'wrap',
+          }}
+        >
+          <Icons.X size={14} style={{ color: 'var(--warning-text)' }} />
+          <span style={{ fontSize: 13, color: 'var(--warning-text)', fontWeight: 500 }}>
+            Project abandoned.
+          </span>
+          <span className="tiny subtle" style={{ flex: 1 }}>
+            {agg.merged > 0 && `${agg.merged} change${agg.merged !== 1 ? 's' : ''} shipped, `}
+            {agg.abandoned} change{agg.abandoned !== 1 ? 's' : ''} abandoned.
+          </span>
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={onReopenProject}
+            title="Vault-only transition: status: cancelled → active, lifecycle_stage → active, clears cancelled_at. Use when the project needs to absorb more work after being abandoned."
+          >
+            <Icons.Refresh size={11} /> Reopen
+          </button>
+        </div>
+      </>
+    );
+  }
+
   const inFlight = agg.planning + agg.in_progress + agg.in_review;
   const allTerminal = inFlight === 0 && agg.total > 0;
 
@@ -2224,6 +2287,19 @@ function ProjectStateBanner({
             >
               <Icons.Check size={11} /> Complete project
             </button>
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={onAbandonProject}
+              disabled={dispatching}
+              title={
+                dispatching
+                  ? 'Disabled — a skill run is in flight for this project. Wait for it to finish.'
+                  : 'Runs meta-close-project (mode: abandon): prompts for a rationale, then abandons every owned change / recommendation / note and sets status → cancelled. NO GitHub side-effects.'
+              }
+            >
+              <Icons.X size={11} /> Abandon…
+            </button>
           </div>
         </div>
       </>
@@ -2259,6 +2335,20 @@ function ProjectStateBanner({
           {agg.planning > 0 && `${agg.planning} planning · `}
           {agg.abandoned > 0 && `${agg.abandoned} abandoned`}
         </span>
+        <button
+          type="button"
+          className="btn btn-sm"
+          onClick={onAbandonProject}
+          disabled={dispatching}
+          style={{ marginLeft: 'auto' }}
+          title={
+            dispatching
+              ? 'Disabled — a skill run is in flight for this project. Wait for it to finish.'
+              : 'Runs meta-close-project (mode: abandon): prompts for a rationale, then dispositions every owned open item (the in-flight changes above included) and sets status → cancelled. NO GitHub side-effects.'
+          }
+        >
+          <Icons.X size={11} /> Abandon project…
+        </button>
       </div>
     </>
   );
