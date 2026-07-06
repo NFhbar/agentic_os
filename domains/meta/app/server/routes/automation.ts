@@ -841,6 +841,7 @@ import {
   checkChangeAutomationEligibility,
   composeArtifactDetail,
   decideNextChangeStep,
+  deriveCompletedStepFromArtifacts,
   evaluateArtifactMovement,
 } from './automation-state-machine.js';
 import { lookupLinkedReview } from './pr-review-lookup.js';
@@ -1855,16 +1856,53 @@ export const changeAutomationRoutes: FastifyPluginAsync = async (fastify) => {
       reply.code(400);
       return { ok: false, error: eligibility.reason };
     }
-    // Decide the next step. First dispatch (current_step null) defaults to
-    // execute. Subsequent restarts (post-Resume) re-evaluate the state
-    // machine with the previous run's recorded exit — and, when a dispatch
-    // baseline was recorded, verify the step's artifact actually moved so a
-    // skill-refused park can't be skipped past via Resume → Start.
+    // Decide the next step from ARTIFACTS, not status alone. First dispatch
+    // (current_step null) derives the completed step from the change's branch
+    // commits + pr_url + pr-review pass state, so a change with completed
+    // execute/open-pr artifacts advances to the right step instead of a
+    // redundant execute dispatch (the 2026-07-06 double-cancel). Subsequent
+    // restarts (post-Resume) re-evaluate with the previous run's recorded exit
+    // — and, when a dispatch baseline was recorded, verify the step's artifact
+    // actually moved so a skill-refused park can't be skipped past via
+    // Resume → Start.
     const pr_review_status =
       typeof found.fm.pr_review_status === 'string' ? found.fm.pr_review_status : null;
+    // Linked-review facts, computed ONCE — feeds both the Task-#427 no-op-loop
+    // guard (comments_to_address, previously absent on the manual Start path)
+    // and the entry classifier's latest_pass_acted.
+    const startPrReviewPath =
+      typeof found.fm.pr_review_path === 'string' ? found.fm.pr_review_path : null;
+    const startReview = startPrReviewPath ? lookupLinkedReview(startPrReviewPath) : null;
+    const comments_to_address = startReview ? startReview.commentsToAddress : null;
+    const latest_pass_acted = startReview
+      ? startReview.actedCount > 0 && startReview.commentsToAddress === 0
+      : false;
     let decision: ChangeAutomationDecision;
     if (current.state.current_step === null) {
-      decision = { action: 'dispatch', step: 'execute' };
+      // Derive the completed step from artifacts. null = genuinely fresh →
+      // dispatch execute (today's behavior). Otherwise re-use the transition
+      // table (artifact_moved: true — the postcondition is what the classifier
+      // just proved) so open-pr follows execute, pr-review follows open-pr, and
+      // the full verdict/cap/needs-triage logic follows pr-review — ONE table.
+      const observed = await gatherArtifactObservation(found.fm);
+      const change_status = typeof found.fm.status === 'string' ? found.fm.status : null;
+      const completed = deriveCompletedStepFromArtifacts({
+        change_status,
+        observed,
+        latest_pass_acted,
+      });
+      decision =
+        completed === null
+          ? { action: 'dispatch', step: 'execute' }
+          : decideNextChangeStep({
+              current_step: completed,
+              iteration_count: current.state.iteration_count,
+              iteration_cap: current.iteration_cap,
+              last_exit: 0,
+              pr_review_status,
+              comments_to_address,
+              artifact_moved: true,
+            });
     } else {
       // Thread the recorded exit of the run being re-evaluated rather than
       // asserting 0 — a re-driven skill-failure park should report the exit
@@ -1908,6 +1946,7 @@ export const changeAutomationRoutes: FastifyPluginAsync = async (fastify) => {
         iteration_cap: current.iteration_cap,
         last_exit,
         pr_review_status,
+        comments_to_address,
         artifact_moved,
         artifact_detail,
       });

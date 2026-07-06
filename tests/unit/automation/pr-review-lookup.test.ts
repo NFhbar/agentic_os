@@ -94,8 +94,51 @@ describe('lookupLinkedReview — untriagedCount', () => {
       reviewGithubReviewId: null,
       passCount: 0,
       untriagedCount: 0,
+      actedCount: 0,
       standingBlockerCount: 0,
     });
+  });
+});
+
+describe('lookupLinkedReview — actedCount', () => {
+  it('counts status:acted-on comments on the latest pass only', () => {
+    const rel = writeFixture(
+      [
+        '## Pass 1',
+        '',
+        // Older pass's acted-on comment must be ignored by the latest-pass scope.
+        comment(1, [
+          '- file: src/a.ts',
+          '- line: 1',
+          '- status: acted-on',
+          '- acted_on_at: 2026-06-12T00:00:00Z',
+        ]),
+        '## Pass 2',
+        '',
+        comment(1, [
+          '- file: src/a.ts',
+          '- line: 10',
+          '- status: acted-on',
+          '- acted_on_at: 2026-07-06T00:00:00Z',
+        ]),
+        comment(2, [
+          '- file: src/b.ts',
+          '- line: 20',
+          '- status: acted-on',
+          '- acted_on_at: 2026-07-06T00:00:00Z',
+        ]),
+        comment(3, ['- file: src/c.ts', '- line: 30', '- status: new']),
+      ].join('\n'),
+    );
+    const lookup = lookupLinkedReview(rel);
+    // Latest pass (2) has 2 acted-on; the older pass's acted-on is out of scope.
+    expect(lookup.actedCount).toBe(2);
+    // acted-on comments don't count as curated; only the new one is untriaged.
+    expect(lookup.commentsToAddress).toBe(0);
+    expect(lookup.untriagedCount).toBe(1);
+    // This is the latest_pass_acted signal for the entry classifier:
+    // actedCount > 0 && commentsToAddress === 0 → the pass is fully handled.
+    expect(lookup.actedCount > 0 && lookup.commentsToAddress === 0).toBe(true);
   });
 });
 

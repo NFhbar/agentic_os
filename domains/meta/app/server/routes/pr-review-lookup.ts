@@ -29,6 +29,11 @@ export interface ReviewLookup {
   // disposition is a merge invariant (new → acted-on | dismissed); this count
   // gates the Mark-ready affordances.
   untriagedCount: number;
+  // Count of latest-pass comments with `status: acted-on` — the OS already
+  // re-implemented them via address-comments. Disambiguates a needs-changes
+  // pass whose comments are all handled (→ derive a re-review, not a
+  // needs-triage park) for the entry classifier's `latest_pass_acted` input.
+  actedCount: number;
   // Count of latest-pass comments with severity blocker|bug whose status is
   // still standing (not resolved/dismissed/acted-on/wontfix). Mirrors
   // dev-pr-review's step-14 roll-up rule for `pr_review_status: approved`;
@@ -48,6 +53,7 @@ export const EMPTY_REVIEW_LOOKUP: Readonly<ReviewLookup> = Object.freeze({
   reviewGithubReviewId: null,
   passCount: 0,
   untriagedCount: 0,
+  actedCount: 0,
   standingBlockerCount: 0,
 });
 
@@ -90,6 +96,7 @@ export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
   }
   let count = 0;
   let untriaged = 0;
+  let acted = 0;
   let standingBlockers = 0;
   let firstReviewId: number | null = null;
   for (let i = 0; i < commentStarts.length; i++) {
@@ -110,6 +117,7 @@ export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
     const ghReviewM = header.match(/^- github_review_id:\s*(\d+)/m);
     if (ghReviewM && firstReviewId == null) firstReviewId = Number(ghReviewM[1]);
     if (status === 'new') untriaged++;
+    if (status === 'acted-on') acted++;
     // wontfix is a user rejection — semantically equivalent to dismissed for
     // the standing test, else a wontfix'd bug pins the roll-up at pending.
     if (
@@ -132,6 +140,7 @@ export function lookupLinkedReview(prReviewPath: string): ReviewLookup {
     reviewGithubReviewId: firstReviewId,
     passCount,
     untriagedCount: untriaged,
+    actedCount: acted,
     standingBlockerCount: standingBlockers,
   };
 }

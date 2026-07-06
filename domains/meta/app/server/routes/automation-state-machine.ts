@@ -11,7 +11,7 @@
 // rules should be encoded here. The tests in
 // tests/unit/automation/decideNextChangeStep.test.ts cover every row.
 
-import type { ChangeAutomationDecision } from './automation.types.js';
+import type { ChangeAutomationDecision, ChangeAutomationStep } from './automation.types.js';
 import type { ChangeAutomationDispatchBaseline } from './changes.types.js';
 
 // Eligibility gate for the change-automation entry points (enable + start).
@@ -133,6 +133,67 @@ export function composeArtifactDetail(
     detail = detail ? `${detail}; run summary: "${runSummary}"` : `run summary: "${runSummary}"`;
   }
   return detail;
+}
+
+// Lifecycle ordering of the v1 steps — the rank the park-reconciliation
+// postcondition check compares against (a parked step's postcondition holds
+// when the classifier returns a step of equal-or-higher rank). Kept beside
+// the classifier it's read with so the two never drift.
+export const STEP_RANK: Readonly<Record<ChangeAutomationStep, number>> = Object.freeze({
+  execute: 1,
+  'open-pr': 2,
+  'pr-review': 3,
+  'address-comments': 4,
+});
+
+// Classify the highest lifecycle step whose postcondition artifacts already
+// exist — `null` means nothing is done yet. This is the artifact-aware
+// boundary the tick-advance already implies, extracted so BOTH entry points
+// (`/start`'s first dispatch and park reconciliation) derive the step from
+// artifacts rather than from `status` alone. Pure — no I/O; the caller gathers
+// the ArtifactObservation.
+//
+// `latest_pass_acted` = the linked review's latest pass has ≥1 acted-on
+// comment AND zero still-curated (the caller computes it as
+// `actedCount > 0 && commentsToAddress === 0`).
+export function deriveCompletedStepFromArtifacts(args: {
+  change_status: string | null;
+  observed: ArtifactObservation;
+  latest_pass_acted: boolean;
+}): ChangeAutomationStep | null {
+  const { change_status, observed, latest_pass_acted } = args;
+
+  // A linked pr-review with ≥1 pass means pr-review ran. If every curated
+  // comment on that pass is already acted-on the loop's last completed step
+  // was address-comments — so the next derived step is a re-review, not a
+  // needs-triage park.
+  //
+  // Known pre-existing edge (shared with the auto-tick path): a needs-changes
+  // pass whose comments are ALL dismissed (zero curated, zero acted) derives
+  // 'pr-review' completed, and the reused decideNextChangeStep table then
+  // parks needs-triage with nothing left to triage. Kept as-is — identical to
+  // today's tick behavior; recovery is re-triage or a forced re-review —
+  // documented here so it isn't rediscovered as a bug.
+  if (observed.pr_review_path_set && (observed.pass_count ?? 0) > 0) {
+    return latest_pass_acted ? 'address-comments' : 'pr-review';
+  }
+  // A linked PR but no review pass yet → open-pr completed (dev-open-pr is
+  // idempotent, so any non-empty pr_url is the satisfied postcondition).
+  if (typeof observed.pr_url === 'string' && observed.pr_url !== '') return 'open-pr';
+  // A branch ref exists AND status left 'planning' → execute completed.
+  // EXECUTE's own writeback flips status planning → in-progress; a branch at
+  // status planning means EXECUTE committed but never reached its writeback
+  // (the wall-cap-commit class) — so it did NOT complete.
+  if (observed.head !== null && change_status !== 'planning') return 'execute';
+  // Degraded head read → trust frontmatter status alone (conservative — same
+  // dispatch as today when git is unreadable).
+  if (observed.head_error === 'degraded') {
+    if (change_status === 'in-progress') return 'execute';
+    if (change_status === 'in-review') return 'open-pr';
+    return null;
+  }
+  // ref-not-found, no PR, no passes → nothing done yet.
+  return null;
 }
 
 // Decide the next gesture given the change's current state + the outcome of
