@@ -589,6 +589,25 @@ export async function checkMergedChangesAndAdvance(): Promise<void> {
     }
     const { fm, parseError } = parseFrontmatter(content);
     if (parseError) continue;
+    // Fold per-change park reconciliation into this same walk (no new timer,
+    // server/index.ts untouched): a paused/terminal change whose step
+    // completed out-of-band clears on the 60s cadence even when no dashboard
+    // poll or gesture touched it. The pre-filter inside makes healthy changes
+    // free.
+    if (fm.type === 'change') {
+      const changeId = typeof fm.id === 'string' ? fm.id : null;
+      if (changeId) {
+        try {
+          await reconcileChangeAutomationIfStale({ fm: fm as Record<string, unknown>, path: file });
+        } catch (e) {
+          console.error(
+            `reconcile-sweep: error for change ${changeId}:`,
+            e instanceof Error ? e.message : e,
+          );
+        }
+      }
+      continue;
+    }
     if (fm.type !== 'project') continue;
     const projectId = typeof fm.id === 'string' ? fm.id : null;
     if (!projectId) continue;
@@ -841,6 +860,7 @@ import {
   checkChangeAutomationEligibility,
   composeArtifactDetail,
   decideNextChangeStep,
+  decideParkReconciliation,
   deriveCompletedStepFromArtifacts,
   evaluateArtifactMovement,
 } from './automation-state-machine.js';
@@ -1298,13 +1318,143 @@ export async function onChangeAutomationStepComplete(
   }
 }
 
+// Read-time park reconciliation. Re-runs the artifact classifier for a change
+// whose automation block is stale relative to out-of-band completion, and
+// applies the pure decideParkReconciliation result — STATE-ONLY, never
+// dispatches a run (the artifact-aware Start then does the right thing on the
+// next gesture/tick). Returns the POST-reconciliation state (re-read from disk
+// after any write) so callers that gate on phase/eligibility see the cleared
+// block, not the stale one they read before the hook ran. `action: none`
+// returns the caller's own inputs untouched — and a cheap phase/reason
+// pre-filter runs BEFORE any git spawn, so healthy changes cost zero extra I/O.
+async function reconcileChangeAutomationIfStale(found: {
+  fm: Record<string, unknown>;
+  path: string;
+}): Promise<{
+  fm: Record<string, unknown>;
+  path: string;
+  automation: ChangeAutomation | null;
+  reconciled: boolean;
+}> {
+  const automation = readChangeAutomationLocal(found.fm);
+  const noop = { fm: found.fm, path: found.path, automation, reconciled: false };
+  if (!automation) return noop;
+  const phase = automation.state.phase;
+  const change_status = typeof found.fm.status === 'string' ? found.fm.status : null;
+  const isTerminalStatus = change_status === 'merged' || change_status === 'abandoned';
+  const reason = automation.state.paused_reason ?? '';
+  const reasonAutoUnparkable =
+    phase === 'paused' &&
+    (reason.startsWith('skill-failure') || reason.startsWith('skill-refused'));
+  const terminalCandidate =
+    isTerminalStatus &&
+    (phase === 'paused' || phase === 'running') &&
+    automation.state.current_step !== null;
+  // Pre-filter: only paused-auto-unparkable or terminal-with-live-block
+  // changes ever pay for a git spawn.
+  if (!reasonAutoUnparkable && !terminalCandidate) return noop;
+
+  const observed = await gatherArtifactObservation(found.fm);
+  const prReviewPath = typeof found.fm.pr_review_path === 'string' ? found.fm.pr_review_path : null;
+  const review = prReviewPath ? lookupLinkedReview(prReviewPath) : null;
+  const latest_pass_acted = review
+    ? review.actedCount > 0 && review.commentsToAddress === 0
+    : false;
+
+  const decision = decideParkReconciliation({
+    change_status,
+    phase,
+    paused_reason: automation.state.paused_reason,
+    current_step: automation.state.current_step,
+    baseline: automation.state.dispatch_baseline ?? null,
+    observed,
+    latest_pass_acted,
+  });
+  if (decision.action === 'none') return noop;
+
+  const changeId = typeof found.fm.id === 'string' ? found.fm.id : '';
+  const nowIso = new Date().toISOString();
+  if (decision.action === 'complete-terminal') {
+    // Direct write — NOT completeChangeAutomation, whose pr_review_status
+    // pending → approved upgrade must not fire as a side effect of terminal
+    // cleanup on a merged change.
+    const next: ChangeAutomation = {
+      ...automation,
+      state: {
+        ...automation.state,
+        phase: 'complete',
+        paused_reason: null,
+        paused_at: null,
+        last_transition: nowIso,
+      },
+    };
+    await writeChangeAutomation(found.path, next);
+    recordAudit(
+      'change-automation-complete',
+      { change: changeId, reconciled: true, change_status, detail: decision.detail },
+      [relative(REPO_ROOT, found.path)],
+    );
+  } else {
+    // unpark → idle. KEEP current_step + dispatch_baseline so the next Start's
+    // re-evaluate sees artifact_moved: true and advances PAST the completed
+    // step. Null last_run_id neutralizes the stale non-zero exit that produced
+    // the verdict-state resume → re-park-in-339ms loop (safe under the
+    // tightened bar — unpark fires only when the step verifiably completed).
+    const next: ChangeAutomation = {
+      ...automation,
+      state: {
+        ...automation.state,
+        phase: 'idle',
+        paused_reason: null,
+        paused_at: null,
+        last_run_id: null,
+        last_transition: nowIso,
+      },
+    };
+    await writeChangeAutomation(found.path, next);
+    recordAudit(
+      'change-automation-reconciled',
+      {
+        change: changeId,
+        step: automation.state.current_step,
+        prior_reason: automation.state.paused_reason,
+        detail: decision.detail,
+      },
+      [relative(REPO_ROOT, found.path)],
+    );
+  }
+
+  // Re-read fresh state from the just-written file (cheaper than a full
+  // findChange re-walk — we already hold the path).
+  try {
+    const { fm: freshFm } = parseFrontmatter(await readFile(found.path, 'utf8'));
+    const fresh = freshFm as Record<string, unknown>;
+    return {
+      fm: fresh,
+      path: found.path,
+      automation: readChangeAutomationLocal(fresh),
+      reconciled: true,
+    };
+  } catch {
+    return {
+      fm: found.fm,
+      path: found.path,
+      automation: readChangeAutomationLocal(found.fm),
+      reconciled: true,
+    };
+  }
+}
+
 // Snapshot helper for the change-status endpoint. Builds the
 // ChangeAutomationStatusResponse shape — the wire contract documented in
-// automation.types.ts.
+// automation.types.ts. Accepts an optional pre-read `{ fm, path }` so callers
+// that already walked (GET → reconcile) build from the fresh state without a
+// second wiki walk.
 async function buildChangeStatusResponse(
   changeId: string,
+  preRead?: { fm: Record<string, unknown>; path: string },
 ): Promise<ChangeAutomationStatusResponse> {
-  const found = await findChange(changeId);
+  const found = preRead ?? (await findChange(changeId));
   if (!found) {
     return { ok: false, automation: null, change_summary: null };
   }
@@ -1607,11 +1757,16 @@ export const changeAutomationRoutes: FastifyPluginAsync = async (fastify) => {
   // detail endpoint also surfaces this via `change.automation`, but a
   // dedicated GET lets the dashboard's Automation panel poll cheaply.
   fastify.get<{ Params: { id: string } }>('/:id/automation', async (req, reply) => {
-    const status = await buildChangeStatusResponse(req.params.id);
-    if (!status.ok) {
+    const found = await findChange(req.params.id);
+    if (!found) {
       reply.code(404);
+      return { ok: false, automation: null, change_summary: null };
     }
-    return status;
+    // Poll-time park reconciliation: a stale paused/terminal block clears here
+    // (state-only) so the panel reflects out-of-band completion. Build from the
+    // post-reconciliation state to avoid a second wiki walk.
+    const reconciled = await reconcileChangeAutomationIfStale(found);
+    return buildChangeStatusResponse(req.params.id, { fm: reconciled.fm, path: reconciled.path });
   });
 
   // GET /api/changes/:id/automation/decisions — orchestrator decision log.
@@ -1777,19 +1932,23 @@ export const changeAutomationRoutes: FastifyPluginAsync = async (fastify) => {
     Body: { reset_iteration?: boolean };
   }>('/:id/automation/resume', async (req, reply) => {
     const changeId = req.params.id;
-    const found = await findChange(changeId);
-    if (!found) {
+    const found0 = await findChange(changeId);
+    if (!found0) {
       reply.code(404);
       return { ok: false, error: `change "${changeId}" not found` };
     }
-    const current = readChangeAutomationLocal(found.fm);
+    // Reconcile first — a park that completed out-of-band clears to idle here,
+    // so Resume correctly no-ops (nothing to resume) rather than re-dispatching.
+    const reconciledResume = await reconcileChangeAutomationIfStale(found0);
+    const found = { fm: reconciledResume.fm, path: reconciledResume.path };
+    const current = reconciledResume.automation;
     if (!current) {
       reply.code(400);
       return { ok: false, error: 'automation not configured — call enable first' };
     }
     if (current.state.phase !== 'paused') {
-      // Already idle/running/complete — noop.
-      return buildChangeStatusResponse(changeId);
+      // Already idle/running/complete (possibly just reconciled) — noop.
+      return buildChangeStatusResponse(changeId, found);
     }
     const nowIso = new Date().toISOString();
     const next: ChangeAutomation = {
@@ -1824,12 +1983,18 @@ export const changeAutomationRoutes: FastifyPluginAsync = async (fastify) => {
   //                        previous run's recorded exit status
   fastify.post<{ Params: { id: string } }>('/:id/automation/start', async (req, reply) => {
     const changeId = req.params.id;
-    const found = await findChange(changeId);
-    if (!found) {
+    const found0 = await findChange(changeId);
+    if (!found0) {
       reply.code(404);
       return { ok: false, error: `change "${changeId}" not found` };
     }
-    const current = readChangeAutomationLocal(found.fm);
+    // Reconcile a stale park BEFORE the gates so Start acts on the fresh
+    // (possibly just-cleared) state — an out-of-band-completed step unparks to
+    // idle here, and the artifact-derived re-evaluate below then advances PAST
+    // it rather than re-dispatching the completed step.
+    const reconciledStart = await reconcileChangeAutomationIfStale(found0);
+    const found = { fm: reconciledStart.fm, path: reconciledStart.path };
+    const current = reconciledStart.automation;
     if (!current) {
       reply.code(400);
       return { ok: false, error: 'automation not configured — call enable first' };

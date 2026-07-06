@@ -310,3 +310,110 @@ export function decideNextChangeStep(args: {
       };
   }
 }
+
+// Result of the park-reconciliation decision (read-time, state-only — never
+// dispatches). `complete-terminal` cleans up a stale block on a merged/
+// abandoned change (restores the on-complete audit trigger that a stuck
+// `paused` block suppressed); `unpark` clears a park whose step completed
+// out-of-band so the next Start advances; `none` = leave the block alone.
+export type ParkReconciliation =
+  | { action: 'complete-terminal'; detail: string }
+  | { action: 'unpark'; detail: string }
+  | { action: 'none' };
+
+// Pause-reason prefixes whose parks auto-reconcile — but ONLY when BOTH the
+// movement bar AND the postcondition bar hold (see decideParkReconciliation).
+// Deliberately EXCLUDES:
+//   - user-paused                 explicit human stop — never overridden
+//   - needs-triage                waits on comment triage; its step artifact
+//                                 already moved at park time, so movement
+//                                 alone would flip-flop every poll
+//   - iteration-cap-reached       documented Reset/Resume recovery
+//   - verification-unavailable    documented Reset recovery (degraded baseline)
+//   - dispatch-failure            current_step is the completed PREVIOUS step,
+//                                 so both bars hold by construction at park
+//                                 time — auto-unpark would erase the new
+//                                 debounce/dirty-tree refusal that IS the
+//                                 operator's cue, within one poll
+// See standard-automation-loop § Park reconciliation.
+const AUTO_UNPARK_PREFIXES = ['skill-failure', 'skill-refused'] as const;
+
+function stepRank(step: string | null): number {
+  return (STEP_RANK as Record<string, number | undefined>)[step ?? ''] ?? 0;
+}
+
+// Decide whether a change's automation block should reconcile against
+// out-of-band artifact state. Pure — the caller gathers observations and
+// applies the result (state-only write, no dispatch).
+export function decideParkReconciliation(args: {
+  change_status: string | null;
+  phase: string;
+  paused_reason: string | null;
+  current_step: string | null;
+  baseline: ChangeAutomationDispatchBaseline | null;
+  observed: ArtifactObservation;
+  latest_pass_acted: boolean;
+}): ParkReconciliation {
+  const {
+    change_status,
+    phase,
+    paused_reason,
+    current_step,
+    baseline,
+    observed,
+    latest_pass_acted,
+  } = args;
+
+  // Terminal: a merged/abandoned change with a live (paused|running) block +
+  // a current_step never fired the on-complete audit trigger (phase-aware #0's
+  // Exit case). Deliberately NARROW to phase ∈ {paused, running}: an `idle`
+  // block with a live current_step on a terminal change pre-exists this
+  // mechanism (nothing reconciles it today either, and the absorbed audit
+  // case was `paused`). Widening to "any block with current_step != null"
+  // would be strictly safe — a merged/abandoned status makes the lifecycle
+  // terminally done regardless of phase — but is kept out of scope so this
+  // change lands exactly the plan the review approved.
+  if (
+    (change_status === 'merged' || change_status === 'abandoned') &&
+    (phase === 'paused' || phase === 'running') &&
+    current_step !== null
+  ) {
+    return {
+      action: 'complete-terminal',
+      detail: `change ${change_status} with a live ${phase} block at ${current_step} — completing terminal cleanup`,
+    };
+  }
+
+  // Unpark: only skill-failure/skill-refused parks, and only when BOTH bars
+  // hold — movement since this park's own dispatch (evaluateArtifactMovement
+  // === true) AND the parked step's postcondition (classifier rank ≥ parked
+  // step's rank). Movement alone proves commits landed, not that
+  // execute/address-comments finished — the wall-cap partial-completion class
+  // (commits landed, status still planning → classifier null) must stay
+  // parked. The postcondition alone is satisfiable by a PRIOR pass for a
+  // re-review park (pass_count > 0 already holds → would unpark on stale
+  // evidence, then the next Start re-parks). The conjunction never loosens:
+  // for open-pr and a first-pass pr-review the two bars coincide. Absent/
+  // degraded baseline → movement is not `true` → no unpark (legacy parks
+  // recover via Resume/Reset as today).
+  if (
+    phase === 'paused' &&
+    AUTO_UNPARK_PREFIXES.some((p) => (paused_reason ?? '').startsWith(p)) &&
+    baseline !== null &&
+    evaluateArtifactMovement(current_step, baseline, observed) === true
+  ) {
+    const completed = deriveCompletedStepFromArtifacts({
+      change_status,
+      observed,
+      latest_pass_acted,
+    });
+    if (completed !== null && stepRank(completed) >= stepRank(current_step)) {
+      return {
+        action: 'unpark',
+        detail: `${current_step} postcondition satisfied out-of-band (completed step: ${completed}) — clearing ${(paused_reason ?? 'park').split(':')[0]}`,
+      };
+    }
+  }
+
+  return { action: 'none' };
+}
