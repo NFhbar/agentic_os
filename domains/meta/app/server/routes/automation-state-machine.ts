@@ -447,3 +447,25 @@ export function evaluatePrReviewDebounce(args: {
     message: `⊘ Re-review debounced — head unchanged since pass ${n} (last reviewed ${s7(last_head_sha)}, branch head ${s7(live_head)}); push new commits or re-dispatch with force: true for a fresh pass against the same head`,
   };
 }
+
+// Steps that write the working tree (create a branch, commit) — the dispatches
+// the clean-tree gate probes before spawning. address-comments is included
+// deliberately: it is EXECUTE-bound per classifyChangeDispatchPhase and hits
+// the same dirty-tree wall inside dev-write-change's Step 4b. open-pr and
+// pr-review don't touch the tree, so a dirty clone is irrelevant to them.
+export const TREE_WRITING_STEPS: ReadonlySet<string> = new Set(['execute', 'address-comments']);
+
+// Single-line dirty-tree refusal for a tree-writing dispatch. Park reasons
+// serialize into one-line YAML flow via rewriteFrontmatter, so the whole
+// message — including the file list — must stay on one line. Caps the list at
+// 10 porcelain lines with a `+N more` tail.
+export function composeDirtyTreeRefusal(
+  step: string,
+  localPath: string,
+  dirtyFiles: string[],
+): string {
+  const CAP = 10;
+  const shown = dirtyFiles.slice(0, CAP).join(' · ');
+  const extra = dirtyFiles.length > CAP ? ` · +${dirtyFiles.length - CAP} more` : '';
+  return `dirty-tree: cannot dispatch ${step} — working tree at ${localPath} has ${dirtyFiles.length} uncommitted change(s): ${shown}${extra} — commit/stash/discard first (mirrors dev-write-change's own pre-branch abort)`;
+}

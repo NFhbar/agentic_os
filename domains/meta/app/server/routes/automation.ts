@@ -857,15 +857,22 @@ export { decideNextChangeStep } from './automation-state-machine.js';
 import {
   type ArtifactMovement,
   type ArtifactObservation,
+  TREE_WRITING_STEPS,
   checkChangeAutomationEligibility,
   composeArtifactDetail,
+  composeDirtyTreeRefusal,
   decideNextChangeStep,
   decideParkReconciliation,
   deriveCompletedStepFromArtifacts,
   evaluateArtifactMovement,
 } from './automation-state-machine.js';
 import { lookupLinkedReview } from './pr-review-lookup.js';
-import { readBranchHead, resolveRepoLocalPath, walkMd } from './repo-facts.js';
+import {
+  readBranchHead,
+  readWorkingTreeStatus,
+  resolveRepoLocalPath,
+  walkMd,
+} from './repo-facts.js';
 
 // Gather the caller-side facts evaluateArtifactMovement judges. I/O only —
 // the movement decision itself is the pure function in
@@ -908,12 +915,19 @@ async function readRunSummaryLine(runId: string): Promise<string | null> {
       }
     }
     if (!lastText) return null;
-    const firstLine = lastText
+    const lines = lastText
       .split('\n')
       .map((l) => l.trim())
-      .find((l) => l !== '');
-    if (!firstLine) return null;
-    return firstLine.length > 200 ? `${firstLine.slice(0, 200)}…` : firstLine;
+      .filter((l) => l !== '');
+    if (lines.length === 0) return null;
+    // Prefer the first line that opens with a report glyph — the skill's actual
+    // verdict heading — over narrative preamble. signing #0's tail: the old
+    // first-non-empty-line rule quoted "Everything is now clear on provenance…"
+    // instead of the ✗/✓ report heading.
+    const REPORT_GLYPHS = ['✗', '✓', '⚠', '↻', '⊘'];
+    const glyphLine = lines.find((l) => REPORT_GLYPHS.some((g) => l.startsWith(g)));
+    const chosen = glyphLine ?? lines[0];
+    return chosen.length > 200 ? `${chosen.slice(0, 200)}…` : chosen;
   } catch {
     return null;
   }
@@ -943,7 +957,23 @@ async function dispatchChangeStep(args: {
   // for "branch absent" and reading any later head as movement.
   const branch = typeof fm.branch === 'string' ? fm.branch : null;
   const prReviewPath = typeof fm.pr_review_path === 'string' ? fm.pr_review_path : null;
-  const baselineHead = readBranchHead(await resolveRepoLocalPath(repo), branch);
+  const localPath = await resolveRepoLocalPath(repo);
+  // Clean-tree gate: a tree-writing dispatch (execute / address-comments)
+  // against a dirty clone burns a full run to learn what `git status
+  // --porcelain` says in 10ms — dev-write-change aborts pre-branch anyway.
+  // localPath is already resolved here for the baseline (hoisted, no double
+  // walk). Degraded git read → proceed (fail-open; the skill's own abort is
+  // the precise backstop).
+  if (TREE_WRITING_STEPS.has(step)) {
+    const tree = readWorkingTreeStatus(localPath);
+    if (!tree.degraded && tree.dirty_files.length > 0) {
+      return {
+        ok: false,
+        error: composeDirtyTreeRefusal(step, localPath ?? '<unknown path>', tree.dirty_files),
+      };
+    }
+  }
+  const baselineHead = readBranchHead(localPath, branch);
   const dispatchBaseline: ChangeAutomationDispatchBaseline = {
     head_sha: baselineHead.head,
     head_degraded: baselineHead.head_error === 'degraded',
@@ -1445,6 +1475,40 @@ async function reconcileChangeAutomationIfStale(found: {
   }
 }
 
+// Derive the step a Start would dispatch NEXT from artifacts — the same
+// classifier composition /start's null-branch uses, factored for the
+// enable-time clean-tree gate. Returns the dispatch step, or null when the
+// entry derivation would park/complete (not a tree-writing dispatch, so the
+// gate is moot). iteration_count/cap only matter for the needs-changes tier;
+// the default cap is fine for deciding "would the next dispatch write the tree".
+async function deriveEntryDispatchStep(
+  fm: Record<string, unknown>,
+): Promise<ChangeAutomationStep | null> {
+  const observed = await gatherArtifactObservation(fm);
+  const prReviewPath = typeof fm.pr_review_path === 'string' ? fm.pr_review_path : null;
+  const review = prReviewPath ? lookupLinkedReview(prReviewPath) : null;
+  const latest_pass_acted = review
+    ? review.actedCount > 0 && review.commentsToAddress === 0
+    : false;
+  const change_status = typeof fm.status === 'string' ? fm.status : null;
+  const completed = deriveCompletedStepFromArtifacts({
+    change_status,
+    observed,
+    latest_pass_acted,
+  });
+  if (completed === null) return 'execute';
+  const decision = decideNextChangeStep({
+    current_step: completed,
+    iteration_count: 0,
+    iteration_cap: DEFAULT_ITERATION_CAP,
+    last_exit: 0,
+    pr_review_status: typeof fm.pr_review_status === 'string' ? fm.pr_review_status : null,
+    comments_to_address: review ? review.commentsToAddress : null,
+    artifact_moved: true,
+  });
+  return decision.action === 'dispatch' ? decision.step : null;
+}
+
 // Snapshot helper for the change-status endpoint. Builds the
 // ChangeAutomationStatusResponse shape — the wire contract documented in
 // automation.types.ts. Accepts an optional pre-read `{ fm, path }` so callers
@@ -1858,6 +1922,29 @@ export const changeAutomationRoutes: FastifyPluginAsync = async (fastify) => {
       reply.code(400);
       return { ok: false, error: eligibility.reason };
     }
+    // Clean-tree gate at enable time too (the audit's "at enable time AND again
+    // immediately before dispatching"). If the entry step is tree-writing and
+    // the clone is dirty, refuse to arm — an EXECUTE-bound Start would just burn
+    // a run learning that. A change whose next step is pr-review/open-pr can
+    // still arm with a dirty tree (the tree is irrelevant to those dispatches).
+    const enableStep = await deriveEntryDispatchStep(found.fm);
+    if (enableStep && TREE_WRITING_STEPS.has(enableStep)) {
+      const localPath = await resolveRepoLocalPath(
+        typeof found.fm.repo === 'string' ? found.fm.repo : null,
+      );
+      const tree = readWorkingTreeStatus(localPath);
+      if (!tree.degraded && tree.dirty_files.length > 0) {
+        reply.code(400);
+        return {
+          ok: false,
+          error: composeDirtyTreeRefusal(
+            enableStep,
+            localPath ?? '<unknown path>',
+            tree.dirty_files,
+          ),
+        };
+      }
+    }
     const current = readChangeAutomationLocal(found.fm);
     const next: ChangeAutomation = current
       ? {
@@ -2154,8 +2241,15 @@ export const changeAutomationRoutes: FastifyPluginAsync = async (fastify) => {
       step: decision.step,
     });
     if (!dispatched.ok) {
-      reply.code(500);
-      return { ok: false, error: `dispatch failed: ${dispatched.error}` };
+      // Guard refusals (dirty-tree, ⊘ debounce) are client-actionable → 409;
+      // infrastructure dispatch errors stay 500.
+      const isGuard =
+        dispatched.error.startsWith('dirty-tree:') || dispatched.error.startsWith('⊘');
+      reply.code(isGuard ? 409 : 500);
+      return {
+        ok: false,
+        error: isGuard ? dispatched.error : `dispatch failed: ${dispatched.error}`,
+      };
     }
     return buildChangeStatusResponse(changeId);
   });
