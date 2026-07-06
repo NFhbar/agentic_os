@@ -88,10 +88,14 @@ across three kinds:
 - **Report recommendations** — research-reports with `type: research-report`, `project == <id>`, in
   the **approved family** (`status: approved | updated`). Within each, `recommended_changes` rows
   with `status: proposed`, plus `status: scaffolded` rows whose linked change (`id` field of the
-  row) is **not** merged. Each is `report-rec:<report-id>#<index>`. **Covered rows:** a `scaffolded`
-  row whose linked change already appears in the change list above is marked **covered** —
-  dispositioning that change also flips the row (via the writeback in step 5), so a covered row needs
-  no instruction of its own and does not gate closure.
+  row) is **not** merged. Each is `report-rec:<report-id>#<index>`. **Candidate covered rows:** a
+  `scaffolded` row whose linked change (matched by the **row's `id`**) already appears in the change
+  list above is a _candidate_ covered row — but whether it is actually covered depends on that
+  change's resolved disposition, decided in step 4. Only an **abandoned** covering change flips the
+  row (step 5's abandon writeback); a **transferred** covering change performs no row edit and would
+  strand the scaffolded-unmerged row on the archived project. So do **not** mark the row covered here
+  — carry it forward as a candidate and re-evaluate it in step 4 once the covering change's
+  disposition is known.
 - **Pending notes** — `notes_log` items with an empty `considered_by` array on **any** report under
   the project (regardless of report status). Each is `note:<report-id>#<ts>`.
 
@@ -111,10 +115,33 @@ Resolve each open item against `inputs.dispositions` (matched by `item` ref), fa
 - **`abandon`** requires a rationale — the per-item `rationale`, else `inputs.rationale`. A missing
   rationale downgrades the item to `block` with reason `no rationale`.
 - **`transfer`** is valid only for **changes**, and only to an **existing non-terminal** project
-  (`status ∉ {completed, cancelled}`). Otherwise the item downgrades to `block` with the specific
-  reason (`transfer target not a change` / `transfer target <p> not found` / `transfer target <p> is
-terminal`).
+  (`status ∉ {completed, cancelled}`) that is **not the project being closed** (`to != inputs.project`).
+  The closing project is still non-terminal at gate time, so a self-transfer would validate, leave the
+  change's `project:` effectively unchanged, and strand it under the just-cancelled project — silently
+  defeating the gate. Otherwise the item downgrades to `block` with the specific reason (`transfer
+target not a change` / `transfer target is the closing project` / `transfer target <p> not found` /
+  `transfer target <p> is terminal`).
 - **`block`** (explicit or as a downgrade) means the item is undispositioned.
+
+**Candidate covered rows (from step 3).** Resolve each candidate covered row against its covering
+change's now-known disposition: if the covering change resolved to **`abandon`**, the row is
+**covered** — it needs no instruction and does not gate (step 5's abandon writeback flips it). If the
+covering change resolved to **`transfer`** or **`block`** (anything that won't flip the row), the row
+is **not** covered — treat it as an ordinary `report-rec` open item that needs its own disposition and
+gates closure like any other.
+
+**In-flight run guard (changes).** Before allowing any change's disposition to proceed, query the runs
+table for a non-terminal run tied to it:
+
+```sql
+SELECT id FROM runs WHERE change_id = '<change-id>' AND state IN ('queued', 'running');
+```
+
+(the runs table lives in `.claude/state/events.db`.) If any row returns, downgrade the change to
+`block` with reason `in-flight automation run (<run-id>)` — abandoning or transferring a change whose
+orchestrator run is mid-flight would strand that run. This closes the CLI/headless gap the dashboard's
+project-scoped `dispatching` disable cannot see: orchestrator runs are tagged by `change_id`, not
+`project`, so the banner's disable never covers them and the headless path has no guard at all.
 
 **If any item resolves to `block` → refuse before touching anything.** The first line is a
 park-friendly summary that reads well as a `skill-refused:` park reason (see
@@ -134,10 +161,14 @@ Reached only when zero items block. For each item, apply its resolved dispositio
 /api/changes/:id/abandon` (`domains/meta/app/server/routes/changes.ts`) — `status: abandoned`,
   `abandoned_at: <now>`, `abandoned_reason: "<rationale>"` (embed-quote-safe: replace any `"` in the
   rationale with `'`), `updated: <now>`, and append a `## Abandoned` body section naming the reason.
-  When the change carries `derived_from_report` + `recommendation_index`, also flip the source
-  report's row — but do this with the **single-line-safe writeback below, NOT the route's
-  multi-line-YAML regex** (that regex silently no-ops on canonical single-line entries — the exact
-  bug surfaced as out-of-scope concern #2 in this change's plan).
+  If an open report row is **covered** by this change, also flip that row — key the flip off the
+  **coverage linkage** (the report row whose `id` equals this change's id, the same linkage step 3
+  used to establish coverage), **not** the change's `derived_from_report` / `recommendation_index`
+  fields: a hand-linked row can carry the row→change `id` without the reverse pointer (or vice versa),
+  and keying off the change side would leave the covered row stranded. Flip it with the
+  **single-line-safe writeback below, NOT the route's multi-line-YAML regex** (that regex silently
+  no-ops on canonical single-line entries — the exact bug surfaced as out-of-scope concern #2 in this
+  change's plan).
 - **change → `transfer`**: rewrite `project: <target>` and bump `updated: <now>`. The change leaves
   this project's ownership; no other edits. It is **not** counted as abandoned.
 - **report row → `abandon`** (uncovered `proposed` / `scaffolded` rows): flip the row's `status →
@@ -213,9 +244,11 @@ The refusal summary prints at step 4; the idempotent no-op prints at step 2.
 - `↻ project already terminal (status: <x>)` — idempotent no-op stop (exit 0).
 - `✗ close-project refused — <N> undispositioned open item(s)` — the disposition gate fired;
   mutation-free, exit 0, first line reads as a `skill-refused:` park reason.
-- **In-flight automation caveat:** abandoning a change whose orchestrator run is queued/running could
-  strand that run. v1 relies on the dashboard's project-scoped `dispatching` disable plus the
-  operator; a hard runs-DB check is a surfaced follow-up, not in scope.
+- **In-flight automation guard:** the disposition gate (step 4) hard-blocks any change with a
+  `queued`/`running` run in the runs table, refusing with the run id rather than stranding it — this
+  covers the orchestrator (`change_id`-tagged) and CLI/headless dispatches the dashboard's
+  project-scoped `dispatching` disable can't see. The operator clears the block by letting the run
+  finish (or cancelling it) before re-closing.
 - **Vault-only abandonment caveat:** abandoning an `in-review` change leaves its GitHub PR/branch
   dangling — exact parity with the per-change abandon route. The refusal itemization surfaces
   in-review items before the operator opts into abandon-all.

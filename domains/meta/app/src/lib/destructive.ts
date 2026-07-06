@@ -43,6 +43,18 @@ export function buildDeletePrompt(targetType: TargetType, targetPath: string): s
 // recommendations/notes surface instead of being silently archived; `abandon`
 // opts into disposition_default: abandon with an operator-supplied rationale so
 // a deliberate abandon-all closes cleanly with zero dangling queue items.
+//
+// The mode/rationale dependency is encoded in the overloads: `abandon` requires
+// a rationale (an empty one downgrades every abandon disposition to `block` in
+// the skill, so the dispatch would be a guaranteed refusal), while `complete`
+// takes none. This keeps a second caller from shipping the dead abandon-without-
+// rationale path.
+export function buildCloseProjectPrompt(projectId: string, mode: 'complete'): string;
+export function buildCloseProjectPrompt(
+  projectId: string,
+  mode: 'abandon',
+  rationale: string,
+): string;
 export function buildCloseProjectPrompt(
   projectId: string,
   mode: 'complete' | 'abandon',
