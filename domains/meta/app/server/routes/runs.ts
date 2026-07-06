@@ -23,7 +23,7 @@ import { createInterface } from 'node:readline';
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 // biome-ignore format: one line keeps the ts-expect-error on the resolution error
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
-import { resolveModelExecuteForRun, resolveWallTimeCapMs, spawnClaudeOrphaned } from '../../../../../scripts/dispatch-claude.mjs';
+import { resolveEffortExecuteForRun, resolveModelExecuteForRun, resolveWallTimeCapMs, spawnClaudeOrphaned } from '../../../../../scripts/dispatch-claude.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { recordEvent } from '../../../../../scripts/events-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
@@ -351,18 +351,22 @@ export async function startRun(input: StartRunOptions): Promise<StartRunResult> 
   const errPath = stderrPathFor(output_path) as string;
   const wallCapMs = (await resolveWallTimeCapMs(skill)) as number;
 
-  // Phase-aware model override: when the dispatched skill declares
-  // `model_execute:` AND the target change's review gate classifies this
-  // dispatch EXECUTE-bound, that model replaces the skill's `model:` pin
-  // (dual-phase skills like dev-write-change plan and execute from one
-  // skill, so a static pin can't split phases). Fail-open by design — any
-  // read/parse/classify failure keeps today's behavior; the feature can
-  // only ever swap the model, never block a dispatch.
+  // Phase-aware EXECUTE overrides: when the dispatched skill declares
+  // `model_execute:` / `effort_execute:` AND the target change's review gate
+  // classifies this dispatch EXECUTE-bound, those replace the skill's `model:`
+  // / `effort:` pins (dual-phase skills like dev-write-change plan and execute
+  // from one skill, so static pins can't split phases). Classify ONCE, apply
+  // both. Fail-open by design — any read/parse/classify failure keeps today's
+  // behavior; the feature can only ever swap model/effort, never block.
   let modelOverride: string | null = null;
+  let effortOverride: string | null = null;
   if (skill && change_id) {
     try {
-      const modelExecute = (await resolveModelExecuteForRun(skill)) as string | null;
-      if (modelExecute) {
+      const [modelExecute, effortExecute] = (await Promise.all([
+        resolveModelExecuteForRun(skill),
+        resolveEffortExecuteForRun(skill),
+      ])) as [string | null, string | null];
+      if (modelExecute || effortExecute) {
         const gate = readChangeDispatchGate(change_id);
         if (
           gate &&
@@ -373,10 +377,11 @@ export async function startRun(input: StartRunOptions): Promise<StartRunResult> 
           }) === 'execute-bound'
         ) {
           modelOverride = modelExecute;
+          effortOverride = effortExecute;
         }
       }
     } catch {
-      /* fail-open — dispatch proceeds on the model: chain */
+      /* fail-open — dispatch proceeds on the model:/effort: chain */
     }
   }
 
@@ -386,6 +391,7 @@ export async function startRun(input: StartRunOptions): Promise<StartRunResult> 
     stderrPath: errPath,
     logPrefix: 'runs',
     model: modelOverride,
+    effort: effortOverride,
   })) as { pid: number | null; error?: string; effort?: string | null; model?: string | null };
 
   // Stamp the dispatch-resolved model/effort on the row now — before the

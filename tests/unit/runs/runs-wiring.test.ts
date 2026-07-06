@@ -31,9 +31,10 @@ const mocks = vi.hoisted(() => ({
   recordEvent: vi.fn(),
   recoverUsageFromJournal: vi.fn((): Record<string, unknown> | null => null),
   // Hoisted so the override-seam tests can drive it per-case. Default null
-  // keeps every pre-existing behavioral pin unchanged (the model_execute
-  // override path only activates on a non-null resolution).
+  // keeps every pre-existing behavioral pin unchanged (the model_execute /
+  // effort_execute override paths only activate on a non-null resolution).
   resolveModelExecuteForRun: vi.fn(async (): Promise<string | null> => null),
+  resolveEffortExecuteForRun: vi.fn(async (): Promise<string | null> => null),
   setDispatchConfig: vi.fn(),
   setHooksFired: vi.fn(),
   spawnClaudeOrphaned: vi.fn(),
@@ -41,6 +42,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../../../scripts/dispatch-claude.mjs', () => ({
   resolveModelExecuteForRun: mocks.resolveModelExecuteForRun,
+  resolveEffortExecuteForRun: mocks.resolveEffortExecuteForRun,
   resolveWallTimeCapMs: vi.fn(async () => 25 * 60_000),
   spawnClaudeOrphaned: mocks.spawnClaudeOrphaned,
 }));
@@ -151,8 +153,9 @@ describe('runs.ts wiring — PID-dead settle + spawn-failure early-finalize', ()
     mocks.artifactFresh.mockReturnValue(false);
     mocks.recoverUsageFromJournal.mockReturnValue(null);
     // clearAllMocks wipes call history but NOT mockResolvedValue impls — reset
-    // the override resolver so a per-test value can't bleed into the next test.
+    // the override resolvers so a per-test value can't bleed into the next test.
     mocks.resolveModelExecuteForRun.mockResolvedValue(null);
+    mocks.resolveEffortExecuteForRun.mockResolvedValue(null);
     vi.useFakeTimers();
   });
 
@@ -379,11 +382,13 @@ describe('runs.ts wiring — PID-dead settle + spawn-failure early-finalize', ()
     );
   });
 
-  it('execute-bound gate → threads model_execute as the spawn model override', async () => {
-    // Skill declares model_execute AND the change's review gate is approved,
-    // so classifyChangeDispatchPhase (real, via readChangeReviewGate reading
-    // the fixture) returns execute-bound → the override reaches the spawn.
+  it('execute-bound gate → threads model_execute AND effort_execute as spawn overrides', async () => {
+    // Skill declares model_execute + effort_execute AND the change's review
+    // gate is approved, so classifyChangeDispatchPhase (real, via
+    // readChangeDispatchGate reading the fixture) returns execute-bound → both
+    // overrides reach the spawn options.
     mocks.resolveModelExecuteForRun.mockResolvedValue('claude-opus-4-8');
+    mocks.resolveEffortExecuteForRun.mockResolvedValue('xhigh');
     writeChangeFixture('exec-change', { review_status: 'approved' });
     mocks.spawnClaudeOrphaned.mockResolvedValue({ pid: DEAD_PID });
 
@@ -395,15 +400,16 @@ describe('runs.ts wiring — PID-dead settle + spawn-failure early-finalize', ()
     expect(mocks.spawnClaudeOrphaned).toHaveBeenCalledWith(
       expect.any(String),
       'dev-write-change',
-      expect.objectContaining({ model: 'claude-opus-4-8' }),
+      expect.objectContaining({ model: 'claude-opus-4-8', effort: 'xhigh' }),
     );
   });
 
-  it('plan-bound gate → no model override even when model_execute is declared', async () => {
-    // Same declared model_execute, but review_status: pending classifies
-    // plan-bound, so the override stays null and the skill's model: chain
-    // applies — the gate, not just the frontmatter, decides.
+  it('plan-bound gate → no model/effort override even when both are declared', async () => {
+    // Same declared model_execute + effort_execute, but review_status: pending
+    // classifies plan-bound, so both overrides stay null and the skill's
+    // model:/effort: chains apply — the gate, not just the frontmatter, decides.
     mocks.resolveModelExecuteForRun.mockResolvedValue('claude-opus-4-8');
+    mocks.resolveEffortExecuteForRun.mockResolvedValue('xhigh');
     writeChangeFixture('plan-change', { review_status: 'pending' });
     mocks.spawnClaudeOrphaned.mockResolvedValue({ pid: DEAD_PID });
 
@@ -415,7 +421,7 @@ describe('runs.ts wiring — PID-dead settle + spawn-failure early-finalize', ()
     expect(mocks.spawnClaudeOrphaned).toHaveBeenCalledWith(
       expect.any(String),
       'dev-write-change',
-      expect.objectContaining({ model: null }),
+      expect.objectContaining({ model: null, effort: null }),
     );
   });
 });

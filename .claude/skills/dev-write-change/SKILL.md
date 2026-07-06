@@ -27,6 +27,7 @@ spawns: []
 model: claude-fable-5
 model_execute: claude-opus-4-8
 effort: max
+effort_execute: xhigh
 wall_time_cap_minutes: 90
 ---
 
