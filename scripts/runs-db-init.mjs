@@ -46,6 +46,11 @@ export const RUNS_EXPECTED_COLUMNS = [
   'tokens_cache_hit',
   'tokens_cache_write',
   'model',
+  // Reasoning effort resolved at dispatch time (spawnClaudeOrphaned's
+  // buildClaudeArgs return). Dispatch-stamped only — result events carry no
+  // effort field, so finishRun never touches it. `model` shares the stamp
+  // but IS overwritten by the observed id when a result event lands.
+  'effort',
   // Who dispatched this run — human | automation | scheduler | driver.
   // Stamped at create time; NULL (legacy rows) reads as `human`.
   'origin',
@@ -81,6 +86,7 @@ CREATE TABLE IF NOT EXISTS runs (
   tokens_cache_hit    INTEGER,
   tokens_cache_write  INTEGER,
   model               TEXT,
+  effort              TEXT,
   origin              TEXT
 );`;
 
@@ -103,6 +109,7 @@ const COLUMN_MIGRATIONS = [
   { col: 'tokens_cache_hit', sql: 'ALTER TABLE runs ADD COLUMN tokens_cache_hit INTEGER' },
   { col: 'tokens_cache_write', sql: 'ALTER TABLE runs ADD COLUMN tokens_cache_write INTEGER' },
   { col: 'model', sql: 'ALTER TABLE runs ADD COLUMN model TEXT' },
+  { col: 'effort', sql: 'ALTER TABLE runs ADD COLUMN effort TEXT' },
   { col: 'origin', sql: 'ALTER TABLE runs ADD COLUMN origin TEXT' },
   { col: 'hooks_fired_at', sql: 'ALTER TABLE runs ADD COLUMN hooks_fired_at TEXT' },
 ];

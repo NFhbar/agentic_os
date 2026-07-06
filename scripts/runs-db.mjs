@@ -141,6 +141,23 @@ export function markRunning(id, pid) {
   }
 }
 
+// Stamp the dispatch-resolved model/effort onto the row right after spawn.
+// Survives pre-init deaths (and even spawn failures) that never produce the
+// stream-json result event the finish path reads from. `effort` has no other
+// writer; `model` is later overwritten by the observed id when a result
+// event lands (see FINISH_SQL's COALESCE note).
+export function setDispatchConfig(id, { model = null, effort = null } = {}) {
+  try {
+    getDb()
+      .prepare(`UPDATE runs SET model=@model, effort=@effort WHERE id=@id`)
+      .run({ id, model, effort });
+  } catch (e) {
+    try {
+      process.stderr.write(`setDispatchConfig error: ${e.message}\n`);
+    } catch {}
+  }
+}
+
 // Record a user cancel request on a still-running row. The finalizer maps
 // a death whose error starts with 'cancelled' to state='cancelled' — needed
 // for detached children cancelled after a server restart (no in-memory
@@ -249,9 +266,15 @@ UPDATE runs
        tokens_out = @tokens_out,
        tokens_cache_hit = @tokens_cache_hit,
        tokens_cache_write = @tokens_cache_write,
-       model = @model,
+       model = COALESCE(@model, model),
        pid = NULL
  WHERE id = @id`;
+// model COALESCE: the observed id from the result event wins (billing ground
+// truth), but a run that dies pre-result must not have its dispatch-time
+// stamp (setDispatchConfig) clobbered back to NULL — both the in-server
+// close handler and the supervisor finalize through this statement. `effort`
+// is deliberately absent: result events carry no effort field, so the
+// dispatch stamp is the only writer and never needs protecting.
 
 let _finishStmt = null;
 function getFinishStmt() {

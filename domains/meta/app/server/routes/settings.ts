@@ -155,7 +155,7 @@ function extractModel(layer: SettingsLayer): string | null {
 // /resolved endpoint — separate from scanSkillConfigs which walks every skill.
 async function readSkillFrontmatter(
   name: string,
-): Promise<{ effort: EffortLevel | null; model: string | null }> {
+): Promise<{ effort: EffortLevel | null; model: string | null; model_execute: string | null }> {
   try {
     const path = join(SKILLS_DIR, name, 'SKILL.md');
     const text = await readFile(path, 'utf8');
@@ -163,9 +163,10 @@ async function readSkillFrontmatter(
     return {
       effort: isEffortLevel(fm.effort) ? fm.effort : null,
       model: isValidModel(fm.model) ? fm.model : null,
+      model_execute: isValidModel(fm.model_execute) ? fm.model_execute : null,
     };
   } catch {
-    return { effort: null, model: null };
+    return { effort: null, model: null, model_execute: null };
   }
 }
 
@@ -559,6 +560,10 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
       skill,
       effort: { resolved: effortResolved, source: effortSource, layers: layers.effort },
       model: { resolved: modelResolved, source: modelSource, layers: layers.model },
+      // Phase-aware override for dual-phase skills — skill-frontmatter-only
+      // (no local/project layers, hence no {source, layers} object). Dispatch
+      // consumes it only for EXECUTE-bound runs; see execute-phase.ts.
+      model_execute: skillEntry.model_execute,
     };
   });
 

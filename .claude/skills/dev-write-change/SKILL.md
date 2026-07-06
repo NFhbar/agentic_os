@@ -25,6 +25,7 @@ outputs:
     description: 'Only written when EXECUTE phase hits test failures.'
 spawns: []
 model: claude-fable-5
+model_execute: claude-opus-4-8
 effort: max
 wall_time_cap_minutes: 90
 ---

@@ -25,6 +25,8 @@ import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// Sibling pure-JS module (zero imports of its own) — stays launchd-light.
+import { isValidModel } from './models-registry.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
@@ -96,6 +98,25 @@ export async function resolveModelForRun(skillName) {
   const fromLocal = await readJsonKey(join(REPO_ROOT, '.claude', 'settings.local.json'), 'model');
   if (fromLocal) return fromLocal;
   return await readJsonKey(join(REPO_ROOT, '.claude', 'settings.json'), 'model');
+}
+
+// Phase-aware model override for dual-phase skills (`model_execute:`
+// frontmatter). Frontmatter-only — deliberately NO settings.local.json /
+// settings.json fallback, unlike resolveModelForRun: the phase split is a
+// property of the specific dual-phase skill, not an install preference.
+// Callers (startRun) apply it only when the dispatch classifies
+// EXECUTE-bound; PLAN-bound dispatches keep the `model:` chain.
+//
+// Registry-validated: `model_execute:` has no UI writer (unlike `model:`,
+// normally written through the validated Settings PUT), so a hand-edited
+// typo would otherwise reach `--model` verbatim and kill the spawn at the
+// CLI. Invalid → null → startRun keeps the `model:` chain, sealing the
+// fail-open contract that this feature can only ever swap the model, never
+// block a dispatch.
+export async function resolveModelExecuteForRun(skillName) {
+  if (!skillName) return null;
+  const v = await readSkillField(skillName, 'model_execute');
+  return v && isValidModel(v) ? v : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -237,10 +258,10 @@ export async function spawnClaude(
 // vault / settings resolution matches spawnClaude exactly. stdout/stderr go
 // straight to the journal files; the caller supervises by the returned PID.
 //
-// Resolves { pid, args, effort, model } on success, { pid: null, error } on
-// spawn failure — including the holder dying after reporting a pid, in which
-// case the reported pid is best-effort SIGKILLed so no unsupervised stray
-// survives.
+// Resolves { pid, args, effort, model } on success, { pid: null, error,
+// effort, model } on spawn failure — including the holder dying after
+// reporting a pid, in which case the reported pid is best-effort SIGKILLed
+// so no unsupervised stray survives.
 export async function spawnClaudeOrphaned(
   prompt,
   skillName,
@@ -310,5 +331,8 @@ export async function spawnClaudeOrphaned(
   }
   const error =
     stderr.trim() || `dispatch-holder exited ${exitCode}${pid !== null ? ' after reporting a pid' : ''}`;
-  return { pid: null, error };
+  // Resolved effort/model ride the failure return too — the caller stamps
+  // them on the run row, so even a spawn-level failure records what was
+  // attempted (the dispatch log line is otherwise the only trace).
+  return { pid: null, error, effort, model };
 }

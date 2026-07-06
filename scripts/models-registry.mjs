@@ -134,6 +134,18 @@ export function pricingFor(id) {
   return match?.pricing ?? null;
 }
 
+// True when `id` is a model this registry knows about — canonical id or a
+// documented alias, tolerant of the optional `[<context-window>]` suffix
+// (e.g. `claude-opus-4-8[1m]`). The single validity predicate for model ids;
+// the Settings PUT endpoints mirror this rule and dispatch-time
+// `model_execute` resolution gates on it so a typo'd override can't reach
+// `--model` and kill a spawn.
+export function isValidModel(id) {
+  if (typeof id !== 'string' || id.length === 0) return false;
+  const normalized = id.replace(/\[[^\]]+\]$/, '');
+  return MODELS.some((m) => m.id === normalized || m.aliases?.split(',').includes(normalized));
+}
+
 // Return just the family's current default. Used by the dashboard when the
 // user clicks "use latest opus / sonnet / haiku".
 export function latestOfFamily(family) {
