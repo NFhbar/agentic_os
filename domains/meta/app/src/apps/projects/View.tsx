@@ -261,6 +261,18 @@ export default function Projects() {
     refresh();
   }, []);
 
+  // Complete/Abandon dispatch meta-close-project as an async run; the
+  // project-scoped hook above only fires when the run's project matches the
+  // CURRENT selection, so an operator who navigated back to the list (or to
+  // another project) by the time the run lands sees the closed project's
+  // stale pre-close status and grouping until a manual reload. Skill-scoped
+  // subscription refreshes the list regardless of selection — same pattern
+  // as the dev-ingest-repo hook above. Detail refetch (when the closed
+  // project IS selected) is covered by the project-scoped hook.
+  useRunTerminal({ skill: 'meta-close-project' }, async () => {
+    await refresh();
+  });
+
   useEffect(() => {
     if (!selected) {
       setDetail(null);
@@ -574,6 +586,9 @@ export default function Projects() {
                     `/api/projects/${encodeURIComponent(pid)}`,
                   );
                   setDetail(d);
+                  // The list groups by status — without this the reopened
+                  // project stays in the terminal collapse until a reload.
+                  await refresh();
                 } catch (e) {
                   alert(`Reopen failed: ${(e as Error).message}`);
                 }
