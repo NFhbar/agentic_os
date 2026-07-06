@@ -2048,6 +2048,10 @@ function checkDeferredCommentsAge() {
       id: 'deferred-comments-age',
       severity: 'info',
       path: relative(REPO_ROOT, file),
+      // `dedupe_key: ''` — path is unique per review entry; the day-count (and
+      // comment count) in the message drift over time and would break
+      // dismissal matching (same class as project-stale, #424).
+      dedupe_key: '',
       message: `${newCount} untriaged comment(s) on a merged change "${fm.change_id}"${ageDays !== null ? ` (${ageDays}d old)` : ''}.`,
       hint: 'Either scaffold a follow-up change to address them, or open the review in the PR Review app and dismiss them with a one-line rationale. Letting them sit as `status: new` after merge defeats the audit trail.',
     });
@@ -3296,6 +3300,10 @@ function checkNotificationTemplateMissingOverride() {
       id: 'notification-template-missing-override',
       severity: 'info',
       path: `event-catalog:${et}`,
+      // `dedupe_key: ''` — the event-type path is unique; the fire count in
+      // the message grows every tick and would break dismissal matching
+      // (same class as project-stale, #424).
+      dedupe_key: '',
       message: `Event "${et}" has fired ${fires} time${fires !== 1 ? 's' : ''} but has no per-event template (falls through to notification-default.md)`,
       hint: `Optional: create vault/wiki/_seed/meta/template/notification-${et.replace(/\./g, '-')}.md for richer message rendering. See standard-template-syntax + the 9 example templates already shipped.`,
     });
