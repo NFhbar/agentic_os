@@ -206,6 +206,12 @@ export interface StartRunOptions extends StartRunInput {
 function readChangeReviewGate(
   changeId: string,
 ): { review_status: string | null; plan_path: string | null } | null {
+  // The id arrives from client-supplied tags / prompt-text attribution and is
+  // joined straight into a filesystem path below, so a `../`-shaped value
+  // could escape vault/wiki and read an arbitrary .md file. Gate on the change
+  // archetype's documented slug pattern (the same shape dev-write-change's
+  // `change` input enforces) before the join — a miss fail-opens to null.
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(changeId)) return null;
   try {
     const wikiRoot = join(REPO_ROOT, 'vault', 'wiki');
     for (const domain of readdirSync(wikiRoot)) {

@@ -25,6 +25,8 @@ import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// Sibling pure-JS module (zero imports of its own) — stays launchd-light.
+import { isValidModel } from './models-registry.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
@@ -104,9 +106,17 @@ export async function resolveModelForRun(skillName) {
 // property of the specific dual-phase skill, not an install preference.
 // Callers (startRun) apply it only when the dispatch classifies
 // EXECUTE-bound; PLAN-bound dispatches keep the `model:` chain.
+//
+// Registry-validated: `model_execute:` has no UI writer (unlike `model:`,
+// normally written through the validated Settings PUT), so a hand-edited
+// typo would otherwise reach `--model` verbatim and kill the spawn at the
+// CLI. Invalid → null → startRun keeps the `model:` chain, sealing the
+// fail-open contract that this feature can only ever swap the model, never
+// block a dispatch.
 export async function resolveModelExecuteForRun(skillName) {
   if (!skillName) return null;
-  return await readSkillField(skillName, 'model_execute');
+  const v = await readSkillField(skillName, 'model_execute');
+  return v && isValidModel(v) ? v : null;
 }
 
 // ---------------------------------------------------------------------------

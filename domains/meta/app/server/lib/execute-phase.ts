@@ -36,6 +36,15 @@ const FORCE_REPLAN_RE = /force_replan\s*[:=]\s*true/i;
 // ADDRESS-COMMENTS needs no separate row: a change in that state necessarily
 // passed the review gate (review_status stays `approved`), and folding review
 // comments into code is execution work.
+//
+// One deliberate one-cell divergence from the skill's table: FORCE_REPLAN_RE
+// is checked FIRST, so `not-required` + a plan + `force_replan: true`
+// classifies plan-bound here, whereas the skill's table reads `not-required`
+// as ignoring force_replan ("(any)" → EXECUTE when a plan exists). The
+// direction is fail-safe — it runs EXECUTE on the planning model, the
+// pre-model_execute status quo — and the pinning test
+// (`not-required + force_replan → plan-bound`) keeps this cell honest against
+// future drift.
 export function classifyChangeDispatchPhase(gate: ChangeDispatchGate): DispatchPhase {
   if (FORCE_REPLAN_RE.test(gate.prompt)) return 'plan-bound';
   const rs = gate.review_status;

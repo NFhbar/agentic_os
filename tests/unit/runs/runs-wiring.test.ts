@@ -10,7 +10,7 @@
 // keeps its real inferTerminalState (wrapped in a spy) so the asserted
 // outcomes go through the production decision table.
 
-import { rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -30,15 +30,17 @@ const mocks = vi.hoisted(() => ({
   markRunning: vi.fn(),
   recordEvent: vi.fn(),
   recoverUsageFromJournal: vi.fn((): Record<string, unknown> | null => null),
+  // Hoisted so the override-seam tests can drive it per-case. Default null
+  // keeps every pre-existing behavioral pin unchanged (the model_execute
+  // override path only activates on a non-null resolution).
+  resolveModelExecuteForRun: vi.fn(async (): Promise<string | null> => null),
   setDispatchConfig: vi.fn(),
   setHooksFired: vi.fn(),
   spawnClaudeOrphaned: vi.fn(),
 }));
 
 vi.mock('../../../scripts/dispatch-claude.mjs', () => ({
-  // null keeps every pre-existing behavioral pin unchanged — the
-  // model_execute override path only activates on a non-null resolution.
-  resolveModelExecuteForRun: vi.fn(async () => null),
+  resolveModelExecuteForRun: mocks.resolveModelExecuteForRun,
   resolveWallTimeCapMs: vi.fn(async () => 25 * 60_000),
   spawnClaudeOrphaned: mocks.spawnClaudeOrphaned,
 }));
@@ -93,8 +95,10 @@ vi.mock('../../../domains/meta/app/server/repo.js', async () => {
   const { join: j } = await import('node:path');
   const { tmpdir: t } = await import('node:os');
   return {
-    // No vault/wiki exists under the tmp root, so readChangeReviewGate
-    // fail-opens to null — the model_execute path stays inert here.
+    // REPO_ROOT is the tmp base. Most tests never write vault/wiki under it,
+    // so readChangeReviewGate fail-opens to null and the model_execute path
+    // stays inert; the override-seam tests below write a change fixture under
+    // this root (writeChangeFixture) to actually drive the gate.
     REPO_ROOT: j(t(), 'runs-wiring-test'),
     safePath: (rel: string) => j(t(), 'runs-wiring-test', rel),
   };
@@ -116,12 +120,39 @@ function createdRow(): {
   return mocks.createRun.mock.calls.at(-1)?.[0];
 }
 
+// Write a change entry under the mocked REPO_ROOT so readChangeReviewGate
+// (real, unmocked in runs.ts) resolves its review gate. Lands at the change
+// archetype's canonical path vault/wiki/<domain>/change/<id>.md; torn down by
+// afterEach's rmSync(TMP_BASE).
+function writeChangeFixture(
+  id: string,
+  fm: { review_status: string; plan_path?: string },
+): void {
+  const dir = join(TMP_BASE, 'vault', 'wiki', 'development', 'change');
+  mkdirSync(dir, { recursive: true });
+  const lines = [
+    '---',
+    `id: ${id}`,
+    'type: change',
+    `review_status: ${fm.review_status}`,
+    ...(fm.plan_path ? [`plan_path: ${fm.plan_path}`] : []),
+    '---',
+    '',
+    `# ${id}`,
+    '',
+  ];
+  writeFileSync(join(dir, `${id}.md`), lines.join('\n'));
+}
+
 describe('runs.ts wiring — PID-dead settle + spawn-failure early-finalize', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.createRun.mockImplementation((row: { id: string }) => ({ run_id: row.id }));
     mocks.artifactFresh.mockReturnValue(false);
     mocks.recoverUsageFromJournal.mockReturnValue(null);
+    // clearAllMocks wipes call history but NOT mockResolvedValue impls — reset
+    // the override resolver so a per-test value can't bleed into the next test.
+    mocks.resolveModelExecuteForRun.mockResolvedValue(null);
     vi.useFakeTimers();
   });
 
@@ -345,6 +376,46 @@ describe('runs.ts wiring — PID-dead settle + spawn-failure early-finalize', ()
     // that ordering is what makes spawn-level failures recorded at all.
     expect(mocks.setDispatchConfig.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.finishRun.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('execute-bound gate → threads model_execute as the spawn model override', async () => {
+    // Skill declares model_execute AND the change's review gate is approved,
+    // so classifyChangeDispatchPhase (real, via readChangeReviewGate reading
+    // the fixture) returns execute-bound → the override reaches the spawn.
+    mocks.resolveModelExecuteForRun.mockResolvedValue('claude-opus-4-8');
+    writeChangeFixture('exec-change', { review_status: 'approved' });
+    mocks.spawnClaudeOrphaned.mockResolvedValue({ pid: DEAD_PID });
+
+    await startRun({
+      prompt: 'Run dev-write-change for change "exec-change".',
+      tags: { skill: 'dev-write-change', change_id: 'exec-change' },
+    });
+
+    expect(mocks.spawnClaudeOrphaned).toHaveBeenCalledWith(
+      expect.any(String),
+      'dev-write-change',
+      expect.objectContaining({ model: 'claude-opus-4-8' }),
+    );
+  });
+
+  it('plan-bound gate → no model override even when model_execute is declared', async () => {
+    // Same declared model_execute, but review_status: pending classifies
+    // plan-bound, so the override stays null and the skill's model: chain
+    // applies — the gate, not just the frontmatter, decides.
+    mocks.resolveModelExecuteForRun.mockResolvedValue('claude-opus-4-8');
+    writeChangeFixture('plan-change', { review_status: 'pending' });
+    mocks.spawnClaudeOrphaned.mockResolvedValue({ pid: DEAD_PID });
+
+    await startRun({
+      prompt: 'Run dev-write-change for change "plan-change".',
+      tags: { skill: 'dev-write-change', change_id: 'plan-change' },
+    });
+
+    expect(mocks.spawnClaudeOrphaned).toHaveBeenCalledWith(
+      expect.any(String),
+      'dev-write-change',
+      expect.objectContaining({ model: null }),
     );
   });
 });

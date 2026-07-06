@@ -74,4 +74,19 @@ describe('classifyChangeDispatchPhase', () => {
       }),
     ).toBe('execute-bound');
   });
+
+  it('not-required + plan + force_replan → plan-bound (force_replan is checked first)', () => {
+    // Deliberate one-cell divergence from dev-write-change's table, which
+    // reads not-required as ignoring force_replan. FORCE_REPLAN_RE fires
+    // ahead of the not-required row here, so a forced re-plan of a
+    // not-required change classifies plan-bound. Fail-safe (EXECUTE on the
+    // planning model) — pinned so the divergence can't drift silently.
+    expect(
+      classifyChangeDispatchPhase({
+        review_status: 'not-required',
+        plan_path: 'vault/output/development/changes/x-plan.md',
+        prompt: `${PROMPT} with force_replan: true`,
+      }),
+    ).toBe('plan-bound');
+  });
 });
