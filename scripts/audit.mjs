@@ -597,7 +597,10 @@ function checkWiki(domains, archetypes, knownTargets) {
           }
         }
       }
-      if (fm.deadline && fm.status === 'active') {
+      // Seed examples are documentation, not live state — staleness/deadline
+      // checks on them would greet every fresh install with bogus items.
+      const isSeedProject = relPath.startsWith('vault/wiki/_seed/');
+      if (fm.deadline && fm.status === 'active' && !isSeedProject) {
         const deadlineMs = Date.parse(fm.deadline);
         if (!Number.isNaN(deadlineMs) && deadlineMs < Date.now()) {
           findings.push({
@@ -612,7 +615,7 @@ function checkWiki(domains, archetypes, knownTargets) {
       // Stale check: status=active but nothing under this project has been
       // updated in >30 days. Could mean the project is forgotten or finished
       // without being closed out.
-      if (fm.status === 'active' && fm.id) {
+      if (fm.status === 'active' && fm.id && !isSeedProject) {
         const lastActivityMs = projectActivityMs.get(fm.id) ?? 0;
         const ageDays = (Date.now() - lastActivityMs) / 86400000;
         if (lastActivityMs > 0 && ageDays > 30) {
@@ -1944,7 +1947,9 @@ function checkOrphanRunJsonl() {
   }
   for (const name of entries) {
     if (!name.endsWith('.jsonl')) continue;
-    const id = name.slice(0, -'.jsonl'.length);
+    // Journals are named <id>.raw.jsonl since the durable-runs wave — strip
+    // the full suffix or every journal reads as an orphan (id ends in ".raw").
+    const id = name.replace(/\.raw\.jsonl$/, '').replace(/\.jsonl$/, '');
     if (!knownIds.has(id)) orphans += 1;
   }
   if (orphans > 0) {
