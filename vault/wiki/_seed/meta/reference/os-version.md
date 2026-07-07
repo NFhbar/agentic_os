@@ -11,14 +11,14 @@ title: OS version — canonical version marker for compatibility tracking
 url: internal://reference/os-version
 kind: reference
 last_verified: 2026-07-06
-version: 0.5.0
+version: 0.6.0
 ---
 
 # OS version
 
 This entry is the **single source of truth for what version of the Agentic OS is shipping**. The `version:` field in the frontmatter is the canonical value; everything else in the file describes how versioning works.
 
-Current version: **0.5.0** (Autonomous change lifecycles + Fable/Opus posture + fleet hygiene).
+Current version: **0.6.0** (Decision-gated tuning + artifact-aware boundaries + project closure).
 
 ## Versioning policy
 
