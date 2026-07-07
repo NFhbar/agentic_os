@@ -6,6 +6,14 @@ The canonical version is recorded at [`vault/wiki/_seed/meta/reference/os-versio
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.6.0] — 2026-07-06 — Decision-gated tuning + artifact-aware boundaries + project closure
+
+### Upgrading from 0.5.0
+
+Pull-and-go; no migrations. One removal to know about: `POST /api/projects/:id/complete` (the bare status-flip route) is gone — its only caller was the dashboard's Complete button, which now dispatches `meta-close-project`. Anything hitting that endpoint directly should switch to dispatching the skill (which adds the owned-work disposition gate).
+
 ### Added
 
 - **Artifact-aware orchestrator boundaries + dispatch hygiene (absorbs 7 recurrence-backed audit suggestions).** The per-change automation orchestrator's tick-forward advance was artifact-aware but its boundaries weren't — one pure artifact-state classifier (`deriveCompletedStepFromArtifacts`) now drives all of them:
@@ -18,6 +26,17 @@ The canonical version is recorded at [`vault/wiki/_seed/meta/reference/os-versio
   All additive, no migration: optional `effort_execute:` frontmatter (absent = today's behavior), optional `force` on the wire, extra optional `ReviewLookup` fields (`lastHeadSha`, `actedCount`), a new `StartRunResult` refusal variant. New leaf module `server/routes/repo-facts.ts` (shared git/entity fact-gathering). Documented in `standard-automation-loop` (§ Entry derivation, § Park reconciliation, § Dispatch guards) + `standard-skill-format`.
 
 - **`meta-close-project` — project closure behind an owned-work disposition gate.** Project closure used to be a bare frontmatter flip: the dashboard's Complete action set `status: completed` and nothing else, `status: cancelled` had no affordance at all, and neither path dispositioned the project's open work — pausing/closing a project left its approved-report recommendations and DRAFT-bodied changes flooding action items. The new skill (mode `complete | abandon`) enumerates owned open work (non-terminal changes, unmerged `recommended_changes` rows, unconsidered `notes_log` items) and **refuses to close while any item lacks a disposition** (abandon-with-rationale / transfer / block; the refusal is itemized and mutation-free), mirroring the merge-time comment-disposition invariant one level up. On close it stamps the terminal `status` + `completed_at`/`cancelled_at` + `lifecycle_stage: archived`, applies every disposition, and records the full list on one `project-close` event. The project screen's **Complete** and **Abandon** buttons now dispatch it through the AI bridge, `meta-reopen-project` covers the `cancelled → active` inverse, and `archetype-project` documents the closure contract. **Breaking:** removes `POST /api/projects/:id/complete` (the old bare-flip route) — the single caller was the dashboard's Complete button, replaced here; anything hitting that endpoint directly should switch to dispatching `meta-close-project`.
+
+### Changed
+
+- **Tuning round 1 — three decision-gated skill edits from the Overseer arc.** Each traversed propose → operator decision → apply, with a decision entry citing its audit + suggestion index and a `pattern_absence` validation window (21d / 3 qualifying runs) armed for the daily sweep: `dev-write-change` ADDRESS-COMMENTS gains mandatory remote-head push verification (the run's reported outcome is decided by an `ls-remote` comparison, never the push exit code — from a live stranded-commit incident where success was reported over a failed push); `dev-review-change` gains a severity floor (findings describing incorrect runtime behavior on plan-introduced code paths may not be labeled below `concern`, making them verdict-forcing — closes the nit-inside-approve escape hatch); `dev-write-change` EXECUTE gains step 1b concern disposition (enumerate every plan-review concern, disposition each as implemented/declined before touching code, `Review-concerns:` block in the commit body — third audited recurrence, extends the comment-disposition invariant to the plan-review boundary). First live lifecycle after applying: plan review request-changed two deep state-machine defects pre-code and the 1,544-line PR passed in one pass with zero substantive findings
+
+### Fixed
+
+- **skill-ids regen missing from skill-creating EXECUTEs (second occurrence) + dismissal-id drift on two audit checks.** The `meta-close-project` lifecycle created a new skill without regenerating `server/lib/skill-ids.ts` (same class as #17); regenerated, and the recurrence is banked for a structural fix. `deferred-comments-age` and `notification-template-missing-override` baked drifting values (day-counts, fire-counts) into their dismissal ids so dismissals silently resurrected — both now carry the `dedupe_key` treatment from the 0.4.2 `project-stale` fix
+- **Non-interactive `./install.sh` exited 1 despite succeeding** — the scheduler prompt's `read` failed at EOF (CI/piped/scripted installs); now EOF-guarded like the signing prompt. Fresh-clone smoke: clone → install (exit 0) → audit zero findings
+- **Projects list kept a closed project's stale status** — Complete/Abandon dispatch an async run, but the list's refresh subscription was scoped to the currently-selected project, so operators on the list saw the pre-close status/grouping until reload. Skill-scoped run-terminal subscription refreshes the list regardless of selection; the reopen handler gains the same list refresh
+- **README + CONTRIBUTING 0.5.0 freshness pass** — install section documents both opt-in steps, seed-schedule list 3 → 7, `not-required` row matches the unwedged state machine, change-level automation documented alongside the project tier, new Models & effort section, test count and paths corrected
 
 ## [0.5.0] — 2026-07-06 — Autonomous change lifecycles + Fable/Opus posture + fleet hygiene
 
