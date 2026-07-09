@@ -33,7 +33,7 @@
     },
     {
       "name": "create_pull_request_review",
-      "summary": "Submit a batched PR review with inline comments + verdict (APPROVE / REQUEST_CHANGES / COMMENT). Used by dev-pr-review-publish to ship the OS-side review back to GitHub. Returns { id, html_url, state, submitted_at, comments: [{ id, path, line, html_url }] }."
+      "summary": "Submit a batched PR review with inline comments + verdict (APPROVE / REQUEST_CHANGES / COMMENT). Comments may carry start_line/start_side for true multi-line range anchors (forwarded only when start_line < line). Used by dev-pr-review-publish to ship the OS-side review back to GitHub. Returns { id, html_url, state, submitted_at, comments: [{ id, path, line, html_url }] }."
     }
   ]
 }

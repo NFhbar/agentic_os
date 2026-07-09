@@ -69,7 +69,13 @@ interface RawComment {
   category: string;
   severity: string;
   file: string | null;
+  // `line` is the anchor / range END; `startLine` is the range START (null for
+  // single-line comments). A legacy `- line: N-M` header parses to
+  // startLine=N, line=M. `side` / `startSide` carry the diff side when set.
   line: number | null;
+  startLine: number | null;
+  side: string | null;
+  startSide: string | null;
   status: string;
   prior: string | null;
   body: string;
@@ -227,6 +233,9 @@ function extractComments(passContent: string): RawComment[] {
     // - acted_on_at:, - resolved_at:, - resolved_in_pass:
     let file: string | null = null;
     let line: number | null = null;
+    let startLine: number | null = null;
+    let side: string | null = null;
+    let startSide: string | null = null;
     let status = 'new';
     let prior: string | null = null;
     let acceptNote: string | null = null;
@@ -242,6 +251,13 @@ function extractComments(passContent: string): RawComment[] {
       if (inHeader) {
         const fileM = ln.match(/^- file:\s*`?([^`\n]+?)`?$/);
         const lineM = ln.match(/^- line:\s*(\d+|null|[\d-]+)/);
+        // Range start (multi-line comments) + explicit diff sides. Match on the
+        // KEY (not just a well-formed value) so an unrecognized value can never
+        // fall through and flip `inHeader` — that would strand `- status:` in
+        // the body and resurrect a stale status on the next parse.
+        const startLineM = ln.match(/^- start_line:\s*(.*?)\s*$/);
+        const sideM = ln.match(/^- side:\s*(.*?)\s*$/);
+        const startSideM = ln.match(/^- start_side:\s*(.*?)\s*$/);
         // Status can be hyphenated (e.g. `published-as-body`, `acted-on`,
         // `request-changes`), so allow letters + hyphens.
         const statusM = ln.match(/^- status:\s*([\w-]+)/);
@@ -261,7 +277,31 @@ function extractComments(passContent: string): RawComment[] {
         }
         if (lineM) {
           const v = lineM[1];
-          line = v === 'null' ? null : Number(v.split('-')[0]);
+          if (v === 'null') {
+            line = null;
+          } else if (v.includes('-')) {
+            // Legacy range string `N-M`: preserve today's first-number-as-start
+            // behavior and capture the end (M) as the anchor line.
+            const parts = v.split('-');
+            if (startLine == null) startLine = Number(parts[0]);
+            line = Number(parts[parts.length - 1]);
+          } else {
+            line = Number(v);
+          }
+          continue;
+        }
+        if (startLineM) {
+          const sv = startLineM[1].trim();
+          const n = sv === '' || sv === 'null' ? Number.NaN : Number(sv);
+          startLine = Number.isNaN(n) ? null : n;
+          continue;
+        }
+        if (sideM) {
+          side = sideM[1].trim() || null;
+          continue;
+        }
+        if (startSideM) {
+          startSide = startSideM[1].trim() || null;
           continue;
         }
         if (statusM) {
@@ -318,6 +358,9 @@ function extractComments(passContent: string): RawComment[] {
       severity,
       file,
       line,
+      startLine,
+      side,
+      startSide,
       status,
       prior,
       body: bodyLines.join('\n').trim(),
@@ -442,6 +485,13 @@ function toReviewComment(raw: RawComment, passN: number): ReviewComment {
   const agent = AGENT_KINDS.has(raw.category) ? (raw.category as ReviewComment['agent']) : 'logic';
   const sev = SEVERITY_MAP[raw.severity] ?? 'suggestion';
   const passStatus = raw.status === 'resolved' ? 'resolved' : raw.prior ? 'unresolved' : 'new';
+  // Anchor: for a single-line comment, startLine is the anchor and endLine is
+  // null. For a range (explicit `- start_line:` or a legacy `- line: N-M`),
+  // startLine is the range start and endLine the end. Guard endLine so a
+  // degenerate start==end (or start>end) renders as a single line.
+  const startLine = raw.startLine ?? raw.line ?? 0;
+  const endLine =
+    raw.startLine != null && raw.line != null && raw.line > raw.startLine ? raw.line : null;
   // Collapse terminal "yes, this was real" statuses into 'accepted' for the
   // action-button UI (the buttons disable on terminal states anyway — the
   // dedicated badges take over). Covers:
@@ -467,7 +517,8 @@ function toReviewComment(raw: RawComment, passN: number): ReviewComment {
     severity: sev,
     agent,
     file: raw.file ?? '',
-    startLine: raw.line ?? 0,
+    startLine,
+    endLine,
     message: raw.body,
     suggestion: null,
     lang: guessLang(raw.file),
@@ -769,7 +820,9 @@ function yamlQuote(s: string): string {
 // Returns { ok: true, newContent } on success, or { ok: false, error } when
 // the target pass / comment isn't found. Updates the entry's frontmatter
 // `updated` field too. Pure function — caller writes the result to disk.
-function mutateCommentInContent(
+// Exported for direct unit testing (the accept gesture that gates publish must
+// not strand header fields; see tests/unit/reviews-comment-mutate.test.ts).
+export function mutateCommentInContent(
   content: string,
   passN: number,
   commentN: number,
@@ -817,7 +870,17 @@ function mutateCommentInContent(
   let i = 0;
   for (; i < blockLines.length; i++) {
     const ln = blockLines[i];
-    if (/^- (file|line|status|prior|accept_note|dismiss_reason):/.test(ln)) {
+    // Preserve EVERY recognized header line on a mutate. The new range fields
+    // (start_line/side/start_side) are emitted BEFORE `- status:`, so omitting
+    // them here would strand `- status:` in the message zone and resurrect a
+    // stale status on re-parse. The five publish/act-trail fields are folded in
+    // for the same reason — they were parsed but never preserved, so a mutate
+    // after publish/act destroyed exactly the ids the next step needs.
+    if (
+      /^- (file|line|start_line|side|start_side|status|prior|accept_note|dismiss_reason|github_comment_id|github_review_id|acted_on_at|resolved_at|resolved_in_pass):/.test(
+        ln,
+      )
+    ) {
       headerLines.push(ln);
       continue;
     }

@@ -3,7 +3,7 @@ name: dev-cache-pr-review-repo
 description: 'Maintain a read-only shallow clone of a GitHub repo for PR review context. Clones on first use, fetches+resets to origin/HEAD on subsequent runs, gates redundant pulls with a 5-minute staleness check. Writes a pr-review-repo-cache archetype entry tracking the cache state.'
 user-invocable: true
 recommended_effort: medium
-version: 1
+version: 2
 domain: development
 tags: [cache, repo, review, git, scaffolding]
 inputs:
@@ -24,10 +24,18 @@ inputs:
     required: false
     default: false
     description: 'Skip the 5-minute staleness gate and pull anyway. Use when you know upstream changed (force-push, recent merge).'
+  pr_head_worktree:
+    type: boolean
+    required: false
+    default: false
+    description: 'When true, materialize the PR''s head commit as a detached sibling worktree so dev-pr-review reads code at the PR head (not the base). Requires a PR number (via pr) — reject the combination without one. The cache checkout itself stays on origin/HEAD.'
 outputs:
   - kind: folder
     path: '.claude/state/pr-review-cache/<owner>/<repo>/'
     description: 'Shallow clone of the repo at origin/HEAD. Read-only — skills must not write here.'
+  - kind: folder
+    path: '.claude/state/pr-review-cache/<owner>/<repo>--pr-<n>/'
+    description: 'Detached worktree at the PR head (only when pr_head_worktree: true). Sibling of the cache dir; bounded at 3 per repo with LRU eviction. Read-only.'
   - kind: file
     path: 'vault/wiki/development/pr-review-repo-cache/pr-review-repo-cache-<owner>-<repo>.md'
     description: 'Archetype entry tracking owner, repo, default_branch, local_path, last_pulled, file/size stats.'
@@ -54,7 +62,7 @@ This is the **other repo concept** in the OS. The [[archetype-entity]] (`kind: r
 
 - For repos the OS will WRITE to — use [[dev-ingest-repo]] instead.
 - For full-history clones (annotate-blame, log-walking, etc.) — the cache is shallow (`--depth=1`); use a regular `git clone` outside the OS for those needs.
-- To check out a non-default branch — the cache always tracks `origin/HEAD`. If you need a specific branch for review context, that's a future enhancement (currently the PR's _base_ branch is assumed to equal `origin/HEAD`).
+- To check out a non-default branch _in the cache dir itself_ — the cache checkout always tracks `origin/HEAD` (repo-knowledge's `based_on_commit` contract depends on it). To review at a PR's **head** commit, pass `pr_head_worktree: true`: the PR head materializes as a detached **sibling worktree** (`<repo>--pr-<n>`) while the cache stays on `origin/HEAD`. General multi-branch caching remains out of scope.
 
 ## Prerequisites
 
@@ -82,7 +90,7 @@ This is the **other repo concept** in the OS. The [[archetype-entity]] (`kind: r
    **Capture `entry_existed_at_start = <true|false>` now and treat it as immutable for the rest of the procedure.** Every downstream branching decision (action_label, analyze trigger) reads from this snapshot, not from re-checking the filesystem. This prevents the bug where step 10 writes the entry and later steps re-read it as "already exists" → spurious no-op.
 
 4. **Staleness gate.** Unless `inputs.force == true`:
-   - If `entry_existed_at_start == true`, `status == ready`, and `last_pulled` is within the last **5 minutes** of now → set `gate_result = "fresh"`, skip steps 5–11, JUMP TO STEP 12 (record event with `action_label = "no-op-staleness"`), THEN step 13 (report `cache fresh, no-op`). **Do not** mutate the entry or the cache dir.
+   - If `entry_existed_at_start == true`, `status == ready`, and `last_pulled` is within the last **5 minutes** of now → set `gate_result = "fresh"`, skip steps 5–11, JUMP TO STEP 11b (the PR-head worktree step — it runs on BOTH gate outcomes because the 5-minute gate governs the base `fetch + reset` only, never the worktree), THEN step 12 (record event with `action_label = "no-op-staleness"`), THEN step 13 (report `cache fresh, no-op`). **Do not** mutate the base cache dir or the entry's base-pull fields (`last_pulled`, `head_sha`, stats) — step 11b's `pr_worktrees` write is the only permitted entry mutation on this path.
    - Else: set `gate_result = "proceed"` and continue with step 5.
    - Steps 5–13 read `gate_result`; do NOT re-evaluate the 5-minute condition later — by then the entry's own `last_pulled` you just wrote will trip the gate.
 
@@ -282,13 +290,50 @@ This is the **other repo concept** in the OS. The [[archetype-entity]] (`kind: r
 
     On failure (analyze skill errors, e.g. model timeout), log the failure into the cache entry's refresh history but **do not** mark the cache entry itself as errored — the cache pull succeeded; analysis is a separate concern. The user can manually re-run `/os analyze repo <owner>/<repo>` later.
 
+11b. **Materialize the PR-head worktree.** Run only when `inputs.pr_head_worktree == true`; otherwise skip silently (set `worktree_path = null`, `wt_action = "n-a"`). This step runs on BOTH the staleness-gate no-op path (step 4) and the full-refresh path — the 5-minute gate governs the base `fetch + reset` only, never the worktree. The **cache checkout stays on `origin/HEAD`** (repo-knowledge's `based_on_commit` contract + the import-graph walk depend on it); the PR head materializes as a **detached sibling worktree**, never as a branch switch inside the cache dir.
+
+    Reject up front when `pr_head_worktree == true` but no PR number was resolved (`inputs.pr` absent — the `owner`+`repo` pre-warm path has no PR): `pr_head_worktree requires a PR — pass pr: <url>.`
+
+    Deterministic worktree path: `wt_path = .claude/state/pr-review-cache/<owner>/<repo>--pr-<n>` — a **sibling** of the cache dir (the `--pr-<n>` suffix keeps it out of the cache's `find`-based stats + import-graph walk), NOT nested inside it.
+
+    1. **Fetch the PR head into the existing cache.** Shallow is fine — worktree HEADs are gc reachability roots, so later `--depth=1` base fetches can't orphan them:
+
+       ```bash
+       git -C <cache_path> fetch --depth=1 origin pull/<n>/head
+       pr_head_sha=$(git -C <cache_path> rev-parse FETCH_HEAD)
+       ```
+
+    2. **Reuse when already at the right commit.** If `wt_path` exists AND `git -C <wt_path> rev-parse HEAD` equals `pr_head_sha` → reuse with no git op; `wt_action = "reused"`.
+
+    3. **Otherwise (re)create the detached worktree:**
+
+       ```bash
+       git -C <cache_path> worktree remove --force <wt_path>   # only if it already exists
+       git -C <cache_path> worktree add --detach <wt_path> "$pr_head_sha"
+       ```
+
+       `wt_action = "created"` when no prior worktree existed, `"refreshed"` when one was replaced.
+
+    4. **Bounded count — cap 3 PR worktrees per repo.** Before adding a 4th (count the `pr_worktrees` bookkeeping list below, excluding the PR being materialized now), evict the least-recently-`updated` entry:
+
+       ```bash
+       git -C <cache_path> worktree remove --force <evicted_wt_path>
+       git -C <cache_path> worktree prune
+       ```
+
+       Drop the evicted item from `pr_worktrees` and note `pruned` alongside the primary `wt_action` in the step-12 event args.
+
+    5. **Update the `pr_worktrees` bookkeeping** — an optional nested frontmatter list on the cache entry, one item per live PR worktree: `{pr, path, head_sha, updated}`. Maintain it **surgically** (js-yaml-backed nested field, same precedent as `languages`; the flat manifest parser drops it harmlessly). Upsert the item for `<n>` (`head_sha: pr_head_sha`, `updated: <ISO now>`), remove any item evicted in sub-step 4, and write the block back. This write is permitted even on the staleness no-op path (the worktree is not gated by the base 5-minute staleness). Append one refresh-history bullet: `- <ISO>: pr-worktree <wt_action> → pr #<n> @ <pr_head_sha-7>`.
+
+    6. Set `worktree_path = <wt_path>` and expose `pr_head_sha` for the report (step 13) + the consumer ([[dev-pr-review]] step 10a reads both). **On any worktree failure** (fetch, rev-parse, `worktree add`), DO NOT fail the cache pull — the base cache already succeeded. Log a `pr-worktree materialize failed — <stderr short>` refresh-history bullet, leave `worktree_path = null` + `wt_action = "failed"`, and continue. dev-pr-review's degradation ladder falls back to the base cache.
+
 12. **Record the event** via the dual-write wrapper. **ALWAYS fires, unconditionally** — every invocation produces exactly one inner event, regardless of `gate_result` or `action_label`. A no-op-staleness run that exited at step 4 still records an event from there (the no-op path should jump to this step before returning, not return immediately). This is non-negotiable for traceability; without it, you cannot tell from logs whether a skill ran at all.
 
     ```bash
     node scripts/record-dashboard-action.mjs \
       --action cache-pr-review-repo \
       --skill dev-cache-pr-review-repo \
-      --args '{"owner":"<owner>","repo":"<repo>","action":"<clone|refresh|no-op-refresh|no-op-staleness>","files_count":<n_or_null>,"size_bytes":<n_or_null>}' \
+      --args '{"owner":"<owner>","repo":"<repo>","action":"<clone|refresh|no-op-refresh|no-op-staleness>","files_count":<n_or_null>,"size_bytes":<n_or_null>,"pr_worktree":"<created|reused|refreshed|pruned|failed|n-a>"}' \
       --files-touched '<["<entry_path>"] if entry was written, else []>' \
       --exit-status 0
     ```
@@ -307,6 +352,7 @@ This is the **other repo concept** in the OS. The [[archetype-entity]] (`kind: r
       files:    <files_count>
       size:     <human_size>
       entry:    <entry_path>
+      worktree: <wt_action> <worktree_path>@<pr_head_sha-7>   (only when pr_head_worktree; omit otherwise)
     ```
 
     For the staleness-gated no-op (step 4):
@@ -321,10 +367,12 @@ This is the **other repo concept** in the OS. The [[archetype-entity]] (`kind: r
 
 - `pr` vs `owner`+`repo`: use `pr` when called from review flows (the URL is already known); use the explicit `owner`+`repo` when pre-warming from the Repos tab.
 - `force`: rarely needed. Only set when you know upstream changed but `last_pulled` is recent.
+- `pr_head_worktree`: set by [[dev-pr-review]] (step 10a) so code reads see the PR head, not the base. Requires `pr`. The base cache still refreshes to `origin/HEAD` — the worktree is an additive detached checkout, bounded at 3 per repo.
 
 ## Outputs
 
 - A `.claude/state/pr-review-cache/<owner>/<repo>/` directory containing a shallow clone of the default branch.
+- When `pr_head_worktree: true`: a `.claude/state/pr-review-cache/<owner>/<repo>--pr-<n>/` detached worktree at the PR head, tracked in the entry's `pr_worktrees` nested frontmatter list (bounded at 3 per repo, LRU-evicted).
 - A new or updated `pr-review-repo-cache` archetype entry at `vault/wiki/development/pr-review-repo-cache/<cache_id>.md`.
 - An `events.db` row with `kind: dashboard`, `action: cache-pr-review-repo`, `skill: dev-cache-pr-review-repo`.
 
@@ -337,7 +385,7 @@ This is the **other repo concept** in the OS. The [[archetype-entity]] (`kind: r
 ## What this skill must NOT do
 
 - **Write to the cached repo.** Read-only by contract. The cache dir is for the model to _consult_, not to mutate. If a future review skill needs a working tree, it must clone separately.
-- **Switch branches.** The cache tracks `origin/HEAD` only. Multiple-branch caching is a future enhancement, not a v1 feature.
+- **Switch branches in the cache checkout.** The cache dir stays on `origin/HEAD` — the import-graph walk + repo-knowledge's `based_on_commit` comparison depend on it. PR heads materialize as detached **sibling worktrees** via `pr_head_worktree` (step 11b), never as a branch switch or a `reset` in the cache dir itself. General multiple-branch caching remains a future enhancement.
 - **Manage credentials.** The skill relies on the user's git credential setup (SSH key, PAT in keychain, etc.). It does not read tokens from `mcps/github/.env` or anywhere else — `git clone` over HTTPS uses the standard git credential flow.
 - **Delete the cache.** Eviction is a separate concern (Phase 3+); this skill only creates and refreshes.
 
