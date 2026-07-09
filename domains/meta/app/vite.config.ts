@@ -9,7 +9,7 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   plugins: [react()],
   server: {
-    port: Number(process.env.OS_WEB_PORT ?? 5173),
+    port: Number(process.env.OS_WEB_PORT) || 5173,
     proxy: {
       '/api': {
         target: `http://localhost:${process.env.OS_API_PORT ?? 5174}`,

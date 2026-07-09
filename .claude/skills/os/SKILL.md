@@ -52,7 +52,8 @@ Canonical entry point for all OS actions. Parses the user's intent, looks up the
    - **Headless**: print `⊘ Router miss — no vocabulary match for "<intent>"`,
      name the candidate skills (from 4b), suggest `/os add-skill` to scaffold
      the missing capability, and stop cleanly with no dispatch.
-     d. If nothing fits at all (no candidates), suggest `/os add-skill` in both modes.
+
+   d. If nothing fits at all (no candidates), suggest `/os add-skill` in both modes.
 
    **Trade-off (deliberate):** recording before the ask drops the
    `--fallback asked-user` attribution on the interactive path. That field exists
