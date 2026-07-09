@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnClaude } from './dispatch-claude.mjs';
 import { recordEvent } from './events-db.mjs';
 import { extractSkill } from './extract-event-attribution.mjs';
+import { appendHeadlessGuard } from './headless-guard.mjs';
 import { superviseRuns } from './runs-supervisor.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -286,7 +287,13 @@ async function fireJob(schedule) {
   // stream-json + verbose: each stdout line is a JSON event carrying
   // model/tokens/cost metadata.
   const scheduledSkill = extractSkill(schedule.prompt);
-  const { child } = await spawnClaude(schedule.prompt, scheduledSkill, {
+  // Seed runbooks are bare (`/os brief`) and carry no non-interactive
+  // declaration — append the headless guard at dispatch so any interactive gate
+  // reached mid-run follows its declared Headless: policy instead of stalling.
+  // The guard is a dispatch-layer envelope: extractSkill + the recorded prompt
+  // (LOG_PATH, events.db) both keep the authored `schedule.prompt`.
+  const dispatchPrompt = appendHeadlessGuard(schedule.prompt);
+  const { child } = await spawnClaude(dispatchPrompt, scheduledSkill, {
     logPrefix: 'scheduler',
   });
   return new Promise((resolve) => {

@@ -3,10 +3,7 @@
 // for Curate, .badge for auto-discovered tag, .mono for paths.
 
 import { useEffect, useState } from 'react';
-import type {
-  CurationItem,
-  CurationListResponse,
-} from '../../../server/routes/curation.types';
+import type { CurationItem, CurationListResponse } from '../../../server/routes/curation.types';
 import { getJson, postJson } from '../../lib/api';
 import { useDispatch, useRunTerminal } from '../../lib/dispatch';
 import { formatRelative } from '../../lib/time';
@@ -59,12 +56,9 @@ export default function Curation() {
       'Read .claude/skills/meta-curate/SKILL.md and follow its Procedure.',
       '',
       'IMPORTANT — this is a headless dashboard-driven call:',
-      '- Do NOT use AskUserQuestion or any interactive prompt — pick your best',
-      '  classification (archetype + domain + slug) and proceed without confirmation.',
+      '- Do NOT use AskUserQuestion or any interactive prompt. Follow the',
+      '  Procedure — headless policies are declared inline at each gate.',
       '- The user has already confirmed by clicking Curate. Execute directly.',
-      '- Write the new wiki entry to vault/wiki/<domain>/<archetype>/<slug>.md.',
-      '- Remove the source path line from .claude/state/pending-curation.txt.',
-      '- Move the source file to vault/raw/.archived/<date>/ when done.',
       '',
       `Source path: ${item.path}`,
       '',
@@ -227,7 +221,6 @@ export default function Curation() {
           </ul>
         </>
       )}
-
     </div>
   );
 }

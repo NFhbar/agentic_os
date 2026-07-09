@@ -73,6 +73,44 @@ H2 headers, in this order. Sections may be empty (with TODO) but should not be o
 4. **Outputs** — what gets written where; mirrors `outputs:` frontmatter
 5. **Errors** — known failure modes and recovery
 
+## Headless behavior (interactive gates)
+
+A skill runs in one of two contexts:
+
+- **Interactive session** — a human is at the keyboard and can answer an `AskUserQuestion`, approve an `ExitPlanMode` plan, or confirm a prose "ask the user" step.
+- **Headless `claude -p` dispatch** — the per-change / project orchestrators (`automation.ts`), the scheduler (`scripts/scheduler-tick.mjs`), and the dashboard AI bridge all spawn skills with no human attached. Every such dispatch prompt carries a non-interactive declaration — canonically the line `Do NOT use AskUserQuestion or any interactive prompt` (scheduler dispatches get it appended by `scripts/headless-guard.mjs`). **The rule: when a gate cannot obtain a human answer, treat the run as headless.**
+
+An interactive gate on a dispatched path is a coin-flip — the model either guesses (an unrecorded decision) or stalls until the wall-time cap. Every interactive gate that can sit on a dispatched path MUST therefore declare a headless policy.
+
+### Zeroth option — design the gate out
+
+Before reaching for a policy, ask whether the gate is needed at all. When the **dispatch surface itself** collects the confirmation, the skill carries no interactive gate and needs no policy. The dashboard's type-to-match flow for [[meta-rename]] / [[meta-delete]] is the precedent: the destructive confirmation happens in the UI before the skill is ever dispatched, so those two skills are headless-by-design and declare nothing. Imitate this before adding a policy.
+
+### Policy vocabulary
+
+Every interactive gate (`AskUserQuestion`, `ExitPlanMode`, or a prose "ask the user") that can be reached on a dispatched path MUST declare exactly one policy inline at the gate:
+
+- **`default(<value>)`** — proceed with the named safe default. The auto-decision MUST be recorded in the run report (and in the audit-event args when the step records one), so a headless auto-decision is never silent. Use only when a conservative default is genuinely safe.
+- **`park`** — do not decide. Leave the pending-state artifact in place (or write the designated marker), print a refusal summary line **opening with a report glyph** (`⊘` preferred) that names what a human must do, and exit cleanly with **no downstream side effects**. The precise effect is per-surface:
+  - On **per-change-automation-tracked steps** (`execute` / `address-comments` / `open-pr` / `pr-review`) a clean glyph-opening refusal produces the `skill-refused` park (`automation-state-machine.ts`), which quotes the glyph line in the park reason and auto-unparks when the step later completes out-of-band.
+  - On **non-orchestrated dispatches** (dashboard AI bridge, scheduler runbooks) the run simply ends cleanly with the `⊘` summary and the pending artifact in place — the operator's cue.
+  - The **project-level orchestrator's `write` step is NOT park-aware**: its tick advances on any exit-0, so a `park` fired there surfaces late and mislabeled. Do not rely on `park` on that surface; a gate that can only be reached via the project `write` step must document the ghost-advance residual (see [[dev-write-change]]'s DRAFT gate for the worked example).
+- **`refuse`** — the gate (or the whole skill) is interactive-only. Print an explicit refusal and stop. A skill that is interactive-only end-to-end states the contract in its **Purpose** ([[meta-evolve]] is the precedent).
+
+### Declaration convention
+
+Declare the policy with a literal `Headless:` clause at the gate step — this is the exact token the enforcement test greps for. Example:
+
+```markdown
+AskUserQuestion: archive the raw file? Headless: default(archive).
+```
+
+Prose-worded gates ("ask the user to confirm …") are governed by this standard too, but the string-based test can't see them — declare a `Headless:` clause anyway.
+
+### Enforcement
+
+`tests/structural/headless-gates.test.ts` walks every `.claude/skills/*/SKILL.md`: any file with a positive interactive-tool mention (an `AskUserQuestion` / `ExitPlanMode` line not negated by `do not use`) must carry at least one `Headless:` declaration, modulo a small documented exception set that is itself asserted load-bearing. The park machinery's runtime contract lives in [[standard-automation-loop]].
+
 ## Calling MCP tools from a skill
 
 When the OS has an MCP configured (`.mcp.json` + restart), its tools appear in Claude's available tool list as `mcp__<server>__<tool>`. Skills invoke them like any other tool — no special syntax in the Procedure.

@@ -108,6 +108,20 @@ When you reach this phase:
    3. If **Accept as-is**: use the Edit tool with `replace_all: true` to remove the literal line `> **DRAFT** — review and refine before invoking dev-write-change.` from the change entry (this nukes all three occurrences in one call). Also update the entry's `updated:` field to ISO 8601 UTC now. Then proceed to step 2.
    4. If **Stop**: print `Aborted — edit vault/wiki/<domain>/change/<change>.md (remove the > **DRAFT** lines, refine if needed) then re-run.` and stop.
 
+   **`Headless: park`** — when this gate is reached on a dispatched path (no human to answer the AskUserQuestion; see [[standard-skill-format]] § "Headless behavior"), do **not** decide: do **not** strip the DRAFT markers, do **not** write a plan, make **no** frontmatter edits. Print the three drafted sections (as in item 1) followed by the refusal summary:
+
+   ```
+   ⊘ Draft body pending human acceptance — <change> (draft-pending)
+     A human must either:
+       • re-run interactively and choose "Accept as-is", or
+       • edit vault/wiki/<domain>/change/<change>.md (remove the > **DRAFT** lines, refine if needed) then re-run.
+   ```
+
+   Then exit cleanly with no side effects. The park's runtime meaning differs by dispatch surface (each verified against the app during planning):
+   - **Per-change automation — this gate is unreachable.** `checkChangeAutomationEligibility` (`automation-state-machine.ts`) refuses to arm or dispatch any change without an approved/not-required/overridden review AND a `plan_path`, so that orchestrator never dispatches PLAN — its `skill-refused` park + auto-unpark machinery never sees this gate.
+   - **Dashboard AI bridge / scheduler runbooks** — the run ends cleanly; the `⊘ draft-pending` line is the run summary, the operator's cue to accept the draft then re-run.
+   - **Project-level orchestrator (accepted residual)** — this is the one surface that DOES dispatch a DRAFT-bodied change headless: `findEligibleChanges` filters only on project + non-terminal status, and `stepForChangeStatus('planning') = 'write'`. That tick has NO artifact gate (`executeTick` advances on any exit-0), so this clean refusal **ghost-advances `write → open-pr`**; downstream skills preflight-refuse cleanly in turn (prose refusals exit 0), so the loop can walk `open-pr → review` on ghost runs and strand at `merge` — or pause one step late as a misleading `skill-failure: <skill> exited N` if a downstream run happens to exit non-zero. Either way the draft-pending line is never quoted. This residual is accepted, not fixed here: the durable fix (artifact-gating the project tick) is an `automation.ts` change, out of scope. Accepting DRAFT bodies before arming project automation avoids it entirely.
+
    The audit's `change-body-template-placeholder` check catches both conditions independently, but this gate handles them at the moment they would cause harm — and offers a one-click accept path for auto-drafts so a satisfied human doesn't have to hand-edit the file.
 
 2. **Read the universal standards.** Use the Read tool on:
