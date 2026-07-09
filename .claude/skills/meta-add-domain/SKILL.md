@@ -47,7 +47,7 @@ Create a new domain folder with a scaffolded playbook from `_templates/domain/pl
 2. Determine target path:
    - With `parent`: `domains/<parent>/<name>/` (parent must already exist as a domain)
    - Without: `domains/<name>/`
-3. If target already exists, AskUserQuestion: overwrite, rename, or abort? Default to abort.
+3. If target already exists, AskUserQuestion: overwrite, rename, or abort? Default to abort. `Headless: refuse` — formalizes that default: abort (never overwrite a domain in a headless run) — print `⊘ Domain <name> already exists — aborting in a headless run` and stop with no side effects.
 4. Read `_templates/domain/playbook.md.tmpl`.
 5. Substitute Mustache placeholders:
    - `{{name}}` → input.name
@@ -60,7 +60,7 @@ Create a new domain folder with a scaffolded playbook from `_templates/domain/pl
    (Or nested path if sub-domain.)
 8. Update `OS.md`:
    - Add a row to the **Domains** table
-   - (Optional) suggest 1-2 intent vocabulary entries for common actions in the new domain — present via AskUserQuestion before editing
+   - (Optional) suggest 1-2 intent vocabulary entries for common actions in the new domain — present via AskUserQuestion before editing. `Headless: default(skip-edit)` — never edit OS.md's Intent vocabulary without confirmation; emit the suggested rows in the run report so a human can apply them later via [[meta-add-skill-to-router-vocab]].
 9. Record the audit event via the dual-write wrapper:
    ```bash
    node scripts/record-dashboard-action.mjs \
@@ -79,5 +79,5 @@ Create a new domain folder with a scaffolded playbook from `_templates/domain/pl
 
 - Invalid name → reject with reason
 - Parent doesn't exist → suggest creating it first
-- Target exists → ask before overwriting
+- Target exists (interactive) → ask before overwriting. `Headless: refuse` — abort, never overwrite a domain in a headless run (`⊘ Domain <name> already exists`)
 - Missing template → OS templates broken, report and stop

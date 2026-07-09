@@ -46,7 +46,7 @@ Create a new Claude Code skill at `.claude/skills/<name>/SKILL.md` from `_templa
 
 1. Validate `inputs.name` against `^[a-z][a-z0-9-]*$`.
 2. Verify `domains/<domain>/playbook.md` (or nested `domains/<parent>/<domain>/playbook.md`) exists. If not, reject — domain must exist first. Suggest `/os add-domain`.
-3. Verify `.claude/skills/<name>/SKILL.md` does not exist. If it does, ask the user.
+3. Verify `.claude/skills/<name>/SKILL.md` does not exist. If it does (interactive): ask the user whether to overwrite. `Headless: refuse` — print `⊘ Skill <name> already exists — not overwriting in a headless run`, and stop with no side effects (a headless run must never clobber an existing skill).
 4. Read `_templates/skill/skill.md.tmpl`.
 5. Substitute placeholders:
    - `{{name}}` → input.name
@@ -120,6 +120,6 @@ Create a new Claude Code skill at `.claude/skills/<name>/SKILL.md` from `_templa
 ## Errors
 
 - Domain missing → suggest `/os add-domain` first
-- Skill already exists → ask whether to overwrite
+- Skill already exists (interactive) → ask whether to overwrite. `Headless: refuse` — never overwrite an existing skill in a headless run (`⊘ Skill <name> already exists`), stop with no side effects
 - Name doesn't start with `<domain>-` prefix → warn but allow (router skill `os` is an exception)
 - `intent_phrases` empty AND `user-invocable: true` → warn (placeholder row written; audit will still flag `router-vocab-skill-uncovered` until filled in)

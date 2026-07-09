@@ -130,12 +130,13 @@ The vault is **knowledge**. For the OS's runtime **telemetry** (every action rec
 
 Local-only OS state. Never committed; never shipped. Distinct from vault — telemetry, dedupe markers, queues.
 
-| location                             | purpose                                                                                                                                                                                   |
-| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.claude/state/events.db`            | Structured event store (SQLite). One row per action — model, tokens, cost, duration, files_touched, status. Surfaced in the dashboard's **Insights** view. See `standard-event-store.md`. |
-| `.claude/state/schedule-runs.json`   | Scheduler dedupe state (last-fired minute per schedule id)                                                                                                                                |
-| `.claude/state/installed-at`         | ISO 8601 install marker (used by SessionStart for first-run detection)                                                                                                                    |
-| `.claude/state/pending-curation.txt` | One relative path per line — raw drops awaiting curation                                                                                                                                  |
+| location                                   | purpose                                                                                                                                                                                                                                                         |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.claude/state/events.db`                  | Structured event store (SQLite). One row per action — model, tokens, cost, duration, files_touched, status. Surfaced in the dashboard's **Insights** view. See `standard-event-store.md`.                                                                       |
+| `.claude/state/schedule-runs.json`         | Scheduler dedupe state (last-fired minute per schedule id)                                                                                                                                                                                                      |
+| `.claude/state/installed-at`               | ISO 8601 install marker (used by SessionStart for first-run detection)                                                                                                                                                                                          |
+| `.claude/state/pending-curation.txt`       | One relative path per line — raw drops awaiting curation                                                                                                                                                                                                        |
+| `.claude/state/curation-needs-review.json` | meta-curate's needs-review sidecar — a JSON object keyed by raw path (`{ reason, at }`) for items its headless `park` policy couldn't classify or would overwrite; read by meta-brief. Mutable state (keyed-object shape like `schedule-runs.json`), not a log. |
 
 ---
 

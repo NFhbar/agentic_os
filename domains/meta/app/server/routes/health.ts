@@ -397,6 +397,12 @@ function humanizeAuditTitle(f: AuditFinding): string {
 // ---------------------------------------------------------------------------
 
 export const healthRoutes: FastifyPluginAsync = async (fastify) => {
+  // GET /api/health — cheap root liveness probe. Registered at prefix
+  // /api/health, so this bare-prefix handler is what meta-dashboard's step-0
+  // reuse check curls to detect an already-running OS API before spawning a
+  // duplicate. Without it the bare prefix 404s and default(reuse) never fires.
+  fastify.get('/', async () => ({ ok: true }));
+
   // GET /api/health/action-items[?include_dismissed=1]
   fastify.get<{ Querystring: { include_dismissed?: string } }>('/action-items', async (req) => {
     const includeDismissed = req.query.include_dismissed === '1';

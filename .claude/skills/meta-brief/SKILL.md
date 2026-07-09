@@ -34,6 +34,9 @@ Cheap to run — pure file reads + manifest queries, no API calls.
 1. Check `.claude/state/installed-at`. If missing or this is the first run, print a welcome banner instead of a brief and stop.
 2. Read `vault/.index/manifest.json`. If missing, skip the manifest-based stats with `index not yet built`.
 3. Read `.claude/state/pending-curation.txt`. Count lines. If non-empty, find the age of the oldest entry (mtime of the referenced raw file).
+
+3b. Read `.claude/state/curation-needs-review.json` — the needs-review sidecar written by [[meta-curate]]'s headless `park` policy (a JSON object keyed by raw path, each value `{ reason, at }`). **Intersect its keys with the pending-curation queue lines read in step 3 and consider only keys still present in the queue.** A parked item always leaves its queue line in place (meta-curate parks without removing the line), so a sidecar key whose path is no longer in the queue is an orphan — the item left the queue another way (dashboard Ignore, a hand-edit of `pending-curation.txt`) and its key was never cleared. Skip orphans so they don't report a phantom parked item indefinitely. Of the surviving keys, count them and pick the oldest by its `at` timestamp; capture that entry's **age** (`now - at`) and its `reason`. Non-fatal if the file is missing or empty — just skip the parked line.
+
 4. Read the last ~500 lines of `vault/raw/router-log.jsonl`. Filter to last 7 days. Compute miss rate = entries with `confidence: miss` / total.
 5. Find the last entry in `vault/raw/dashboard-actions.jsonl` with `action: launch` to determine when the dashboard was last opened.
 
@@ -70,6 +73,7 @@ Cheap to run — pure file reads + manifest queries, no API calls.
 
    ## Pending
    - <N> raw items awaiting curation (oldest: <X days>)
+   - <R> parked for review (oldest: <X days> — <reason>)
    - <P> change(s) with plans awaiting review:
      - [[<change-id>]] — <title> (run /os review-change <id>)
    - <Q> change(s) flagged "request-changes":
