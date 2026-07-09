@@ -6,7 +6,13 @@ The canonical version is recorded at [`vault/wiki/_seed/meta/reference/os-versio
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **PR-review line-anchor fidelity — head-checkout context + line-numbered diffs + validate-and-snap + multi-line publish ranges.** Review comments anchored unreliably end to end: reviews read base code while the diff anchored against the head, anchors were computed from `@@` hunk-header arithmetic (off-by-N), and the github MCP couldn't express ranges (multi-line findings collapsed; out-of-diff anchors degraded to body-only). Four additive pieces, degrade-safe at every seam:
+  - **Deterministic anchor toolkit — `scripts/annotate-diff-lines.mjs`.** One module = one source of truth for hunk math: prints every diff row with explicit `L<old>`/`R<new>` line numbers (the review READS anchors off the columns instead of computing them) and validates candidate anchors against the diff (`valid` / `snapped` within ±3 / `degraded-to-endpoint` / `file-level`). Covered by unit tests pinning the numbering + snap/degrade semantics.
+  - **PR-head worktree.** `dev-cache-pr-review-repo` gains `pr_head_worktree: true` — materializes the PR head as a detached **sibling worktree** (`<repo>--pr-<n>`, bounded 3/repo, LRU-evicted) while the cache checkout stays on `origin/HEAD` (repo-knowledge's `based_on_commit` + the import-graph walk depend on it). `dev-pr-review` reads code at the PR head; repo-knowledge + import graph stay keyed to the base.
+  - **Two-layer validate-and-snap.** `dev-pr-review` validates every composed anchor at write time (layer 1); `dev-pr-review-publish` re-validates against the **live** head's diff at publish time (layer 2, `commit_id` = current head so anchors + commit agree), snapping drifted anchors and degrading half-valid ranges to their valid endpoint rather than 422-ing the batch. Every snap/degrade is annotated on the GitHub comment + named in the publish report.
+  - **Multi-line ranges end to end.** The github MCP's `create_pull_request_review` comments accept optional `start_line`/`start_side` (forwarded only when `start_line < line`, else degraded to single-line); the pr-review archetype documents the new optional header fields; the dashboard parser + `ReviewComment.endLine` render `file:start–end`. All additive: new fields optional everywhere, legacy `line: "42-58"` range strings still parse (and now publish as real ranges when valid), MCP params additive, worktree mode opt-in. Also folds in a latent dashboard fix — the comment-mutate whitelist now preserves the five publish/act-trail header fields (`github_comment_id`, `github_review_id`, `acted_on_at`, `resolved_at`, `resolved_in_pass`) it previously stranded on accept/dismiss.
 
 ## [0.6.0] — 2026-07-06 — Decision-gated tuning + artifact-aware boundaries + project closure
 

@@ -187,7 +187,7 @@ const TOOLS = [
         comments: {
           type: 'array',
           description:
-            'Inline comments to attach to the review. Each must anchor to a file + line in the diff. Empty array = body-only review with no inline comments.',
+            'Inline comments to attach to the review. Each must anchor to a file + line in the diff. Supply start_line (+ optional start_side) alongside line for a true multi-line range comment. Empty array = body-only review with no inline comments.',
           items: {
             type: 'object',
             properties: {
@@ -195,13 +195,24 @@ const TOOLS = [
               line: {
                 type: 'number',
                 description:
-                  'Line number to anchor the comment to. For file-level / PR-level comments, omit (set subject_type instead).',
+                  'Line number to anchor the comment to (the LAST line of the range when start_line is set). For file-level / PR-level comments, omit (set subject_type instead).',
               },
               side: {
                 type: 'string',
                 enum: ['LEFT', 'RIGHT'],
                 description:
                   'Which side of the diff to anchor to. RIGHT = the version after the PR\'s changes. Default RIGHT.',
+              },
+              start_line: {
+                type: 'number',
+                description:
+                  'First line of a multi-line range comment (line is the last). Forwarded only when start_line < line; a malformed range silently degrades to the single-line form. Omit for single-line comments.',
+              },
+              start_side: {
+                type: 'string',
+                enum: ['LEFT', 'RIGHT'],
+                description:
+                  'Which side the range START anchors to. Defaults to `side`. Only meaningful with start_line.',
               },
               body: { type: 'string', description: 'Comment body (markdown).' },
             },
@@ -379,6 +390,15 @@ async function handleCreatePullRequestReview(args) {
       if (typeof c.line === 'number') {
         out.line = c.line;
         out.side = c.side === 'LEFT' ? 'LEFT' : 'RIGHT';
+        // Multi-line range: forward start_line/start_side only when the range
+        // is well-formed (start strictly before end). A malformed range
+        // degrades silently to the single-line form rather than 422-ing the
+        // whole review — the caller's validator is the primary guard; this is
+        // a last-resort safety net. start_side defaults to the resolved side.
+        if (typeof c.start_line === 'number' && c.start_line < c.line) {
+          out.start_line = c.start_line;
+          out.start_side = c.start_side === 'LEFT' ? 'LEFT' : c.start_side === 'RIGHT' ? 'RIGHT' : out.side;
+        }
       }
       return out;
     });
@@ -436,7 +456,7 @@ const HANDLERS = {
 };
 
 const server = new Server(
-  { name: 'agentic-os-github', version: '0.2.0' },
+  { name: 'agentic-os-github', version: '0.3.0' },
   { capabilities: { tools: {} } },
 );
 

@@ -3,7 +3,7 @@ name: dev-pr-review
 description: 'Review a pull request — read the diff, produce categorized comments, write a structured pr-review archetype entry to the vault. Supports multi-pass review: re-running on the same PR appends a new pass.'
 user-invocable: true
 recommended_effort: max
-version: 3
+version: 4
 domain: development
 tags: [review, pr, github, mcp, archetype, lifecycle]
 inputs:
@@ -166,21 +166,28 @@ The review is a **single-model, single-call** review: one prompt that asks the m
 
     Steps 9–16 read `gate_result`; do NOT re-evaluate this gate later — by then step 12 may have written a new `last_head_sha` and the check would self-trip.
 
-9. **Fetch the diff** via Bash:
+9. **Fetch the diff + annotate it.** Fetch to a temp file so the raw bytes survive for step 11a's validation, then produce the line-numbered form the review reads:
 
    ```bash
-   gh pr diff <canonical_pr_url>
+   TMPDIFF=$(mktemp)
+   gh pr diff <canonical_pr_url> > "$TMPDIFF"
+   node scripts/annotate-diff-lines.mjs < "$TMPDIFF"    # → annotated_diff (review reads THIS)
    ```
 
-   Capture stdout as `diff_text`. If `gh` is not authenticated, surface: `gh CLI not authenticated. Run \`gh auth login\` and re-run.`and stop. If the diff is empty (no-op PR), surface:`PR has no diff — nothing to review.` and stop without writing.
+   Capture the raw diff (`$TMPDIFF` contents) as `raw_diff` and the annotator's stdout as `annotated_diff`. The annotated form is a **strict superset** of the raw diff — every body row is prefixed with its explicit `L<old>` (old-file) and `R<new>` (new-file) line numbers, so the review READS anchors off the columns instead of computing them from `@@` headers (the off-by-N source). **Keep `$TMPDIFF`** — step 11a validates the composed anchors against these same bytes.
+
+   If `gh` is not authenticated, surface: `gh CLI not authenticated. Run \`gh auth login\` and re-run.`and stop. If the diff is empty (no-op PR), surface:`PR has no diff — nothing to review.` and stop without writing.
 
 10. **Ensure the repo cache is fresh + load repo knowledge.** Two sub-steps:
 
-    **a. Cache pull.** Invoke [[dev-cache-pr-review-repo]] with `pr: <canonical_pr_url>`. The sub-skill owns its own staleness gate (5 min default), so back-to-back reviews of multiple PRs on the same repo don't trigger redundant fetches. On the first-ever clone, that skill ALSO auto-triggers [[dev-analyze-repo-for-review]] to produce the repo-knowledge entry.
+    **a. Cache pull + PR-head worktree.** Invoke [[dev-cache-pr-review-repo]] with `pr: <canonical_pr_url>` **and `pr_head_worktree: true`**. The sub-skill owns its own 5-minute staleness gate for the base pull, materializes the PR head as a detached sibling worktree, and on the first-ever clone auto-triggers [[dev-analyze-repo-for-review]]. Back-to-back reviews on the same repo don't trigger redundant base fetches.
 
-    On success, capture `cache_path = .claude/state/pr-review-cache/<owner>/<repo>` for use in step 11's analysis.
+    Set `cache_path` (where step 11's code reads resolve) per the **degradation ladder**:
+    - **Worktree materialized** (sub-skill reported `worktree: <created|reused|refreshed> <path>@<sha>`): `cache_path = .claude/state/pr-review-cache/<owner>/<repo>--pr-<n>` and `code_context = "PR head worktree @ <pr_head_sha-7>"`. Code reads now see the PR head — the same commit the diff anchors against.
+    - **Worktree failed but base cache pulled** (sub-skill logged a `pr-worktree materialize failed` bullet): `cache_path = .claude/state/pr-review-cache/<owner>/<repo>` (base, on origin/HEAD) and `code_context = "base cache @ <base_head_sha-7> (degraded — worktree unavailable)"`. Surface a **loud warning** in the final report: reads reflect the base, not the PR head, so new-file / head-only context may be missing.
+    - **Cache failed entirely** (network, private-repo auth, git not installed): `cache_path = null`, `knowledge_path = null`, `code_context = "diff-only"`. The review is **diff-only** — degraded but still useful. A degraded review beats no review when the cache is briefly broken.
 
-    **On cache failure** (network, auth to a private repo, git not installed), DO NOT abort the parent review — log a warning in the final report and proceed with `cache_path = null` and `knowledge_path = null`. The review will be **diff-only**, which is degraded but still useful. A degraded review beats no review when the cache is briefly broken.
+    **Repo-knowledge (sub-step b) and the import graph (sub-step c) stay keyed to the BASE cache**, never the worktree — they describe the repo's origin/HEAD structure and `based_on_commit` / the import-graph walk are computed against it. Only step 11's raw code reads follow `cache_path` to the worktree.
 
     **b. Load repo knowledge.** Compute `knowledge_id = repo-knowledge-<owner>-<repo>` using step 3's exact normalization rule (lowercase, non-`[a-z0-9]` runs → `-`; the file on disk is e.g. `repo-knowledge-nfhbar-agentic-os.md` — underscore-preserving forms silently miss it). Check for `vault/wiki/development/repo-knowledge/<knowledge_id>.md`:
     - If present + `status: ready`: capture `knowledge_path` for step 11. Read it once into the model's context.
@@ -224,11 +231,11 @@ The review is a **single-model, single-call** review: one prompt that asks the m
     PR DESCRIPTION:
     <pr_body>
 
-    DIFF:
-    <diff_text>
+    DIFF (annotated — read the RIGHT (new-file) and LEFT (old-file) line numbers off the `R`/`L` columns; NEVER compute an anchor from the `@@` header):
+    <annotated_diff>
 
     CODE CONTEXT:
-    - Raw clone at <cache_path> (or "(unavailable — diff-only review)" if step 10a failed). Read tool works on any file under it. Do NOT edit anything there — read-only by contract.
+    - Code at <cache_path> (PR head worktree when available, else base cache on origin/HEAD, else "(unavailable — diff-only review)"). Read tool works on any file under it. Do NOT edit anything there — read-only by contract.
     - Repo knowledge at <knowledge_path> (or "(none — generic-judgment review)" if absent). Read this FIRST, before forming opinions on style, conventions, error handling, or testing patterns. It describes how THIS REPO does things — review by those standards, not generic best practices.
     When a convention is documented in the knowledge entry, prefer the repo's convention over your defaults. When the knowledge entry is silent on a topic, fall back to general principles + what you see in the cache.
 
@@ -270,7 +277,8 @@ The review is a **single-model, single-call** review: one prompt that asks the m
        - category: ONE of <focus_areas>
        - severity: ONE of nit | suggestion | bug | blocker
        - file: the path relative to the repo root (or null for PR-level comments)
-       - line: integer line number in the new file, OR a range like "42-58", OR null for file-level / PR-level
+       - line: the anchor line, READ off the annotated diff's R column (new file) — or the L column when the comment is about deleted code (then also set side: LEFT). For a finding that spans multiple lines, set line to the END line and start_line to the START line — both read off the columns, SAME side, SAME hunk, start_line < line. Use null for file-level / PR-level comments. Do NOT author range strings like "42-58"; emit line + start_line instead.
+       - side / start_side: omit for the common RIGHT-side case; set side: LEFT only when anchoring to deleted (old-file) lines. start_side is only needed on the rare cross-side range and otherwise defaults to side.
        - body: the comment text. Respect the COMMENT STYLE knob.
     3. Suggest a `result` for the review overall: one of approved | request-changes | comment | none
        - approved: no blockers, optional suggestions only
@@ -280,6 +288,22 @@ The review is a **single-model, single-call** review: one prompt that asks the m
     ```
 
     Do the analysis. Produce comments matching the requirements.
+
+11a. **Validate + snap every anchor (layer 1 — write time).** Before formatting the entry, run the composed comments' anchors through the annotator's validator against the SAME raw diff bytes from step 9 (`$TMPDIFF`). Build a JSON array — one object per comment that has a `file` + non-null `line` — and validate:
+
+    ```bash
+    node scripts/annotate-diff-lines.mjs --validate \
+      --anchors '[{"id":"c1","file":"<file>","line":<line>,"start_line":<start_or_omit>,"side":"<LEFT_or_omit>","start_side":"<LEFT_or_omit>"}, ...]' \
+      < "$TMPDIFF"
+    ```
+
+    (File-level comments — `line: null` — are excluded from the array; they need no anchor.) The validator returns one verdict per anchor; apply each:
+    - `valid` → keep the anchor as authored.
+    - `snapped` → adopt the returned `line` (the validator moved it to the nearest in-diff line within ±3, tie → higher). Mention the shift in the comment body's first line only when it's material to the reader; otherwise adopt silently.
+    - `degraded-to-endpoint` → adopt the returned single `line` (the range collapsed to its valid endpoint) and drop `start_line`. Keep the intended range in the body prose if it aids the reader.
+    - `file-level` → the anchor isn't in the diff (file absent, or line beyond the snap window). Re-read the annotated diff you already hold and correct the anchor if you mis-read it; if the comment genuinely targets code outside the diff, convert it to file-level (`line: null`) and name the intended location in the body.
+
+    **No comment is written with an anchor the validator rejected.** This is the write-time half of the layered defense; [[dev-pr-review-publish]] re-validates against the LIVE head at publish time (layer 2), since the head may move between review and publish.
 
 12. **Format the entry body.** Two cases:
 
@@ -341,6 +365,7 @@ The review is a **single-model, single-call** review: one prompt that asks the m
     - model: <model>
     - focus areas: <comma-joined>
     - style: <style>
+    - code context: <code_context from step 10a — e.g. "PR head worktree @ a1b2c3d", "base cache @ e4f5a6b (degraded)", or "diff-only">
 
     ### Comments
 
@@ -349,6 +374,9 @@ The review is a **single-model, single-call** review: one prompt that asks the m
     #### Comment <n>: <category> · <severity>
     - file: `<file_or_null>`
     - line: <line_or_null>
+    - start_line: <start>        ← emit ONLY for a multi-line range (else omit this line entirely)
+    - side: <LEFT>               ← emit ONLY when anchoring to the old (deleted) side (else omit)
+    - start_side: <LEFT>         ← emit ONLY on the rare cross-side range (else omit)
     - status: new
 
     <comment body>
@@ -477,4 +505,5 @@ The review is a **single-model, single-call** review: one prompt that asks the m
 - [[standard-mcp-usage]] — calling MCP tools from a skill (pre-flight + naming + auth + errors)
 - [[decision-github-mcp-custom-not-hosted]] — why the github MCP uses PAT, not OAuth
 - `scripts/check-mcp.mjs` — pre-flight helper used in step 1
+- `scripts/annotate-diff-lines.mjs` — deterministic diff line-numbering (step 9) + write-time anchor validate/snap (step 11a)
 - `scripts/record-dashboard-action.mjs` — event-recording wrapper used in step 15
