@@ -80,7 +80,11 @@ export interface ReviewComment {
   severity: 'bug' | 'nit' | 'suggestion';
   agent: 'logic' | 'security' | 'performance' | 'style' | 'tests' | 'docs';
   file: string;
+  // Anchor. `startLine` is the single-line anchor OR the range start; `endLine`
+  // is the range end (null for single-line comments). SourceSnippet keys off
+  // `startLine`; the card renders `Line N–M` when `endLine` is set.
   startLine: number;
+  endLine: number | null;
   message: string;
   suggestion: string | null;
   lang: string;

@@ -1510,7 +1510,9 @@ function CommentCard({
           {sevIcon(c.severity, 11)} {sevLabel(c.severity)}
         </span>
         <AgentChip agent={c.agent} />
-        <span className="comment-loc mono">Line {c.startLine}</span>
+        <span className="comment-loc mono">
+          {c.endLine != null ? `Line ${c.startLine}–${c.endLine}` : `Line ${c.startLine}`}
+        </span>
         {showStatus && c.passStatus && <PassStatusBadge status={c.passStatus} />}
         <span className="spacer" />
         {c.actedOnAt && (

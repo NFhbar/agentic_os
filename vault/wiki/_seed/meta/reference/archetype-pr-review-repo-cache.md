@@ -70,6 +70,17 @@ Tuples of `[extension, file_count]`, sorted descending. The manifest's flat pars
 
 This is enough for the Repos tab's language chip + the review prompt's "this is a TS-heavy repo" hint. We don't try to compute LOC or weight by file size — that's polish for later.
 
+### `pr_worktrees` (nested, js-yaml-only)
+
+```yaml
+pr_worktrees:
+  - { pr: 42, path: .claude/state/pr-review-cache/acme/api--pr-42, head_sha: a1b2c3d…, updated: 2026-07-09T14:00:00Z }
+```
+
+Optional. One entry per live PR-head worktree materialized by [[dev-cache-pr-review-repo]] when invoked with `pr_head_worktree: true` (dev-pr-review's step 10a passes it so code reads see the PR head, not the base). Each worktree is a **detached sibling checkout** at `.claude/state/pr-review-cache/<owner>/<repo>--pr-<n>` — the cache dir itself stays on `origin/HEAD` (repo-knowledge's `based_on_commit` contract + the import-graph walk depend on that).
+
+Worktrees are **ephemeral and bounded**: capped at 3 per repo, least-recently-`updated` evicted (`git worktree remove --force` + `git worktree prune`) before a 4th is added. The manifest's flat parser drops this nested field harmlessly (same precedent as `languages` / `pr-review`'s `config:`); js-yaml-backed reads pick it up. Deleting a `--pr-<n>` worktree does not affect the base cache or any historical pr-review snapshot.
+
 ## Lifecycle
 
 | stage      | what it means                                                                                 |
