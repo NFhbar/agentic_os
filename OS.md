@@ -108,6 +108,7 @@ Direct invocation (`/dev-pr-review`, `/meta-dashboard`) is a power-user escape h
 | `close change`, `mark merged`, `finalize change`, `pr merged`                              | `dev-close-change`                  |
 | `pull pr comments`, `ingest review comments`, `sync external review`, `import pr feedback` | `dev-pull-pr-comments`              |
 | `setup repo identity`, `signing setup`, `headless signing`, `repo identity`                | `dev-setup-repo-identity`           |
+| `drive project`, `drive`, `advance project`, `run project lifecycle`                       | `dev-drive-project`                 |
 | `add protocol`, `new review protocol`, `scaffold health protocol`                          | `ops-add-protocol`                  |
 | `health review`, `run health review`, `review system health`, `ops review`                 | `ops-health-review`                 |
 
