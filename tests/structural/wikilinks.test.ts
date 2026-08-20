@@ -9,10 +9,17 @@
 // Drift here means: docs pointing at things that no longer exist (or never
 // did). Today's `dangling-wikilink` audit catches this periodically; the
 // test promotes it to a pre-commit gate.
+//
+// Fence + inline-code semantics come from the shared markdown scanner, not a
+// regex here: a `[[link]]` inside a fenced example or inline code is teaching
+// the syntax, not referencing an entry, and the audit's own dangling-wikilink
+// check reads them exactly the same way.
 
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
+// @ts-expect-error — plain .mjs module without type declarations
+import { semanticMarkdown } from '../../scripts/markdown-scan.mjs';
 import {
   listSkillDirs,
   readManifest,
@@ -76,9 +83,10 @@ function isDocPlaceholder(link: string): boolean {
 function extractWikilinks(body: string): string[] {
   // Match `[[name]]` or `[[name|alias]]`. The captured group is the id.
   const out: string[] = [];
+  const prose = semanticMarkdown(body, { stripInlineCode: true }) as string;
   const re = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(body)) !== null) {
+  while ((m = re.exec(prose)) !== null) {
     out.push(m[1].trim());
   }
   return out;

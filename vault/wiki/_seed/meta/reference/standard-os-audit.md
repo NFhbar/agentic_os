@@ -3,7 +3,7 @@ id: standard-os-audit
 type: reference
 domain: meta
 created: 2026-05-20T00:00:00Z
-updated: 2026-05-27T04:10:10Z
+updated: 2026-08-20T00:00:00Z
 tags: [standard, compliance, diagnostic]
 source: seed
 private: false
@@ -181,6 +181,12 @@ The skill-coverage checks deliberately stop at "Planned" sub-headings or subsequ
 | ----------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
 | `installer-exists`            | warn     | `install.sh` is present at repo root.                                                                                                               | `standard-event-store` |
 | `installer-seeds-event-store` | warn     | `install.sh` calls `scripts/events-db-init.mjs` so a fresh clone gets a ready DB. Catches drift between the installer and the event-store standard. | `standard-event-store` |
+
+### Environment contracts
+
+| id                  | severity  | what it enforces                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | source standard            |
+| ------------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| `cc-version-compat` | warn/info | The installed Claude Code version sits inside the range the OS is built against (`MIN_SUPPORTED`–`HIGHEST_TESTED` in `scripts/check-cc-compat.mjs`). Below the minimum is `warn` and names what degrades quietly (headless gate policies); above the highest tested is `info` — untested territory, and an invitation to run the suite and raise the ceiling. In-range is silent, and so is a CLI that isn't installed (the audit runs on machines that never dispatch). Comparison is per-segment numeric, so `2.1.9` correctly reads as older than `2.1.196`. | `standard-execution-modes` |
 
 ### MCPs
 

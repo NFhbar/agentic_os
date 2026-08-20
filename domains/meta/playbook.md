@@ -2,7 +2,7 @@
 domain: meta
 version: 1
 created: 2026-05-19T16:40:00Z
-updated: 2026-05-19T16:40:00Z
+updated: 2026-08-20T00:00:00Z
 ---
 
 # Meta — the OS itself as a domain
@@ -113,9 +113,11 @@ Every skill lives at `.claude/skills/<name>/SKILL.md` (one directory per skill �
 | `outputs`        | array   | no       | declarative side-effects                              |
 | `spawns`         | array   | no       | other skills this one delegates to                    |
 
-Body sections (h2, in order): Purpose → Inputs → Procedure → Outputs → Errors.
+Body requirement is semantic **coverage**, not a heading order: a reader must be able to find purpose, inputs, procedure, outputs and errors somewhere in the body. Those five headings remain the good default shape, but an empty heading satisfies no one.
 
-Detail: `vault/wiki/_seed/meta/reference/standard-skill-format.md`
+Anything that must bind on a dispatched run belongs in body text as well as frontmatter — an orchestrated child reads `SKILL.md` as content and never processes the frontmatter block.
+
+Detail: `vault/wiki/_seed/meta/reference/standard-skill-format.md` · `vault/wiki/_seed/meta/reference/standard-execution-modes.md`
 
 ## 2. Wiki entry format
 

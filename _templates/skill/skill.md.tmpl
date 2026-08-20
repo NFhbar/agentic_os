@@ -12,26 +12,44 @@ spawns: []
 
 # {{display_name}}
 
-## Purpose
 {{description}}
 
-## Inputs
-Describe the inputs this skill accepts. If `inputs:` frontmatter is filled in,
-the dashboard auto-renders a form from those declarations.
+<!--
+Write the body so a reader can find all five of these somewhere in it —
+purpose, inputs, procedure, outputs, errors. Headings are yours to choose;
+the requirement is coverage, not a fixed scaffold (standard-skill-format
+§ "Body: semantic coverage"). Two rules worth holding onto:
 
-- TODO
+  - Anything that must bind on a dispatched run belongs in BODY TEXT, not
+    only in frontmatter — an orchestrated child reads this file as content
+    and never processes the block above.
+  - Every interactive gate that a dispatch can reach declares a policy
+    inline: `Headless: default(<value>)` / `park` / `refuse`.
+
+Bulk material (templates, taxonomies, long enumerations) can live in
+references/*.md next to this file, with the procedure saying which one to
+Read at the step that needs it. Delete this comment when you write the body.
+-->
+
+## Purpose
+
+TODO — what this skill is for, and when it is the right one to reach for.
+
+## Inputs
+
+TODO — what it needs to run. If `inputs:` frontmatter is filled in, the
+dashboard auto-renders a form from those declarations; describe them here too.
 
 ## Procedure
+
 1. TODO: first step
 2. TODO: second step
-3. TODO: ...
 
 ## Outputs
-Describe side effects and what gets written where.
 
-- TODO
+TODO — what gets written where.
 
 ## Errors
-Common failure modes and how to recover.
 
-- TODO
+TODO — known failure modes, how to recover, and the headless policy for any
+gate a dispatch can reach.

@@ -13,11 +13,12 @@
 // fail the test with a clear list when an entry references a missing one.
 
 import { describe, expect, it } from 'vitest';
-import { readdirSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import {
   REPO_ROOT,
   listSkillDirs,
+  parseFrontmatter,
   readManifest,
   relPath,
 } from '../helpers/vault.js';
@@ -81,20 +82,12 @@ describe('skills — domain field resolves', () => {
     const orphans: Array<{ skill: string; domain: string }> = [];
     for (const dir of listSkillDirs()) {
       const skillMd = join(dir, 'SKILL.md');
+      if (!existsSync(skillMd)) continue;
+      // Shared parser — a private frontmatter regex here would be a second
+      // answer to "where does the frontmatter end", and the two would drift.
       let fm: Record<string, unknown> | null = null;
       try {
-        // Inline parse to avoid pulling parseFrontmatter and its file IO
-        // through twice — this test reads the same SKILL.md the skills
-        // test reads, so we accept the small duplication for clarity.
-        const { readFileSync } = require('node:fs');
-        const content = readFileSync(skillMd, 'utf8') as string;
-        const m = content.match(/^---\n([\s\S]*?)\n---/);
-        if (!m) continue;
-        // Cheap key:value extraction for the `domain:` line.
-        const line = m[1].split('\n').find((l) => l.startsWith('domain:'));
-        if (!line) continue;
-        const value = line.slice('domain:'.length).trim().replace(/^['"]|['"]$/g, '');
-        fm = { domain: value };
+        ({ fm } = parseFrontmatter(skillMd));
       } catch {
         continue;
       }

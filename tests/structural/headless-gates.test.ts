@@ -15,10 +15,17 @@
 // The `/do not use/i` negative filter is how a skill *documents* the
 // non-interactive contract without tripping the check (the canonical
 // "Do NOT use AskUserQuestion" dispatch marker, guard prose, etc.).
+//
+// Scanning runs over the shared markdown scanner's view of each skill, so a
+// tool name quoted inside a fenced example is not mistaken for a gate the
+// skill actually reaches — and, symmetrically, a `Headless:` clause that only
+// appears inside an example never counts as a declaration.
 
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, basename } from 'node:path';
+// @ts-expect-error — plain .mjs module without type declarations
+import { semanticMarkdown } from '../../scripts/markdown-scan.mjs';
 import { listSkillDirs, relPath } from '../helpers/vault.js';
 
 // Skills with a real interactive gate deliberately left to a follow-up wave.
@@ -45,7 +52,7 @@ function declaresHeadlessPolicy(body: string): boolean {
 const skills = listSkillDirs()
   .map((dir) => ({ name: basename(dir), md: join(dir, 'SKILL.md') }))
   .filter((s) => existsSync(s.md))
-  .map((s) => ({ ...s, body: readFileSync(s.md, 'utf8') }));
+  .map((s) => ({ ...s, body: semanticMarkdown(readFileSync(s.md, 'utf8')) as string }));
 
 describe('headless gate policies', () => {
   it('walks a non-empty skill tree', () => {

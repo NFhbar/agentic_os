@@ -19,6 +19,9 @@
 // cron path until this helper), which is why dispatch args are built in
 // exactly one place now.
 //
+// Every child is also handed the resolved OS root as `AGENTIC_OS_ROOT`, so
+// nothing downstream has to infer the tree from its own cwd (see os-root.mjs).
+//
 // Pure node built-ins — launchd-context scripts import this directly.
 
 import { spawn } from 'node:child_process';
@@ -27,9 +30,18 @@ import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 // Sibling pure-JS module (zero imports of its own) — stays launchd-light.
 import { isValidModel } from './models-registry.mjs';
+import { osRootEnv, resolveOsRoot } from './os-root.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = join(__dirname, '..');
+
+// Fail-closed tree resolution, memoized. Lazy on purpose: a bad
+// AGENTIC_OS_ROOT must fail the dispatch that would have written into the
+// wrong tree, not the import that merely reads effort/model helpers.
+let _osRoot = null;
+function repoRoot() {
+  if (_osRoot === null) _osRoot = resolveOsRoot({ startDir: __dirname });
+  return _osRoot;
+}
 
 const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 
@@ -65,11 +77,12 @@ async function readJsonKey(path, key) {
 }
 
 async function readSkillField(skillName, key) {
+  // Root resolution stays OUTSIDE the catch: "no such skill / no such field"
+  // is a normal null, but "I cannot tell which tree I am in" must not be
+  // swallowed into one.
+  const path = join(repoRoot(), '.claude', 'skills', skillName, 'SKILL.md');
   try {
-    const text = await readFile(
-      join(REPO_ROOT, '.claude', 'skills', skillName, 'SKILL.md'),
-      'utf8',
-    );
+    const text = await readFile(path, 'utf8');
     return readScalarField(text, key);
   } catch {
     return null;
@@ -82,11 +95,11 @@ export async function resolveEffortForRun(skillName) {
     if (fromSkill && VALID_EFFORTS.has(fromSkill)) return fromSkill;
   }
   const fromLocal = await readJsonKey(
-    join(REPO_ROOT, '.claude', 'settings.local.json'),
+    join(repoRoot(), '.claude', 'settings.local.json'),
     'effortLevel',
   );
   if (fromLocal && VALID_EFFORTS.has(fromLocal)) return fromLocal;
-  const fromProject = await readJsonKey(join(REPO_ROOT, '.claude', 'settings.json'), 'effortLevel');
+  const fromProject = await readJsonKey(join(repoRoot(), '.claude', 'settings.json'), 'effortLevel');
   return fromProject && VALID_EFFORTS.has(fromProject) ? fromProject : null;
 }
 
@@ -95,9 +108,9 @@ export async function resolveModelForRun(skillName) {
     const fromSkill = await readSkillField(skillName, 'model');
     if (fromSkill) return fromSkill;
   }
-  const fromLocal = await readJsonKey(join(REPO_ROOT, '.claude', 'settings.local.json'), 'model');
+  const fromLocal = await readJsonKey(join(repoRoot(), '.claude', 'settings.local.json'), 'model');
   if (fromLocal) return fromLocal;
-  return await readJsonKey(join(REPO_ROOT, '.claude', 'settings.json'), 'model');
+  return await readJsonKey(join(repoRoot(), '.claude', 'settings.json'), 'model');
 }
 
 // Phase-aware model override for dual-phase skills (`model_execute:`
@@ -173,7 +186,7 @@ export function deriveCapMs({ frontmatterMinutes, durationsMs }) {
 async function skillDurationsMs(skillName) {
   try {
     const { DatabaseSync } = await import('node:sqlite');
-    const db = new DatabaseSync(join(REPO_ROOT, '.claude', 'state', 'events.db'), {
+    const db = new DatabaseSync(join(repoRoot(), '.claude', 'state', 'events.db'), {
       readOnly: true,
     });
     try {
@@ -241,6 +254,14 @@ export async function buildClaudeArgs(
   return { args, effort, model };
 }
 
+// Environment handed to every dispatched child. Exporting the resolved root
+// means a child never has to re-derive the tree from its own cwd — the
+// launchd tick, the dashboard server, and a hand-run script all produce
+// children that agree on which OS they belong to, even when cwd differs.
+function childEnv() {
+  return { ...process.env, ...osRootEnv(repoRoot()) };
+}
+
 // Spawn the subprocess — the ONLY spawn('claude', …) in the repo.
 //
 // opts.stdio / opts.detached exist for the durable-runs path: the canonical
@@ -262,7 +283,8 @@ export async function spawnClaude(
     );
   }
   const child = spawn('claude', args, {
-    cwd: REPO_ROOT,
+    cwd: repoRoot(),
+    env: childEnv(),
     stdio,
     detached,
   });
@@ -272,7 +294,7 @@ export async function spawnClaude(
 // Spawn claude via the dispatch-holder trampoline so the child re-parents to
 // PID 1 — survives parent-pid tree-kills (`concurrently -k`, IDE task
 // runners) that detached spawn alone does not. The holder inherits
-// cwd: REPO_ROOT and the grandchild inherits it from the holder, so skill /
+// cwd: repoRoot() and the grandchild inherits it from the holder, so skill /
 // vault / settings resolution matches spawnClaude exactly. stdout/stderr go
 // straight to the journal files; the caller supervises by the returned PID.
 //
@@ -291,11 +313,11 @@ export async function spawnClaudeOrphaned(
       `${logPrefix}: spawning ${skillName ?? '(unknown skill)'}${effort ? ` --effort ${effort}` : ''}${model ? ` --model ${model}` : ''}`,
     );
   }
-  const abs = (p) => (isAbsolute(p) ? p : join(REPO_ROOT, p));
+  const abs = (p) => (isAbsolute(p) ? p : join(repoRoot(), p));
   const holder = spawn(
     process.execPath,
     [
-      join(REPO_ROOT, 'scripts', 'dispatch-holder.mjs'),
+      join(repoRoot(), 'scripts', 'dispatch-holder.mjs'),
       '--out',
       abs(outputPath),
       '--err',
@@ -304,7 +326,9 @@ export async function spawnClaudeOrphaned(
       'claude',
       ...args,
     ],
-    { cwd: REPO_ROOT, stdio: ['ignore', 'pipe', 'pipe'] },
+    // The grandchild inherits this env through the holder, so the re-parented
+    // claude process carries the same root as an attached spawn.
+    { cwd: repoRoot(), env: childEnv(), stdio: ['ignore', 'pipe', 'pipe'] },
   );
   let stdout = '';
   let stderr = '';

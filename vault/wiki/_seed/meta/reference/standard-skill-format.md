@@ -3,55 +3,79 @@ id: standard-skill-format
 type: reference
 domain: meta
 created: 2026-05-19T16:40:00Z
-updated: 2026-08-20T20:43:54Z
+updated: 2026-08-20T00:00:00Z
 tags: [standard, os, skill]
 source: manual
 private: false
 title: Skill format standard
 url: internal://standard/skill-format
 kind: doc
-last_verified: 2026-05-19
+last_verified: 2026-08-20
 ---
 
 # Skill format standard
 
 ## What it is
 
-The mandatory shape of every skill in `.claude/skills/`. Claude Code's harness uses the `description` field for discovery and `user-invocable: true` to expose the skill as a slash command; the rest is consumed by the router, the dashboard's form generator, and other meta tools.
+The mandatory shape of every skill in `.claude/skills/`. Claude Code's harness uses the `description` field for discovery and `user-invocable: true` to expose the skill as a slash command; the rest is consumed by the router, the dashboard's form generator, the dispatcher, and other meta tools.
 
 ## File layout
 
-Each skill lives in its **own directory** as `.claude/skills/<name>/SKILL.md`. The harness expects this exact path — flat `.md` files at `.claude/skills/<name>.md` are NOT discovered. The directory may contain additional files alongside `SKILL.md` (helper scripts, reference data) if the skill needs them.
+Each skill lives in its **own directory** as `.claude/skills/<name>/SKILL.md`. The harness expects this exact path — flat `.md` files at `.claude/skills/<name>.md` are NOT discovered. The directory may contain additional files alongside `SKILL.md` (helper scripts, reference data) if the skill needs them; see § "references/ — progressive disclosure".
 
-## Frontmatter contract
+## Frontmatter: three namespaces
+
+Frontmatter looks like one block, but it is read by three different audiences that fail in three different ways. Knowing which namespace a key belongs to tells you who breaks when it is wrong.
 
 ```yaml
 ---
-name: <kebab-case, == directory name> # required
-description: <one-line summary> # required
-user-invocable: true # required for slash-command discovery
-version: <integer or semver> # required
-domain: <owning domain> # OS extension — optional in stock CC
-tags: [<string>, ...] # OS extension — optional
-inputs: # OS extension — optional; dashboard renders a form
-  <arg_name>:
-    type: string|number|boolean|array|object
-    required: true|false
-    pattern: <regex> # optional, for string validation
-    description: <hint>
-    default: <value> # optional
-outputs: # OS extension — optional, declarative side effects
-  - kind: folder|file|folder-or-file|wiki-entry|skill|router-log|process|text|event|frontmatter|field|report|deletion
-    path: <pathspec with {{input.x}} placeholders>
-spawns: [<other-skill-name>, ...] # OS extension — optional
+# 1 — Claude Code native
+name: <kebab-case, == directory name>
+description: <one-line summary>
+user-invocable: true
+version: <integer or semver>
+
+# 2 — OS orchestration
+domain: <owning domain>
+inputs: {}
+outputs: []
+spawns: []
+effort: <low|medium|high|xhigh|max>
+model: <model id>
+
+# 3 — Documentation
+tags: [<string>, ...]
+recommended_effort: <low|medium|high|xhigh|max>
 ---
 ```
 
-`name`, `description`, `user-invocable`, and `version` are the fields Claude Code's harness recognizes. All others are OS conventions — the harness tolerates them as unknown keys but only OS tooling reads them.
+### Namespace 1 — Claude Code native
 
-### Dispatch-tuning fields (optional)
+Read by the harness itself. Wrong here means the skill does not appear, or does not load.
 
-Read at `claude -p` spawn time by `scripts/dispatch-claude.mjs` (and surfaced in Settings → Effort & cost) — except `model_policy` / `model_fallbacks`, read at run-finalization time by `scripts/model-error-policy.mjs`:
+| field            | type            | effect                                                                             |
+| ---------------- | --------------- | ---------------------------------------------------------------------------------- |
+| `name`           | string          | Must equal the directory name; the harness resolves the skill by it                |
+| `description`    | string          | Powers discovery — the harness, the router, and the dashboard all match against it |
+| `user-invocable` | boolean         | `true` exposes the skill as a slash command                                        |
+| `version`        | integer\|semver | Breaking-change tracking                                                           |
+
+All four are recognized across the whole supported CLI range (`MIN_SUPPORTED`–`HIGHEST_TESTED`, `scripts/check-cc-compat.mjs`). **When a native key requires a newer CLI than the current minimum, record that here and raise `MIN_SUPPORTED` alongside it** — a native key that silently no-ops on an older CLI is exactly the quiet drift the version contract exists to catch.
+
+### Namespace 2 — OS orchestration
+
+Read by OS tooling: the router, the dashboard, the dispatcher, the run finalizer, the audit. The harness tolerates them as unknown keys. Wrong here means the skill loads fine and then behaves wrong — routed nowhere, dispatched at the wrong model, formless in the dashboard.
+
+**Routing and structure:**
+
+| field     | type   | effect                                                                                                                                                                                                                     |
+| --------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `domain`  | string | Owning domain; must match a directory under `domains/`. Groups the skill everywhere it appears                                                                                                                             |
+| `inputs`  | map    | `<arg_name>: { type, required, pattern?, description, default? }` — the dashboard renders a form from this                                                                                                                 |
+| `outputs` | list   | `{ kind, path }` declarative side effects; `kind` ∈ `folder\|file\|folder-or-file\|wiki-entry\|skill\|router-log\|process\|text\|event\|frontmatter\|field\|report\|deletion`, `path` may carry `{{input.x}}` placeholders |
+| `spawns`  | list   | Other skill names this one dispatches. Each must resolve to a real skill directory                                                                                                                                         |
+
+**Dispatch tuning** — read at `claude -p` spawn time by `scripts/dispatch-claude.mjs` (and surfaced in Settings → Effort & cost), except `model_policy` / `model_fallbacks`, read at run-finalization time by `scripts/model-error-policy.mjs`:
 
 | field                   | type    | effect                                                                                                                                                                                                                                                                                                                                     |
 | ----------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -62,18 +86,67 @@ Read at `claude -p` spawn time by `scripts/dispatch-claude.mjs` (and surfaced in
 | `model_policy`          | enum    | `required` \| `fallback-allowed` (absent → `inherit`). What the runtime may do when the pinned model is unavailable: `required` parks with a structured error and no side effects; `fallback-allowed` allows ONE auto re-dispatch. Availability is classified from the run's journal + stderr tails                                        |
 | `model_fallbacks`       | string  | Comma-separated model ids, meaningful only with `model_policy: fallback-allowed`. The hook re-dispatches the same prompt once on `[0]` at effort `high`, titled `fallback(<model>): <skill>` — a leg already resolved to `[0]` stays failed                                                                                                |
 | `wall_time_cap_minutes` | integer | Watchdog/supervisor kill threshold for this skill's runs. Absent → derived from history: max(25 min, 2 × p95 of the skill's successful durations), capped at 240 min. Cap-kills are artifact-verified before being marked failed                                                                                                           |
-| `recommended_effort`    | enum    | UI-only guidance — never affects dispatch; Settings shows an "apply" action                                                                                                                                                                                                                                                                |
-| `recommended_model`     | string  | UI-only guidance — never affects dispatch                                                                                                                                                                                                                                                                                                  |
 
-## Body sections
+**The headless policy is deliberately NOT a frontmatter key.** The `default(...)` / `park` / `refuse` vocabulary is declared inline at each gate, in the body — see § "Headless behavior" for why that placement is load-bearing rather than stylistic.
 
-H2 headers, in this order. Sections may be empty (with TODO) but should not be omitted:
+### Namespace 3 — Documentation
 
-1. **Purpose** — one paragraph
-2. **Inputs** — human-readable description; mirrors `inputs:` frontmatter
-3. **Procedure** — numbered steps the AI should follow
-4. **Outputs** — what gets written where; mirrors `outputs:` frontmatter
-5. **Errors** — known failure modes and recovery
+Read by humans and by UI affordances that only ever suggest. Wrong here costs nothing at runtime.
+
+| field                | type   | effect                                                                      |
+| -------------------- | ------ | --------------------------------------------------------------------------- |
+| `tags`               | list   | Grouping and search                                                         |
+| `recommended_effort` | enum   | UI-only guidance — never affects dispatch; Settings shows an "apply" action |
+| `recommended_model`  | string | UI-only guidance — never affects dispatch                                   |
+
+### Dual consumption — frontmatter is invisible to raw-Read children
+
+A skill's instructions reach a model four different ways, and only two of them process frontmatter. When a dispatch says _"Read `.claude/skills/<name>/SKILL.md` and follow its Procedure exactly"_ — which is how the dashboard AI bridge and the per-change / project orchestrators run nearly everything — the child gets the file as **content**. The frontmatter arrives as a block of text at the top of a document. Nothing in it configures anything. The full mode matrix is in [[standard-execution-modes]].
+
+The consequence is a rule:
+
+> **Any constraint that must bind on a dispatched path has to be repeated in the body text.**
+
+Frontmatter is where a constraint is _declared_ for tooling; body text is where it is _stated_ for the model. A skill that declares `outputs:` and never mentions in its procedure where to write is correct in an interactive session and wrong in an orchestrated one. Same for tool restrictions, required pre-conditions, and every headless gate policy.
+
+Declaring it twice is not redundancy. The two copies have different readers, and the automated reader only ever sees the second one.
+
+## Body: semantic coverage, not a heading order
+
+The body must **cover** five things. It does not have to cover them under fixed headings, in a fixed order, or in five separate sections:
+
+- **Purpose** — what this skill is for, and when it is the right one to reach for
+- **Inputs** — what it needs to run, including anything mirrored in `inputs:` frontmatter
+- **Procedure** — the steps, concretely enough that two runs produce the same shape of work
+- **Outputs** — what gets written where, including anything mirrored in `outputs:` frontmatter
+- **Errors** — known failure modes and how to recover, including every headless gate policy
+
+The requirement is that a reader (human or model) can find each of the five. A skill whose Procedure step 6 says "if the branch already exists, stop and report" has covered that error case; it does not also need an `## Errors` bullet repeating it. A short skill may cover Purpose and Inputs in one paragraph.
+
+Why coverage and not a scaffold: the fixed five-heading order was easy to satisfy without saying anything — sections got created and left as `TODO`, which reads as complete to the audit and as empty to the model. Coverage cannot be satisfied by an empty heading. Most skills will still end up with roughly those five headings, because they are a good default shape; the difference is that the shape is now a means rather than the requirement.
+
+`## Purpose` remains the conventional home for a skill-wide contract — an interactive-only skill states that there, so nobody has to read the whole procedure to discover it.
+
+## references/ — progressive disclosure
+
+A skill may move bulk reference material out of `SKILL.md` and into `references/*.md` inside its own directory: report templates, output-format examples, taxonomies, long enumerations, per-type checklists. What stays in `SKILL.md` is the part every run needs — frontmatter, purpose, inputs, the decision procedure, errors.
+
+This matters because of how the automated modes load: a raw-Read child pulls the entire file into context in one shot, before it has done anything, whether or not the run needs the material. A skill that branches five ways and inlines all five branches' templates pays for all five on every run.
+
+The mechanism is entirely in the procedure. There is no automatic loading, so the procedure must **say when to read what**, at the step that needs it:
+
+```markdown
+4. Determine the report type from the project's `reporting.kind`.
+5. Read `references/report-templates.md` and use the section matching that type.
+   Do not read the other sections.
+```
+
+Two rules keep this honest:
+
+- **The pointer lives at the branch, not in a preamble.** "See `references/` for details" at the top loads nothing and helps nobody; a Read instruction inside step 5 loads exactly what step 5 needs.
+- **`SKILL.md` still has to satisfy semantic coverage on its own.** Purpose, inputs, procedure, outputs and errors stay in the skill. What moves out is material the procedure _consults_, never the procedure itself — a skill whose steps live in a reference file is unreadable in every mode.
+
+Progressive disclosure works in all four execution modes, because `Read` is available in all four.
 
 ## Headless behavior (interactive gates)
 
@@ -101,7 +174,7 @@ Every interactive gate (`AskUserQuestion`, `ExitPlanMode`, or a prose "ask the u
 
 ### Declaration convention
 
-Declare the policy with a literal `Headless:` clause at the gate step — this is the exact token the enforcement test greps for. Example:
+Declare the policy with a literal `Headless:` clause at the gate step — this is the exact token the enforcement test greps for, and body text is the only text a raw-Read child sees. Example:
 
 ```markdown
 AskUserQuestion: archive the raw file? Headless: default(archive).
@@ -111,7 +184,7 @@ Prose-worded gates ("ask the user to confirm …") are governed by this standard
 
 ### Enforcement
 
-`tests/structural/headless-gates.test.ts` walks every `.claude/skills/*/SKILL.md`: any file with a positive interactive-tool mention (an `AskUserQuestion` / `ExitPlanMode` line not negated by `do not use`) must carry at least one `Headless:` declaration, modulo a small documented exception set that is itself asserted load-bearing. The park machinery's runtime contract lives in [[standard-automation-loop]].
+`tests/structural/headless-gates.test.ts` walks every `.claude/skills/*/SKILL.md`: any file with a positive interactive-tool mention (an `AskUserQuestion` / `ExitPlanMode` line not negated by `do not use`) must carry at least one `Headless:` declaration, modulo a small documented exception set that is itself asserted load-bearing. It reads each skill through the shared markdown scanner, so a tool name quoted inside a fenced example is not mistaken for a gate — and a `Headless:` clause that appears only inside an example does not count as a declaration. The park machinery's runtime contract lives in [[standard-automation-loop]].
 
 ## Calling MCP tools from a skill
 
@@ -150,17 +223,20 @@ When in doubt, quote — the overhead is one character at each end. The dashboar
 
 ## Rationale
 
-- `name` matches filename so the harness loads it correctly
+- `name` matches the directory so the harness loads it correctly
 - `description` powers discovery (harness, router, dashboard)
 - `domain` lets the dashboard group skills sensibly
 - `inputs` lets the dashboard auto-generate forms; without it, AI actions are unstructured prompts
 - `version` supports breaking-change tracking
-- Prescriptive `Procedure` makes the AI's behavior consistent across invocations
+- A concrete Procedure makes behavior consistent across invocations — and across execution modes
+- Semantic coverage over a scaffold, because an empty heading satisfies a scaffold and helps nobody
 
 ## Related
 
+- [[standard-execution-modes]] — the four ways skill instructions reach a model; the basis for the dual-consumption rule
 - [[standard-playbook-format]] · [[standard-file-naming]]
 - [[meta-add-skill]] — scaffolds new skills against this contract
 - [[standard-mcp-usage]] — how to call MCP tools from a skill
 - [[meta-rename]] · [[meta-delete]] — rename/remove skills while updating cross-references
 - [[meta-evolve]] — escape hatch for changes that don't fit the add/rename/delete shapes
+- [[standard-canonical-skill-metadata]] — a design for making this frontmatter the single routing source

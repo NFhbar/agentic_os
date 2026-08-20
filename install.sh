@@ -48,6 +48,13 @@ if ! command -v claude >/dev/null 2>&1; then
 fi
 echo "  ✓ claude CLI installed"
 
+# Version-compatibility contract — warn-only, matching the git-identity check
+# above. A CLI below the minimum still installs and still dispatches; what it
+# does differently is quiet (see scripts/check-cc-compat.mjs), so the install
+# says so and moves on rather than blocking a clone that may only ever be used
+# interactively. `|| true` keeps the non-zero fail exit from aborting `set -e`.
+node scripts/check-cc-compat.mjs | sed 's/^/  /' || true
+
 # git is required for /os ingest repo (clones external repos) and for any
 # dev-write-change / dev-open-pr workflow against the user's product repos.
 if ! command -v git >/dev/null 2>&1; then
