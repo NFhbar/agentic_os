@@ -3,7 +3,7 @@ id: standard-skill-format
 type: reference
 domain: meta
 created: 2026-05-19T16:40:00Z
-updated: 2026-07-06T04:43:10Z
+updated: 2026-08-20T20:43:54Z
 tags: [standard, os, skill]
 source: manual
 private: false
@@ -51,7 +51,7 @@ spawns: [<other-skill-name>, ...] # OS extension — optional
 
 ### Dispatch-tuning fields (optional)
 
-Read at `claude -p` spawn time by `scripts/dispatch-claude.mjs` (and surfaced in Settings → Effort & cost):
+Read at `claude -p` spawn time by `scripts/dispatch-claude.mjs` (and surfaced in Settings → Effort & cost) — except `model_policy` / `model_fallbacks`, read at run-finalization time by `scripts/model-error-policy.mjs`:
 
 | field                   | type    | effect                                                                                                                                                                                                                                                                                                                                     |
 | ----------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -59,6 +59,8 @@ Read at `claude -p` spawn time by `scripts/dispatch-claude.mjs` (and surfaced in
 | `model`                 | string  | Claude model id — per-skill override; same precedence chain as effort                                                                                                                                                                                                                                                                      |
 | `model_execute`         | string  | Phase-aware override for dual-phase skills: when a change-scoped dispatch classifies EXECUTE-bound from the change's review gate (`approved`/`overridden`, or `not-required` with a plan; includes address-comments), `startRun` passes this instead of `model:`. Frontmatter-only — no settings fallback. v1 consumer: `dev-write-change` |
 | `effort_execute`        | enum    | Phase-aware effort override, sibling of `model_execute`: same EXECUTE-bound classification, swaps `effort:` instead of `model:`. Frontmatter-only (no settings fallback), validated against the effort enum, fail-open. v1 consumer: `dev-write-change` (`xhigh` — Opus executes at the posture's xhigh floor while Fable plans at `max`)  |
+| `model_policy`          | enum    | `required` \| `fallback-allowed` (absent → `inherit`). What the runtime may do when the pinned model is unavailable: `required` parks with a structured error and no side effects; `fallback-allowed` allows ONE auto re-dispatch. Availability is classified from the run's journal + stderr tails                                        |
+| `model_fallbacks`       | string  | Comma-separated model ids, meaningful only with `model_policy: fallback-allowed`. The hook re-dispatches the same prompt once on `[0]` at effort `high`, titled `fallback(<model>): <skill>` — a leg already resolved to `[0]` stays failed                                                                                                |
 | `wall_time_cap_minutes` | integer | Watchdog/supervisor kill threshold for this skill's runs. Absent → derived from history: max(25 min, 2 × p95 of the skill's successful durations), capped at 240 min. Cap-kills are artifact-verified before being marked failed                                                                                                           |
 | `recommended_effort`    | enum    | UI-only guidance — never affects dispatch; Settings shows an "apply" action                                                                                                                                                                                                                                                                |
 | `recommended_model`     | string  | UI-only guidance — never affects dispatch                                                                                                                                                                                                                                                                                                  |

@@ -41,6 +41,7 @@ outputs:
     path: '.claude/state/events.db (kind: dashboard, action: tuning-suggestion-propose | tuning-suggestion-apply, audit_id: <audit>, files_touched: [<diff-path>, <rationale-path>, <skill-path-if-apply>])'
 spawns: [dev-add-change]
 model: claude-fable-5
+model_policy: required
 effort: max
 ---
 

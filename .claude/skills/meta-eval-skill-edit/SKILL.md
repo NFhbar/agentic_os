@@ -34,6 +34,7 @@ outputs:
     path: '.claude/state/events.db (kind: dashboard, action: skill-edit-eval, files_touched: [<report>, <replay jsonls>])'
 spawns: []
 model: claude-fable-5
+model_policy: required
 effort: max
 ---
 

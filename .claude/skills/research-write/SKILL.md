@@ -38,6 +38,8 @@ outputs:
     fields: [research_paths, updated]
 spawns: []
 model: claude-fable-5
+model_policy: fallback-allowed
+model_fallbacks: claude-opus-4-8
 effort: max
 ---
 
