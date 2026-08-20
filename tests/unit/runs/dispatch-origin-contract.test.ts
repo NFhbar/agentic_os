@@ -100,6 +100,21 @@ describe('dispatch origin contract', () => {
     }
   });
 
+  // The project driver's own run is the one dispatch that must NOT carry a
+  // change attribution: startRun blocks any dispatch for a change that already
+  // has a live run, so a driver run wearing a change id would be refused on
+  // every dispatch it then made for that change (dev-drive-project § Step 4 —
+  // "the one attribution mistake that breaks the driver silently"). The tags
+  // object is asserted directly rather than through the affordance module,
+  // because the regression this guards is someone adding `change_id` here.
+  it('the drive dispatcher tags the project only — never a change', () => {
+    const src = readFileSync(join(ROUTES, 'projects.ts'), 'utf8');
+    const driveCall = startRunArgObjects(src).find((arg) => arg.includes('DRIVER_SKILL'));
+    expect(driveCall, 'no startRun call in projects.ts names DRIVER_SKILL').toBeDefined();
+    expect(driveCall).toContain('project: projectId');
+    expect(driveCall).not.toMatch(/\bchange_id\b\s*:/);
+  });
+
   it('POST /api/runs threads the parsed origin, not the raw body value', () => {
     const src = readFileSync(join(ROUTES, 'runs.ts'), 'utf8');
     expect(src).toContain('parseRunOrigin(');
