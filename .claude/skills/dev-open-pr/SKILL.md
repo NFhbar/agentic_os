@@ -141,6 +141,36 @@ This is the lifecycle bridge between local work (status: in-progress) and extern
 
    Cannot directly verify the SSH key / token resolves to the same GitHub user — that surfaces at push time (permission denied → wrong key) or at PR open time (PR.user.login mismatches commit author).
 
+6b. **Pre-flight the push credential.** Configured identity is a claim about authorship; it is not proof that the push can authenticate or be signed. The MCP, token, and identity checks above all pass while the credential path is broken, so probe that path too — before the first mutating step:
+
+    ```bash
+    git -C <local_path> push --dry-run origin <branch>
+    ```
+
+    The probe opens the real connection and authenticates without transferring anything. On success, continue to step 7. On failure → **reject here**: nothing has been pushed, no PR exists, no frontmatter was touched, and the change stays re-runnable the moment the environment is fixed.
+
+    Diagnose at fingerprint level before refusing (SSH remotes):
+
+    ```bash
+    ssh-add -l                                          # what the agent will actually offer
+    git -C <local_path> config --get user.signingkey    # the key this repo expects, when commits/pushes are signed
+    ```
+
+    Map the probe's stderr to a root cause in the refusal:
+    - `sign_and_send_pubkey: signing failed` / `agent refused operation` → an agent is reachable but won't sign with the needed key (locked, or serving a different account's keys). Name the expected key and the fingerprints the agent offered.
+    - `Permission denied (publickey)` / `Could not open a connection to your authentication agent` → no usable key is loaded for the remote's host alias; name `remote_url`'s host and the `~/.ssh/config` entry it resolves through.
+    - `403` / `Permission denied to <user>` → the credential authenticates but lacks push access to `<owner>/<name>`.
+
+    Refusal shape:
+
+    ```
+    Push credentials not usable for <local_path>.
+      remote: <remote_url>
+      cause:  <one-line root cause from the probe's stderr>
+      agent:  <fingerprints from ssh-add -l, or "(no identities)" / "(agent unreachable)">
+    Nothing was pushed and no PR was opened — fix the credential path and re-run.
+    ```
+
 7. **Push the branch.** `cd <local_path>` and run:
 
    ```bash
@@ -244,6 +274,18 @@ This is the lifecycle bridge between local work (status: in-progress) and extern
     - `pr_title`: the title used (so re-runs can be idempotent and audit-trail-clear)
     - `updated`: now (ISO 8601 UTC)
 
+12b. **Restore the default-branch checkout.** The push landed and the entry is written — from here nothing needs the feature branch checked out in the shared clone: PR review reads the cache / PR-head worktree, and the address-comments phase checks the branch out again itself. A tree left parked on a feature branch is a hazard for any other work sharing this clone, because the next phase that pre-flights "on default_branch, clean" refuses.
+
+    ```bash
+    git -C <local_path> status --porcelain
+    git -C <local_path> checkout <default_branch>
+    ```
+
+    - **Dirty tree** (`status --porcelain` non-empty): skip the checkout — never move a tree with uncommitted work. Record `checkout: skipped (working tree dirty)`.
+    - **Checkout fails**: not a failure of this skill. The PR is open and the writeback is done; record `checkout: failed (<first line of stderr>)` and continue to step 13.
+    - `<default_branch>` is the repo entity's field from step 5 — restore to the repo's default branch even when `inputs.base` pointed the PR somewhere else.
+    - Do **not** delete the feature branch: it is the open PR's head. Branch deletion belongs to [[dev-close-change]] after the merge.
+
 13. **Record the event** via the dual-write wrapper:
 
     ```bash
@@ -267,6 +309,7 @@ This is the lifecycle bridge between local work (status: in-progress) and extern
       status:    in-progress → in-review
       commit:    <configured-name> <<configured-email>>     # git config user.* on the repo
       opened by: <user.login>     # GitHub user the MCP authenticated as
+      checkout:  restored to <default_branch>     # or "skipped: <reason>" / "failed: <reason>"
       ci:        <ci_state>     # pass | fail | running (N) | none
       template:  <repo-template-path or "OS default (# what / # why / # tests)">
       next:      <next-hint>
@@ -296,6 +339,7 @@ This is the lifecycle bridge between local work (status: in-progress) and extern
 ## Outputs
 
 - Updated frontmatter on the change entry: `pr_url`, `status: in-review`, `updated`.
+- The local clone returned to its `default_branch` checkout (step 12b; skipped when the tree is dirty). The feature branch is left intact.
 - An events.db row with `kind: dashboard`, `action: open-pr`, `skill: dev-open-pr`, `change_id: <change>`.
 - The PR itself, on GitHub, viewable at `pr_url`.
 
@@ -305,6 +349,7 @@ This is the lifecycle bridge between local work (status: in-progress) and extern
 - `MCP github not configured` → run `/os add-mcp` to register the github MCP
 - `GitHub MCP auth failed` → custom server (the default): refresh `GITHUB_TOKEN` in `mcps/github/.env`; hosted mode only: run `/mcp` to complete OAuth
 - `Plan review must complete before opening a PR` → review_status is not approved/overridden/not-required; run `/os review-change <id>` first
+- `Push credentials not usable for <local_path>` → the step-6b dry-run probe refused before any mutation; load/unlock the key the repo expects (or grant push access) and re-run
 - `Push failed — verify SSH key / token` → fix local git auth, then re-run
 - `Non-fast-forward push` → pull/rebase the branch and re-run
 - `PR already open for <change>: <url>` → not an error; idempotent stop
@@ -314,7 +359,7 @@ This is the lifecycle bridge between local work (status: in-progress) and extern
 - **Edit code.** All code changes belong to `dev-write-change` EXECUTE. This skill only pushes what's already committed and opens the PR.
 - **Override the review gate.** If `review_status` isn't satisfied, the skill stops — it does NOT bypass.
 - **Open a PR when one already exists.** Idempotency prevents duplicates.
-- **Delete or rewrite branch history.** Only `git push -u origin <branch>` — no force-push, no rebase, no branch creation.
+- **Delete or rewrite branch history.** The only git mutations are `git push -u origin <branch>` and the step-12b checkout restore — no force-push, no rebase, no branch creation, no branch deletion.
 
 ## See also
 

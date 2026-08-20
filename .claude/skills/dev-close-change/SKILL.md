@@ -114,9 +114,18 @@ dev-mark-pr-ready is a vault-mutation skill with a single state-transition write
 
    Do NOT rewrite the whole frontmatter block — surgical Edit only.
 
-7b. **Check off all "Done when" items** in the body. The premise: once the PR is merged, every success criterion is by definition satisfied — otherwise the human wouldn't have merged. Locate the `## Done when` section (case-sensitive header). For every line matching `^- \[ \] ` immediately under the section header (until the next `## ` header or EOF), replace `- [ ]` with `- [x]`. Skip lines that are already checked. If the section doesn't exist, skip this step entirely (some changes don't carry a Done-when list — that's fine).
+7b. **Check off the "Done when" items the merge proves.** A merge proves that code shipped and that a human accepted it; it does not prove that anyone observed the result running. Auto-check only the criteria the merge itself establishes — the rest stay unchecked and get named in the report.
 
-    Surgical Edit via the Edit tool, NOT a body rewrite. Prepend the section with a `<!-- All criteria auto-checked by dev-close-change on <ISO> when the PR was confirmed merged on GitHub. -->` comment so the audit trail is visible if a future reader wonders why a checkbox wasn't manually toggled. Insert the comment only when at least one box was actually flipped — don't pollute the entry on idempotent re-runs.
+    Locate the `## Done when` section (case-sensitive header). Classify every line matching `^- \[ \] ` under it (until the next `## ` header or EOF):
+
+    - **Merge-implied** — the criterion describes something the merged diff or the entry itself carries: a file/flag/function exists, a code path behaves as written, tests were added, the PR was opened, frontmatter fields were set. Replace `- [ ]` with `- [x]`.
+    - **Externally verified** — the criterion names an observation someone must make outside the merge: live-verify against a running service, "renders on GitHub", "run X against Y and confirm Z", a manual smoke check, a UI behavior seen in a browser. **Leave the box unchecked** and append ` <!-- unverified at close (<ISO>): not implied by the merge -->` to that line. Count it for the `unverified:` line in step 9's report.
+
+    When the classification is genuinely ambiguous, treat the criterion as externally verified. An unchecked box invites someone to look; a wrongly-checked box records as fact something nobody observed, and nothing downstream ever revisits it.
+
+    Skip lines that are already checked, and don't re-tag a line that already carries an `unverified at close` comment — deferred-cleanup re-runs must be idempotent. If the section doesn't exist, skip this step entirely (some changes don't carry a Done-when list — that's fine).
+
+    Surgical Edit via the Edit tool, NOT a body rewrite. Prepend the section with a `<!-- Merge-implied criteria auto-checked by dev-close-change on <ISO> when the PR was confirmed merged on GitHub. Criteria marked "unverified at close" need an out-of-band check. -->` comment so the audit trail is visible if a future reader wonders why a checkbox wasn't manually toggled. Insert the comment only when at least one box was actually flipped — don't pollute the entry on idempotent re-runs.
 
     **Override path:** when `inputs.override === true`, the PR isn't verified merged — the criteria aren't guaranteed satisfied. Skip this step on override unless the user passed a separate `mark_done_when: true` input (future extension); for now, leave the checkboxes alone on overrides and surface a note in the report.
 
@@ -205,7 +214,10 @@ dev-mark-pr-ready is a vault-mutation skill with a single state-transition write
      pr:           <pr_url>
      state:        merged on GitHub (verified via mcp__github__get_pull_request)
      merged_at:    <ISO timestamp>
-     done-when:    <n> criteria auto-checked   (or "no Done-when section" / "all already checked")
+     done-when:    <n> merge-implied criteria auto-checked   (or "no Done-when section" / "all already checked")
+     unverified:   <m> criteria left unchecked — need an out-of-band check:
+                     - <criterion text>
+                   (omit the line entirely when m == 0)
      branch:       ✓ on <default_branch>, deleted <change.branch>
                    (or "skipped: <reason>")
      entry:        vault/wiki/<domain>/change/<change>.md
@@ -247,7 +259,7 @@ dev-mark-pr-ready is a vault-mutation skill with a single state-transition write
 ## Outputs
 
 - The change entry's frontmatter mutated in-place: `status: merged`, `merged_at: <ISO>`, `updated: <ISO>`. All other fields preserved verbatim.
-- The change entry's body's `## Done when` checkboxes flipped from `- [ ]` to `- [x]` (step 7b), with an HTML comment marker noting the auto-check. Skipped on overrides + when no Done-when section exists.
+- The change entry's body's merge-implied `## Done when` checkboxes flipped from `- [ ]` to `- [x]` (step 7b), with an HTML comment marker noting the auto-check. Criteria requiring external verification stay unchecked, each tagged with an `unverified at close` comment and listed in the report. Skipped on overrides + when no Done-when section exists.
 - The local clone mutated (step 7c-d, skippable via `skip_branch_cleanup`): checked out to `<default_branch>`, ff-pulled, and the change's feature branch deleted (`branch -d`, merged-only).
 - An `events.db` row with `kind: dashboard`, `action: close-change`, `skill: dev-close-change`, `change_id: <change>`, `files_touched: [<change-path>]`.
 - A short report to stdout.

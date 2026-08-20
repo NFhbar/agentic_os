@@ -183,6 +183,16 @@ When you reach this phase:
 
     If the extractor finds nothing across all candidate files, skip this consideration. Don't pad the plan with "no rationale comments found" — silence is fine.
 
+7b. **Verify behavioral claims down to the responder.** A `file:line` citation proves a symbol exists; it does not prove anything answers. Any step whose success depends on a runtime response carries a behavioral claim, and the plan walk owes that claim the same rigor it already gives existence claims — read the responder, don't infer it from registration.
+
+    Before the plan asserts such a step works:
+
+    - **Endpoint probe** — trace the route to a handler registered at that exact path *and* method. A plugin mounted under a prefix does not imply the bare prefix answers; a registered prefix with no matching handler returns 404, and a step that branches on the response then takes the wrong branch forever.
+    - **Command probe / output-gated step** — confirm the flag or subcommand is implemented in the version the repo pins, and that the output shape the step branches on is what that command actually prints.
+    - **Config or env read** — confirm the key is read on the path the step exercises, not merely defined somewhere.
+
+    If the responder does not exist, the plan must either add creating it as an explicit step or drop the probe. Never specify a probe against an unverified target: the failure is silent (a default branch that can never fire, an error branch that misdiagnoses a healthy system), so nothing downstream catches it until the code runs.
+
 8. Compose a plan with EXACTLY the structure below — be precise. The reviewer will check each section against `standard-code-quality` + `standard-git-hygiene` + the entity's Conventions.
 9. Write the plan to `vault/output/<domain>/changes/<change>-plan.md`. Create the directory if needed.
 10. Update the change entry's frontmatter (via Edit tool):
