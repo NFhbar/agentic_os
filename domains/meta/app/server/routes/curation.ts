@@ -11,10 +11,24 @@ import type { CurationItem } from './curation.types.js';
 export type { CurationItem, CurationListResponse } from './curation.types.js';
 
 // System files that live inside vault/raw/ but are NOT curation candidates.
-const SYSTEM_FILES = new Set(['router-log.jsonl', 'dashboard-actions.jsonl', '.gitkeep']);
+const SYSTEM_FILES = new Set([
+  'router-log.jsonl',
+  'dashboard-actions.jsonl',
+  'scheduled-runs.jsonl',
+  '.gitkeep',
+]);
+
+// Top-level vault/raw/ subtrees a skill owns end to end. The research
+// lifecycle reads its own drop zone at vault/raw/project-research/<project>/
+// <report_id>/, so what lands there is a skill's input, not a loose item
+// awaiting curation — surfacing it is a false positive. Discovery skips these
+// subtrees; an item explicitly in the queue is still honored, since the queue
+// is a deliberate decision and this is only a scan heuristic. Register a new
+// owner by adding its first path segment under vault/raw/.
+const OWNED_SUBTREES = new Set(['project-research']);
 
 // Walk vault/raw/ for files that look like curation candidates (skipping
-// system logs, hidden files, and the .archived/ subtree).
+// system logs, hidden files, skill-owned subtrees, and the .archived/ subtree).
 async function listRawCandidates(): Promise<string[]> {
   const out: string[] = [];
   const root = join(REPO_ROOT, 'vault', 'raw');
@@ -27,6 +41,7 @@ async function listRawCandidates(): Promise<string[]> {
         if (name.startsWith('.')) continue; // skips .archived/, .gitkeep, etc.
         const p = join(dir, name);
         if (e.isDirectory()) {
+          if (dir === root && OWNED_SUBTREES.has(name)) continue; // skill-owned drop zone
           await walk(p);
         } else if (e.isFile() && !SYSTEM_FILES.has(name)) {
           out.push(relative(REPO_ROOT, p));
