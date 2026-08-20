@@ -14,6 +14,7 @@ export type {
   NoteSeverity,
   RecommendedChangeRef,
   ReplayTimelineEntry,
+  ReportStepId,
   ResearchReportDetail,
   ResearchReportSummary,
   UpdateTrigger,
@@ -85,7 +86,15 @@ export function stateFor(
   report: ResearchReportSummary,
   recommendations: RecommendedChangeRef[],
 ): ResearchUiState {
-  if (report.status === 'draft' && report.review_status === 'pending') {
+  // Matches BOTH the first draft and the post-update state: research-update's
+  // documented contract is "reset review_status so the dashboard re-surfaces
+  // review", and it leaves `status: updated` behind. Gating on `draft` alone
+  // honored the contract for the first review only — a re-review never
+  // surfaced, and the report sat in `idle` with no way forward.
+  if (
+    (report.status === 'draft' || report.status === 'updated') &&
+    report.review_status === 'pending'
+  ) {
     return 'awaiting-review';
   }
   if (report.review_status === 'request-changes') {

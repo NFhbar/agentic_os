@@ -134,11 +134,12 @@ A research-report carries a **review gate** that mirrors the change archetype's 
 
 A report can trigger an update banner in the dashboard when one of these conditions fires. The user accepts (run `research-update`) or dismisses (id appended to `dismissed_triggers`).
 
-| trigger id                   | fires when                                                                                                |
-| ---------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `new-materials-ingested`     | `last_data_ingest` is newer than `report_generated_at` (new raw materials landed since the last write)    |
-| `staleness-threshold-passed` | `report_generated_at` is older than the report's project's configured staleness window (default: 30 days) |
-| `recommended-change-merged`  | One of `recommended_changes[].status` flipped to `merged` (might reshape the rest of the recommendations) |
+| trigger id                   | fires when                                                                                                  |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `new-materials-ingested`     | `last_data_ingest` is newer than `report_generated_at` (new raw materials landed since the last write)      |
+| `staleness-threshold-passed` | `report_generated_at` is older than the report's project's configured staleness window (default: 30 days)   |
+| `recommended-change-merged`  | One of `recommended_changes[].status` flipped to `merged` (might reshape the rest of the recommendations)   |
+| `unconsidered-note`          | One of `notes_log[]` has an empty `considered_by` (guidance landed that no lifecycle run has folded in yet) |
 
 Phase B's `research-update` skill writes the trigger handling — for phase A this is contract-only.
 

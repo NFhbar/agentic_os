@@ -27,6 +27,13 @@ export interface StepperStep {
   // rule that includes this entity). The id lets the parent decide whether
   // clicking opens the existing rule for edit OR creates a new one.
   subscribedRuleId?: string | null;
+  // When set, renders a cycle glyph (↻) ahead of the label — the step is
+  // being re-entered by a loop (e.g. a research-report re-reviewed after an
+  // update) rather than reached for the first time.
+  cycled?: boolean;
+  // When set, the inbound connector renders dashed instead of solid — the
+  // step was reached by a loop-back rather than by linear progression.
+  dashedIn?: boolean;
 }
 
 function stepColors(status: StepStatus): {
@@ -116,7 +123,19 @@ function Step({
           display: 'flex',
         }}
       >
-        {!isFirst && <div style={{ flex: 1, background: lineColor, height: 2 }} />}
+        {!isFirst &&
+          (step.dashedIn ? (
+            <div
+              style={{
+                flex: 1,
+                height: 0,
+                alignSelf: 'center',
+                borderTop: `2px dashed ${lineColor}`,
+              }}
+            />
+          ) : (
+            <div style={{ flex: 1, background: lineColor, height: 2 }} />
+          ))}
         <div style={{ width: 20 }} />
         {!isLast && <div style={{ flex: 1, background: lineColor, height: 2 }} />}
       </div>
@@ -168,6 +187,15 @@ function Step({
           justifyContent: 'center',
         }}
       >
+        {step.cycled && (
+          <span
+            aria-label="re-entered by a loop"
+            title={`"${step.label}" is being re-entered — this is a repeat pass, not the first.`}
+            style={{ fontSize: 11, lineHeight: 1, color: 'var(--warning-text)' }}
+          >
+            ↻
+          </span>
+        )}
         {step.label}
         {step.onNotify && (
           // The bell uses a non-button span+role to avoid nesting <button>
