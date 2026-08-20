@@ -8,6 +8,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { rewriteFrontmatter } from '../frontmatter-rewrite.js';
 import { parseFrontmatter } from '../frontmatter.js';
 import { deriveReportSteps } from '../lib/lifecycle-state.js';
+import { parseRunOrigin } from '../lib/run-origin.js';
 import { REPO_ROOT, safePath } from '../repo.js';
 import { type FileRef, loadFileRef } from './changes.js';
 import { startRun } from './runs.js';
@@ -709,10 +710,16 @@ export const researchRoutes: FastifyPluginAsync = async (fastify) => {
       notes?: string;
       materials?: { wikilinks?: string[]; urls?: string[] };
       material_limit?: number;
+      origin?: string;
     };
   }>('/:id/write', async (req, reply) => {
     const reportId = req.params.id;
     const body = req.body ?? {};
+    const parsedOrigin = parseRunOrigin(body.origin);
+    if (!parsedOrigin.ok) {
+      reply.code(400);
+      return { ok: false, error: parsedOrigin.error };
+    }
     const project = typeof body.project === 'string' ? body.project.trim() : '';
     const reportTopic = typeof body.report_topic === 'string' ? body.report_topic.trim() : '';
     if (!project || !reportTopic) {
@@ -761,6 +768,7 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary whe
         domain: 'research',
         skill: 'research-write',
       },
+      origin: parsedOrigin.origin,
     });
     if (!result.ok) {
       if ('blocking' in result) {
@@ -779,85 +787,103 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary whe
   });
 
   // POST /api/research/:id/review — dispatch research-review.
-  fastify.post<{ Params: { id: string } }>('/:id/review', async (req, reply) => {
-    const reportId = req.params.id;
-    const found = await findResearchReport(reportId);
-    if (!found) {
-      reply.code(404);
-      return { ok: false, error: `research-report "${reportId}" not found` };
-    }
-    const summary = toSummary(found.fm, found.path);
-    const dispatcherPrompt = `Run the research-review skill for report "${reportId}".
+  fastify.post<{ Params: { id: string }; Body: { origin?: string } }>(
+    '/:id/review',
+    async (req, reply) => {
+      const reportId = req.params.id;
+      const parsedOrigin = parseRunOrigin(req.body?.origin);
+      if (!parsedOrigin.ok) {
+        reply.code(400);
+        return { ok: false, error: parsedOrigin.error };
+      }
+      const found = await findResearchReport(reportId);
+      if (!found) {
+        reply.code(404);
+        return { ok: false, error: `research-report "${reportId}" not found` };
+      }
+      const summary = toSummary(found.fm, found.path);
+      const dispatcherPrompt = `Run the research-review skill for report "${reportId}".
 
 Inputs:
 - report_id: ${reportId}
 
 Read .claude/skills/research-review/SKILL.md and follow its Procedure exactly.
 Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary of the verdict when done.`;
-    const result = await startRun({
-      prompt: dispatcherPrompt,
-      title: `/os research-review ${reportId}`,
-      tags: {
-        project: summary.project ?? undefined,
-        domain: 'research',
-        skill: 'research-review',
-      },
-    });
-    if (!result.ok) {
-      if ('blocking' in result) {
-        reply.code(409);
-        return { ok: false, error: 'blocked', blocking: result.blocking };
+      const result = await startRun({
+        prompt: dispatcherPrompt,
+        title: `/os research-review ${reportId}`,
+        tags: {
+          project: summary.project ?? undefined,
+          domain: 'research',
+          skill: 'research-review',
+        },
+        origin: parsedOrigin.origin,
+      });
+      if (!result.ok) {
+        if ('blocking' in result) {
+          reply.code(409);
+          return { ok: false, error: 'blocked', blocking: result.blocking };
+        }
+        reply.code(500);
+        return { ok: false, error: result.error };
       }
-      reply.code(500);
-      return { ok: false, error: result.error };
-    }
-    recordAudit('research-review-dispatch', { report_id: reportId, run_id: result.run_id }, []);
-    return { ok: true, run_id: result.run_id };
-  });
+      recordAudit('research-review-dispatch', { report_id: reportId, run_id: result.run_id }, []);
+      return { ok: true, run_id: result.run_id };
+    },
+  );
 
   // POST /api/research/:id/revise — dispatch research-revise.
-  fastify.post<{ Params: { id: string } }>('/:id/revise', async (req, reply) => {
-    const reportId = req.params.id;
-    const found = await findResearchReport(reportId);
-    if (!found) {
-      reply.code(404);
-      return { ok: false, error: `research-report "${reportId}" not found` };
-    }
-    const summary = toSummary(found.fm, found.path);
-    if (!summary.review_path) {
-      reply.code(409);
-      return {
-        ok: false,
-        error: 'no review_path set — run research-review first',
-      };
-    }
-    const dispatcherPrompt = `Run the research-revise skill for report "${reportId}".
+  fastify.post<{ Params: { id: string }; Body: { origin?: string } }>(
+    '/:id/revise',
+    async (req, reply) => {
+      const reportId = req.params.id;
+      const parsedOrigin = parseRunOrigin(req.body?.origin);
+      if (!parsedOrigin.ok) {
+        reply.code(400);
+        return { ok: false, error: parsedOrigin.error };
+      }
+      const found = await findResearchReport(reportId);
+      if (!found) {
+        reply.code(404);
+        return { ok: false, error: `research-report "${reportId}" not found` };
+      }
+      const summary = toSummary(found.fm, found.path);
+      if (!summary.review_path) {
+        reply.code(409);
+        return {
+          ok: false,
+          error: 'no review_path set — run research-review first',
+        };
+      }
+      const dispatcherPrompt = `Run the research-revise skill for report "${reportId}".
 
 Inputs:
 - report_id: ${reportId}
 
 Read .claude/skills/research-revise/SKILL.md and follow its Procedure exactly.
 Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary of what was changed when done.`;
-    const result = await startRun({
-      prompt: dispatcherPrompt,
-      title: `/os research-revise ${reportId}`,
-      tags: {
-        project: summary.project ?? undefined,
-        domain: 'research',
-        skill: 'research-revise',
-      },
-    });
-    if (!result.ok) {
-      if ('blocking' in result) {
-        reply.code(409);
-        return { ok: false, error: 'blocked', blocking: result.blocking };
+      const result = await startRun({
+        prompt: dispatcherPrompt,
+        title: `/os research-revise ${reportId}`,
+        tags: {
+          project: summary.project ?? undefined,
+          domain: 'research',
+          skill: 'research-revise',
+        },
+        origin: parsedOrigin.origin,
+      });
+      if (!result.ok) {
+        if ('blocking' in result) {
+          reply.code(409);
+          return { ok: false, error: 'blocked', blocking: result.blocking };
+        }
+        reply.code(500);
+        return { ok: false, error: result.error };
       }
-      reply.code(500);
-      return { ok: false, error: result.error };
-    }
-    recordAudit('research-revise-dispatch', { report_id: reportId, run_id: result.run_id }, []);
-    return { ok: true, run_id: result.run_id };
-  });
+      recordAudit('research-revise-dispatch', { report_id: reportId, run_id: result.run_id }, []);
+      return { ok: true, run_id: result.run_id };
+    },
+  );
 
   // POST /api/research/:id/approve — vault-only flip of review_status from
   // 'request-changes' to 'approved'. Gated on review_status === 'request-changes'
@@ -910,6 +936,7 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary of 
     Body: {
       trigger_source?: 'materials' | 'milestone' | 'change-merged' | 'manual';
       notes?: string;
+      origin?: string;
     };
   }>('/:id/update', async (req, reply) => {
     const reportId = req.params.id;
@@ -920,6 +947,11 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary of 
     }
     const summary = toSummary(found.fm, found.path);
     const body = req.body ?? {};
+    const parsedOrigin = parseRunOrigin(body.origin);
+    if (!parsedOrigin.ok) {
+      reply.code(400);
+      return { ok: false, error: parsedOrigin.error };
+    }
     const triggerSource = typeof body.trigger_source === 'string' ? body.trigger_source : 'manual';
     if (!['materials', 'milestone', 'change-merged', 'manual'].includes(triggerSource)) {
       reply.code(400);
@@ -973,6 +1005,7 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary whe
         domain: 'research',
         skill: 'research-update',
       },
+      origin: parsedOrigin.origin,
     });
     if (!result.ok) {
       if ('blocking' in result) {
@@ -995,9 +1028,14 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary whe
   // per-item dev-add-change loop + report-frontmatter writeback.
   fastify.post<{
     Params: { id: string };
-    Body: { subset?: number[] };
+    Body: { subset?: number[]; origin?: string };
   }>('/:id/scaffold-recommendations', async (req, reply) => {
     const reportId = req.params.id;
+    const parsedOrigin = parseRunOrigin(req.body?.origin);
+    if (!parsedOrigin.ok) {
+      reply.code(400);
+      return { ok: false, error: parsedOrigin.error };
+    }
     const found = await findResearchReport(reportId);
     if (!found) {
       reply.code(404);
@@ -1057,6 +1095,7 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight per-item su
         domain: 'research',
         skill: 'research-scaffold-recommendations',
       },
+      origin: parsedOrigin.origin,
     });
     if (!result.ok) {
       if ('blocking' in result) {

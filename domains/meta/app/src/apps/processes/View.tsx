@@ -11,7 +11,7 @@ import { type RunOrigin, type RunRecord, type RunState, getRun, listRuns } from 
 import '../../shared/styles.css';
 
 // Dispatch origins, in display order. Mirrors RUN_ORIGINS in
-// scripts/runs-db-init.mjs / the RunOrigin type.
+// scripts/run-origins.mjs / the RunOrigin type.
 const ORIGINS: RunOrigin[] = ['human', 'automation', 'scheduler', 'driver'];
 
 // URL filter taxonomy: /processes (all), /processes/running, /processes/done,

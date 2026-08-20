@@ -20,7 +20,7 @@ export type RunState =
   | 'died-after-writeback';
 
 // Who dispatched a run. Stamped at create time; NULL (legacy rows) reads as
-// `human`. Keep in sync with RUN_ORIGINS in scripts/runs-db-init.mjs — that
+// `human`. Keep in sync with RUN_ORIGINS in scripts/run-origins.mjs — that
 // .mjs holds the runtime list; this types-only file can't import it.
 export type RunOrigin = 'human' | 'automation' | 'scheduler' | 'driver';
 
@@ -91,7 +91,9 @@ export interface StartRunInput {
   title?: string | null;
   tags?: RunTags;
   // Defaults to `human` when unset. The orchestrator passes `automation`,
-  // the scheduler `scheduler`; an explicit value wins (the future `driver`).
+  // the scheduler `scheduler`; an explicit value wins. The HTTP dispatch paths
+  // validate a caller-supplied `origin` (server/lib/run-origin.ts) before
+  // threading it here, so a driver's runs stamp `driver`.
   origin?: RunOrigin;
   // Bypass the server-side re-review debounce (a dev-pr-review dispatch whose
   // target branch head is unchanged since the last reviewed pass). Also

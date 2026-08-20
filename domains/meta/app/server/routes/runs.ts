@@ -68,6 +68,7 @@ import { inferTerminalState } from '../../../../../scripts/runs-finalize.mjs';
 import { recoverUsageFromJournal } from '../../../../../scripts/runs-finalize.mjs';
 import { parseFrontmatter } from '../frontmatter.js';
 import { classifyChangeDispatchPhase } from '../lib/execute-phase.js';
+import { parseRunOrigin } from '../lib/run-origin.js';
 import { parseStreamJsonLine } from '../lib/stream-json.js';
 import { REPO_ROOT, safePath } from '../repo.js';
 import { evaluatePrReviewDebounce } from './automation-state-machine.js';
@@ -89,7 +90,11 @@ interface StartBody {
   prompt: string;
   title?: string;
   tags?: RunTags;
-  origin?: RunOrigin;
+  // Wire claim, not a validated value — an HTTP caller can send any string.
+  // The handler runs it through parseRunOrigin (../lib/run-origin.ts) before
+  // it reaches startRun; only a value in the RUN_ORIGINS vocabulary survives,
+  // everything else 400s.
+  origin?: string;
   // Bypass the re-review debounce (dashboard force affordance / CLI force).
   force?: boolean;
 }
@@ -980,11 +985,18 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
       reply.code(400);
       return { error: 'prompt is required' };
     }
+    // Runtime-validate the caller-supplied origin (the type only claims it).
+    // Never thread raw body.origin into startRun — an invalid value 400s here.
+    const parsedOrigin = parseRunOrigin(body.origin);
+    if (!parsedOrigin.ok) {
+      reply.code(400);
+      return { error: parsedOrigin.error };
+    }
     const result = await startRun({
       prompt: body.prompt,
       title: body.title,
       tags: body.tags,
-      origin: body.origin,
+      origin: parsedOrigin.origin,
       force: body.force,
     });
     if (result.ok) return { run_id: result.run_id };

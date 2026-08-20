@@ -70,4 +70,44 @@ describe('dispatch origin contract', () => {
       expect(arg).toContain("origin: 'scheduler'");
     }
   });
+
+  // The skill-specific HTTP dispatch endpoints thread the *validated* caller
+  // origin (origin: parsedOrigin.origin) — never the raw wire value. Each pin
+  // asserts every startRun arg object names `origin` AND doesn't smuggle the
+  // unvalidated body.origin / req.body?.origin straight through (a
+  // raw-passthrough regression pin), and that the file runs parseRunOrigin.
+  const RAW_ORIGIN = /body\??\.origin/;
+
+  it('every research.ts dispatcher threads a validated origin', () => {
+    const src = readFileSync(join(ROUTES, 'research.ts'), 'utf8');
+    expect(src).toContain('parseRunOrigin(');
+    const calls = startRunArgObjects(src);
+    expect(calls.length).toBeGreaterThanOrEqual(5);
+    for (const arg of calls) {
+      expect(arg).toMatch(/\borigin\b/);
+      expect(arg).not.toMatch(RAW_ORIGIN);
+    }
+  });
+
+  it('every projects.ts dispatcher threads a validated origin', () => {
+    const src = readFileSync(join(ROUTES, 'projects.ts'), 'utf8');
+    expect(src).toContain('parseRunOrigin(');
+    const calls = startRunArgObjects(src);
+    expect(calls.length).toBeGreaterThanOrEqual(5);
+    for (const arg of calls) {
+      expect(arg).toMatch(/\borigin\b/);
+      expect(arg).not.toMatch(RAW_ORIGIN);
+    }
+  });
+
+  it('POST /api/runs threads the parsed origin, not the raw body value', () => {
+    const src = readFileSync(join(ROUTES, 'runs.ts'), 'utf8');
+    expect(src).toContain('parseRunOrigin(');
+    const calls = startRunArgObjects(src);
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    for (const arg of calls) {
+      expect(arg).toMatch(/\borigin\b/);
+      expect(arg).not.toMatch(RAW_ORIGIN);
+    }
+  });
 });

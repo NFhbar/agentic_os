@@ -66,7 +66,7 @@ export function classifyRunsOrigin({
       kind: 'invalid-origin',
       severity: 'error',
       message: `${invalidCount} runs row(s) carry an origin outside the vocabulary (${validOrigins.join(' | ')})`,
-      hint: 'A dispatch path stamped an unknown origin. Check the startRun callers; valid values live in RUN_ORIGINS (scripts/runs-db-init.mjs).',
+      hint: 'A dispatch path stamped an unknown origin. Check the startRun callers; valid values live in RUN_ORIGINS (scripts/run-origins.mjs).',
     });
   }
 
