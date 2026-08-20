@@ -13,11 +13,11 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_DB_PATH } from './events-db-init.mjs';
 
-// Who dispatched a run. Stamped at create time; NULL on legacy rows reads as
-// `human` at the derive/display layer. Mirror this list as the `RunOrigin`
-// type union in domains/meta/app/server/routes/runs.types.ts (that file is
-// types-only and cannot import this runtime value).
-export const RUN_ORIGINS = ['human', 'automation', 'scheduler', 'driver'];
+// Who dispatched a run. The runtime list lives in the dependency-free
+// scripts/run-origins.mjs so vitest-loadable consumers can import it without
+// pulling in this file's node:sqlite import; re-exported here so existing
+// importers (scripts/audit.mjs) keep resolving unchanged.
+export { RUN_ORIGINS } from './run-origins.mjs';
 
 export const RUNS_EXPECTED_COLUMNS = [
   'id',

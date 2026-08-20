@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import type { FastifyPluginAsync } from 'fastify';
 import { removeFrontmatterFields, rewriteFrontmatter } from '../frontmatter-rewrite.js';
 import { parseFrontmatter } from '../frontmatter.js';
+import { parseRunOrigin } from '../lib/run-origin.js';
 import { SKILL } from '../lib/skill-ids.js';
 import { REPO_ROOT, safePath } from '../repo.js';
 import { readAutomationConfig } from './automation.js';
@@ -964,6 +965,7 @@ export const projectsRoutes: FastifyPluginAsync = async (fastify) => {
       body?: string;
       materials?: { wikilinks?: string[]; urls?: string[] };
       material_limit?: number;
+      origin?: string;
     };
   }>('/:id/research', async (req, reply) => {
     const projectId = req.params.id;
@@ -975,6 +977,15 @@ export const projectsRoutes: FastifyPluginAsync = async (fastify) => {
     const { fm: projectFm } = found;
     const project = toSummary(projectFm, found.path);
     const projectDomain = project.domain ?? 'meta';
+
+    // Validate origin up front — before the dispatcher-vs-note mode branch — so
+    // garbage fails fast regardless of mode. Only dispatcher mode threads it
+    // into startRun; note-creation mode starts no run and ignores the field.
+    const parsedOrigin = parseRunOrigin(req.body?.origin);
+    if (!parsedOrigin.ok) {
+      reply.code(400);
+      return { ok: false, error: parsedOrigin.error };
+    }
 
     const rawPrompt = (req.body?.prompt ?? '').trim();
     const rawTitle = (req.body?.title ?? '').trim();
@@ -1015,6 +1026,7 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary of 
           domain: projectDomain,
           skill: SKILL.RESEARCH_WRITE,
         },
+        origin: parsedOrigin.origin,
       });
       if (!result.ok) {
         if ('blocking' in result) {
@@ -1103,102 +1115,128 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary of 
 
   // POST /api/projects/:id/plan/review — dispatch `meta-review-project-plan`.
   // Refuses 409 when no plan exists to review.
-  fastify.post<{ Params: { id: string } }>('/:id/plan/review', async (req, reply) => {
-    const projectId = req.params.id;
-    const found = await findProjectFrontmatter(projectId);
-    if (!found) {
-      reply.code(404);
-      return { ok: false, error: `project "${projectId}" not found` };
-    }
-    const project = toSummary(found.fm, found.path);
-    if (!project.plan_path) {
-      reply.code(409);
-      return { ok: false, error: 'no plan to review — research the project first.' };
-    }
-    const dispatcherPrompt = `Run the meta-review-project-plan skill for project "${projectId}".
+  fastify.post<{ Params: { id: string }; Body: { origin?: string } }>(
+    '/:id/plan/review',
+    async (req, reply) => {
+      const projectId = req.params.id;
+      const parsedOrigin = parseRunOrigin(req.body?.origin);
+      if (!parsedOrigin.ok) {
+        reply.code(400);
+        return { ok: false, error: parsedOrigin.error };
+      }
+      const found = await findProjectFrontmatter(projectId);
+      if (!found) {
+        reply.code(404);
+        return { ok: false, error: `project "${projectId}" not found` };
+      }
+      const project = toSummary(found.fm, found.path);
+      if (!project.plan_path) {
+        reply.code(409);
+        return { ok: false, error: 'no plan to review — research the project first.' };
+      }
+      const dispatcherPrompt = `Run the meta-review-project-plan skill for project "${projectId}".
 
 Inputs:
 - project: ${projectId}
 
 Read .claude/skills/meta-review-project-plan/SKILL.md and follow its Procedure exactly.
 Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary of the verdict when done.`;
-    const result = await startRun({
-      prompt: dispatcherPrompt,
-      title: `/os review-project-plan ${projectId}`,
-      tags: {
-        project: projectId,
-        domain: project.domain ?? 'meta',
-        skill: 'meta-review-project-plan',
-      },
-    });
-    if (!result.ok) {
-      if ('blocking' in result) {
-        reply.code(409);
-        return { ok: false, error: 'blocked', blocking: result.blocking };
+      const result = await startRun({
+        prompt: dispatcherPrompt,
+        title: `/os review-project-plan ${projectId}`,
+        tags: {
+          project: projectId,
+          domain: project.domain ?? 'meta',
+          skill: 'meta-review-project-plan',
+        },
+        origin: parsedOrigin.origin,
+      });
+      if (!result.ok) {
+        if ('blocking' in result) {
+          reply.code(409);
+          return { ok: false, error: 'blocked', blocking: result.blocking };
+        }
+        reply.code(500);
+        return { ok: false, error: result.error };
       }
-      reply.code(500);
-      return { ok: false, error: result.error };
-    }
-    const owned = await findOwnedChanges(projectId);
-    const rollup = buildProjectRollup(
-      projectId,
-      owned.map((c) => c.id),
-    );
-    recordAudit('project-plan-review-dispatch', { project: projectId, run_id: result.run_id }, []);
-    return { ok: true, run_id: result.run_id, current_cost_usd: rollup.cost_usd };
-  });
+      const owned = await findOwnedChanges(projectId);
+      const rollup = buildProjectRollup(
+        projectId,
+        owned.map((c) => c.id),
+      );
+      recordAudit(
+        'project-plan-review-dispatch',
+        { project: projectId, run_id: result.run_id },
+        [],
+      );
+      return { ok: true, run_id: result.run_id, current_cost_usd: rollup.cost_usd };
+    },
+  );
 
   // POST /api/projects/:id/plan/revise — dispatch `meta-revise-project-plan`.
   // Refuses 409 when the plan's `review_status` is not `request-changes`
   // (shared review-state contract: the verdict lives in review_status,
   // plan_status is lifecycle-only).
-  fastify.post<{ Params: { id: string } }>('/:id/plan/revise', async (req, reply) => {
-    const projectId = req.params.id;
-    const found = await findProjectFrontmatter(projectId);
-    if (!found) {
-      reply.code(404);
-      return { ok: false, error: `project "${projectId}" not found` };
-    }
-    const project = toSummary(found.fm, found.path);
-    if (project.review_status !== 'request-changes') {
-      reply.code(409);
-      return {
-        ok: false,
-        error: `nothing to revise from — plan_status is ${project.plan_status ?? 'null'}.`,
-      };
-    }
-    const dispatcherPrompt = `Run the meta-revise-project-plan skill for project "${projectId}".
+  fastify.post<{ Params: { id: string }; Body: { origin?: string } }>(
+    '/:id/plan/revise',
+    async (req, reply) => {
+      const projectId = req.params.id;
+      const parsedOrigin = parseRunOrigin(req.body?.origin);
+      if (!parsedOrigin.ok) {
+        reply.code(400);
+        return { ok: false, error: parsedOrigin.error };
+      }
+      const found = await findProjectFrontmatter(projectId);
+      if (!found) {
+        reply.code(404);
+        return { ok: false, error: `project "${projectId}" not found` };
+      }
+      const project = toSummary(found.fm, found.path);
+      if (project.review_status !== 'request-changes') {
+        reply.code(409);
+        return {
+          ok: false,
+          error: `nothing to revise from — plan_status is ${project.plan_status ?? 'null'}.`,
+        };
+      }
+      const dispatcherPrompt = `Run the meta-revise-project-plan skill for project "${projectId}".
 
 Inputs:
 - project: ${projectId}
 
 Read .claude/skills/meta-revise-project-plan/SKILL.md and follow its Procedure exactly.
 Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary of what was changed when done.`;
-    const result = await startRun({
-      prompt: dispatcherPrompt,
-      title: `/os revise-project-plan ${projectId}`,
-      tags: {
-        project: projectId,
-        domain: project.domain ?? 'meta',
-        skill: 'meta-revise-project-plan',
-      },
-    });
-    if (!result.ok) {
-      if ('blocking' in result) {
-        reply.code(409);
-        return { ok: false, error: 'blocked', blocking: result.blocking };
+      const result = await startRun({
+        prompt: dispatcherPrompt,
+        title: `/os revise-project-plan ${projectId}`,
+        tags: {
+          project: projectId,
+          domain: project.domain ?? 'meta',
+          skill: 'meta-revise-project-plan',
+        },
+        origin: parsedOrigin.origin,
+      });
+      if (!result.ok) {
+        if ('blocking' in result) {
+          reply.code(409);
+          return { ok: false, error: 'blocked', blocking: result.blocking };
+        }
+        reply.code(500);
+        return { ok: false, error: result.error };
       }
-      reply.code(500);
-      return { ok: false, error: result.error };
-    }
-    const owned = await findOwnedChanges(projectId);
-    const rollup = buildProjectRollup(
-      projectId,
-      owned.map((c) => c.id),
-    );
-    recordAudit('project-plan-revise-dispatch', { project: projectId, run_id: result.run_id }, []);
-    return { ok: true, run_id: result.run_id, current_cost_usd: rollup.cost_usd };
-  });
+      const owned = await findOwnedChanges(projectId);
+      const rollup = buildProjectRollup(
+        projectId,
+        owned.map((c) => c.id),
+      );
+      recordAudit(
+        'project-plan-revise-dispatch',
+        { project: projectId, run_id: result.run_id },
+        [],
+      );
+      return { ok: true, run_id: result.run_id, current_cost_usd: rollup.cost_usd };
+    },
+  );
 
   // POST /api/projects/:id/plan/scaffold — dispatch `meta-scaffold-project-plan`
   // with the curated items list. Refuses 409 when the plan's `review_status`
@@ -1206,9 +1244,14 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary of 
   // allowed — the skill itself handles the idempotent stop.
   fastify.post<{
     Params: { id: string };
-    Body: { items?: string[] };
+    Body: { items?: string[]; origin?: string };
   }>('/:id/plan/scaffold', async (req, reply) => {
     const projectId = req.params.id;
+    const parsedOrigin = parseRunOrigin(req.body?.origin);
+    if (!parsedOrigin.ok) {
+      reply.code(400);
+      return { ok: false, error: parsedOrigin.error };
+    }
     const found = await findProjectFrontmatter(projectId);
     if (!found) {
       reply.code(404);
@@ -1244,6 +1287,7 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary of 
         domain: project.domain ?? 'meta',
         skill: 'meta-scaffold-project-plan',
       },
+      origin: parsedOrigin.origin,
     });
     if (!result.ok) {
       if ('blocking' in result) {
@@ -1915,110 +1959,117 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary of 
   // On success returns { ok: true, run_id, runbook_id, runbook_path } —
   // the runbook file is created asynchronously by the dispatched skill run.
   // The UI polls (or refetches detail on terminal) to see the new entry.
-  fastify.post<{ Params: { id: string }; Querystring: { cadence?: string } }>(
-    '/:id/schedule-report',
-    async (req, reply) => {
-      const projectId = req.params.id;
-      const cadence = req.query.cadence;
-      if (cadence !== 'daily' && cadence !== 'weekly') {
-        reply.code(400);
-        return { ok: false, error: 'cadence must be "daily" or "weekly"', field: 'cadence' };
-      }
-      const found = await findProjectFrontmatter(projectId);
-      if (!found) {
-        reply.code(404);
-        return { ok: false, error: `project "${projectId}" not found` };
-      }
-      const projectDomain = typeof found.fm.domain === 'string' ? found.fm.domain : 'meta';
-      const runbookId = `runbook-status-report-${projectId}-${cadence}`;
-      const runbookPath = safePath(
-        join('vault', 'wiki', projectDomain, 'runbook', `${runbookId}.md`),
-      );
-      if (existsSync(runbookPath)) {
-        reply.code(409);
-        return {
-          ok: false,
-          error: `runbook "${runbookId}" already exists — see Schedules tab to edit or remove`,
-          runbook_id: runbookId,
-          runbook_path: relative(REPO_ROOT, runbookPath),
-        };
-      }
-      const cron = cadence === 'daily' ? '0 9 * * *' : '0 9 * * 1';
-      const triggerHuman =
-        cadence === 'daily' ? 'Every day at 09:00 local time' : 'Every Monday at 09:00 local time';
-      // The prompt the scheduler will fire — embedded in the runbook's
-      // `prompt:` frontmatter. Composed here (not by the skill) so the
-      // dispatch contract stays in one place.
-      const firePrompt =
-        `Run the meta-status-report skill for project "${projectId}" with report_type=status.\n\n` +
-        `Headless dispatch: do NOT use AskUserQuestion or any interactive prompt. ` +
-        `Compose the report per the "status" variant of the SKILL.md template. Write to the ` +
-        `standard path and update the project entry's reporting fields per the Procedure.`;
-      // Dispatch meta-add-schedule with the inputs it expects. Single
-      // source of truth for runbook frontmatter shape — the skill walks
-      // the standard template + writes the file. `project` is one of
-      // meta-add-schedule's native inputs (Step 8 of its Procedure):
-      // when set, the scheduler tick gates firing on project status.
-      const dispatcherPrompt = [
-        `Run the meta-add-schedule skill to scaffold a recurring status-report runbook.`,
-        '',
-        'Inputs:',
-        `- name: ${runbookId}`,
-        `- title: Status report — ${projectId} (${cadence})`,
-        `- domain: ${projectDomain}`,
-        `- schedule: ${cron}`,
-        `- prompt: ${JSON.stringify(firePrompt)}`,
-        `- trigger: ${triggerHuman}`,
-        `- project: ${projectId}`,
-        '',
-        'Read .claude/skills/meta-add-schedule/SKILL.md and follow its Procedure exactly.',
-        'Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary when done.',
-      ].join('\n');
-      const result = await startRun({
-        prompt: dispatcherPrompt,
-        title: `/os schedule-report ${projectId} ${cadence}`,
-        tags: {
-          project: projectId,
-          domain: projectDomain,
-          skill: 'meta-add-schedule',
-        },
-      });
-      if (!result.ok) {
-        if ('blocking' in result) {
-          reply.code(409);
-          return { ok: false, error: 'blocked', blocking: result.blocking };
-        }
-        reply.code(500);
-        return { ok: false, error: result.error };
-      }
-      // Audit the dispatch (the runbook file write itself audits separately
-      // when meta-add-schedule's procedure runs).
-      spawnSync(
-        'node',
-        [
-          join(REPO_ROOT, 'scripts', 'record-dashboard-action.mjs'),
-          '--action',
-          'schedule-report-dispatch',
-          '--args',
-          JSON.stringify({
-            project: projectId,
-            cadence,
-            runbook_id: runbookId,
-            run_id: result.run_id,
-          }),
-          '--files-touched',
-          JSON.stringify([]),
-          '--exit-status',
-          '0',
-        ],
-        { cwd: REPO_ROOT, stdio: 'ignore' },
-      );
+  fastify.post<{
+    Params: { id: string };
+    Querystring: { cadence?: string };
+    Body: { origin?: string };
+  }>('/:id/schedule-report', async (req, reply) => {
+    const projectId = req.params.id;
+    const cadence = req.query.cadence;
+    if (cadence !== 'daily' && cadence !== 'weekly') {
+      reply.code(400);
+      return { ok: false, error: 'cadence must be "daily" or "weekly"', field: 'cadence' };
+    }
+    const parsedOrigin = parseRunOrigin(req.body?.origin);
+    if (!parsedOrigin.ok) {
+      reply.code(400);
+      return { ok: false, error: parsedOrigin.error };
+    }
+    const found = await findProjectFrontmatter(projectId);
+    if (!found) {
+      reply.code(404);
+      return { ok: false, error: `project "${projectId}" not found` };
+    }
+    const projectDomain = typeof found.fm.domain === 'string' ? found.fm.domain : 'meta';
+    const runbookId = `runbook-status-report-${projectId}-${cadence}`;
+    const runbookPath = safePath(
+      join('vault', 'wiki', projectDomain, 'runbook', `${runbookId}.md`),
+    );
+    if (existsSync(runbookPath)) {
+      reply.code(409);
       return {
-        ok: true,
-        run_id: result.run_id,
+        ok: false,
+        error: `runbook "${runbookId}" already exists — see Schedules tab to edit or remove`,
         runbook_id: runbookId,
         runbook_path: relative(REPO_ROOT, runbookPath),
       };
-    },
-  );
+    }
+    const cron = cadence === 'daily' ? '0 9 * * *' : '0 9 * * 1';
+    const triggerHuman =
+      cadence === 'daily' ? 'Every day at 09:00 local time' : 'Every Monday at 09:00 local time';
+    // The prompt the scheduler will fire — embedded in the runbook's
+    // `prompt:` frontmatter. Composed here (not by the skill) so the
+    // dispatch contract stays in one place.
+    const firePrompt =
+      `Run the meta-status-report skill for project "${projectId}" with report_type=status.\n\n` +
+      `Headless dispatch: do NOT use AskUserQuestion or any interactive prompt. ` +
+      `Compose the report per the "status" variant of the SKILL.md template. Write to the ` +
+      `standard path and update the project entry's reporting fields per the Procedure.`;
+    // Dispatch meta-add-schedule with the inputs it expects. Single
+    // source of truth for runbook frontmatter shape — the skill walks
+    // the standard template + writes the file. `project` is one of
+    // meta-add-schedule's native inputs (Step 8 of its Procedure):
+    // when set, the scheduler tick gates firing on project status.
+    const dispatcherPrompt = [
+      `Run the meta-add-schedule skill to scaffold a recurring status-report runbook.`,
+      '',
+      'Inputs:',
+      `- name: ${runbookId}`,
+      `- title: Status report — ${projectId} (${cadence})`,
+      `- domain: ${projectDomain}`,
+      `- schedule: ${cron}`,
+      `- prompt: ${JSON.stringify(firePrompt)}`,
+      `- trigger: ${triggerHuman}`,
+      `- project: ${projectId}`,
+      '',
+      'Read .claude/skills/meta-add-schedule/SKILL.md and follow its Procedure exactly.',
+      'Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary when done.',
+    ].join('\n');
+    const result = await startRun({
+      prompt: dispatcherPrompt,
+      title: `/os schedule-report ${projectId} ${cadence}`,
+      tags: {
+        project: projectId,
+        domain: projectDomain,
+        skill: 'meta-add-schedule',
+      },
+      origin: parsedOrigin.origin,
+    });
+    if (!result.ok) {
+      if ('blocking' in result) {
+        reply.code(409);
+        return { ok: false, error: 'blocked', blocking: result.blocking };
+      }
+      reply.code(500);
+      return { ok: false, error: result.error };
+    }
+    // Audit the dispatch (the runbook file write itself audits separately
+    // when meta-add-schedule's procedure runs).
+    spawnSync(
+      'node',
+      [
+        join(REPO_ROOT, 'scripts', 'record-dashboard-action.mjs'),
+        '--action',
+        'schedule-report-dispatch',
+        '--args',
+        JSON.stringify({
+          project: projectId,
+          cadence,
+          runbook_id: runbookId,
+          run_id: result.run_id,
+        }),
+        '--files-touched',
+        JSON.stringify([]),
+        '--exit-status',
+        '0',
+      ],
+      { cwd: REPO_ROOT, stdio: 'ignore' },
+    );
+    return {
+      ok: true,
+      run_id: result.run_id,
+      runbook_id: runbookId,
+      runbook_path: relative(REPO_ROOT, runbookPath),
+    };
+  });
 };
