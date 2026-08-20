@@ -105,9 +105,15 @@ export function derivePostApprovalStage(
   ownedChanges: OwnedChangeRef[],
 ): PlanLifecycleStatus {
   const scaffoldedRecs = latest.recommended_changes_scaffolded ?? 0;
-  if (scaffoldedRecs === 0) return 'drafted';
-  // Any owned change past planning → automation/lifecycle is active.
-  const anyInFlight = ownedChanges.some(
+  // Live owned changes are materialization evidence in their own right: a plan
+  // can be materialized straight into change entries without ever passing
+  // through recommendation scaffolding, and keying only off scaffoldedRecs
+  // left those projects reading "awaiting review" forever. Abandoned changes
+  // are not evidence — nothing they materialized survives.
+  const liveOwned = ownedChanges.filter((c) => c.status !== 'abandoned');
+  if (scaffoldedRecs === 0 && liveOwned.length === 0) return 'drafted';
+  // Any live owned change past planning → automation/lifecycle is active.
+  const anyInFlight = liveOwned.some(
     (c) => c.status === 'in-progress' || c.status === 'in-review' || c.status === 'merged',
   );
   return anyInFlight ? 'active' : 'scaffolded';

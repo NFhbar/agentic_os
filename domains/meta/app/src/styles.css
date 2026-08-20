@@ -67,9 +67,13 @@ body,
   opacity: 0.9;
 }
 
-.loading,
-.muted {
+.loading {
   opacity: 0.6;
+}
+/* Split from .loading: muted text is content the reader is expected to read,
+   so it carries the contrast floor. Transient loading copy keeps 0.6. */
+.muted {
+  opacity: 0.78;
 }
 
 /* Stats grid */
