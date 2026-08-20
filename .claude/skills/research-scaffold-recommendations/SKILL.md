@@ -15,6 +15,10 @@ inputs:
     type: array
     required: true
     description: 'Explicit array of non-negative integer indices into the report`s `recommended_changes` array. Empty array is an idempotent stop (no mutation). Out-of-range indices cause a hard reject before any dispatch begins.'
+  tickets:
+    type: object
+    required: false
+    description: 'Optional map of recommendation index → ticket id, e.g. `{"0": "412", "2": "418"}` (keys are the same indices as `inputs.indices`, stringified). Values are digits-only issue numbers — the shape `dev-add-change.inputs.issue_number` accepts, because that value composes the branch name `<type>/#<issue>/<name>` per [[standard-git-hygiene]] §3 and free-form ticket ids would leak arbitrary characters into git refs. Threaded per item to `dev-add-change` so ticket-first repos — where change creation is gated on an existing ticket and that gate is headless-refuse by design — can be scaffolded headlessly with pre-supplied ids. Indices absent from the map dispatch without a ticket, exactly as before.'
 outputs:
   - kind: file
     path: vault/wiki/{{project.domain}}/change/<derived-slug>.md
@@ -47,7 +51,8 @@ Per-item opt-in is the convention: `inputs.indices` is an explicit array of indi
 4. **Review gate.** Verify the report's `review_status` is `approved` or `overridden` (or `not-required`, for reports with the review gate switched off — shared review-state enum per `lifecycle-state.ts`). Reject any other state with: `cannot scaffold — review_status is <state>, expected approved`. Escape hatch when the reviewer's verdict conflicts with the user's judgment: [[meta-mark-research-approved]] flips `request-changes → approved`. Mirrors `meta-scaffold-project-plan` SKILL.md Step 1.5.
 5. Verify `inputs.indices` is an array of non-negative integers. Reject if any entry is not an integer or is negative.
 6. Verify every index is in-range (`0 <= i < recommended_changes.length`). Hard reject the whole call up-front with the list of bad indices if any are out-of-range — partial scaffolds are confusing; fail fast.
-7. If `inputs.indices` is an empty array: idempotent stop. Print `↻ No indices selected — nothing to scaffold.` Do NOT mutate any frontmatter. Done.
+7. If `inputs.tickets` is present: verify it is an object whose keys parse as non-negative integers and whose values are digits-only strings (`^[0-9]+$`). Hard reject up-front listing every offending entry — a malformed ticket only surfaces mid-loop otherwise, as a `dev-add-change` rejection on an item that already has siblings on disk. Keys not present in `inputs.indices` are ignored, NOT an error: a caller may hold the whole report's ticket map and scaffold a subset of it.
+8. If `inputs.indices` is an empty array: idempotent stop. Print `↻ No indices selected — nothing to scaffold.` Do NOT mutate any frontmatter. Done.
 
 ### Step 2: Resolve the owning project + repo
 
@@ -70,17 +75,20 @@ For each index `i` in sorted order, capture an outcome `{ index, change_id?, out
 
 2. **Derive `name`.** Slugify the row's `summary`: lowercase, replace non-`[a-z0-9]` runs with `-`, trim leading/trailing hyphens. If longer than 60 chars, truncate at the last `-` at or before position 60 (word boundary) — drops the trailing partial word rather than chopping mid-word. If no hyphen exists at/before 60 (single long word), fall back to a hard cap at 60. If the resulting slug is empty (e.g. summary was all punctuation), use `recommendation-<i>` as the base slug. Same shape as `routes/projects.ts:964-969` but word-aware.
 
+   The slug derives from `row.summary`, NOT from the title composed in Step 4.4 — the two are independent by design. The slug carries the URL / branch / filename constraint (kebab, length-capped, collision-suffixed); the title is display prose.
+
 3. **Suffix-on-collision.** Check `vault/wiki/<project.domain>/change/<name>.md`. If exists, try `<name>-1`, `<name>-2`, … up to 50 attempts. If the cap is hit, record the outcome as `failed` with reason `failed to generate non-colliding slug after 50 attempts` and skip to Step 5 (partial-failure handling). Mirrors `routes/projects.ts:972-981`.
 
 4. **Dispatch `dev-add-change`.** Inputs:
    - `name`: the derived non-colliding slug
-   - `title`: `row.summary` verbatim. **Do NOT truncate.** Research summaries are 1-2 sentences that capture the actual intent of the change (e.g. "WebSocket head subscription via eth_subscribe with reconnect + fallback to polling"); truncating with `…` produces useless clipped headings everywhere the title surfaces (Changes list, PR card, Project Pulse, status reports). The slug is derived separately in step 2 with the kebab+length cap — the slug carries the URL/branch/filename constraint, the title is free-form prose. Past behavior capped at 80 chars; that was the cause of Task #393. (If a summary is genuinely too long for downstream display, the rendering surface should clip — e.g. with CSS `text-overflow: ellipsis` — not the source data.)
+   - `title`: **COMPOSE** a concise title (≤80 chars) capturing the recommendation's core action. Compose, never copy or clip: copying the summary verbatim produces unusable 300-char titles when summaries are spec paragraphs; mechanical truncation produces titles that end mid-word. Both prior formulations failed in exactly those ways — a mechanical 80-char cap shipped headings clipped mid-word, and the verbatim-summary rule that replaced it shipped paragraph-length ones everywhere the title surfaces (Changes list, PR card, Project Pulse, status reports). Composition is what fixes both: read the summary, then state what the change actually does. Nothing is lost by not copying — the full summary still lands in the change body via `description` below, and the slug is derived from the summary independently in Step 4.2.
    - `domain`: `project.domain`
    - `repo`: `project.repos[0]`
    - `type`: `row.type` if present, else `feat` (recommendations almost always describe new functionality)
    - `size`: `row.size` if one of `small | medium | large`, else `medium`
-   - `description`: `row.summary` + ` — derived from research-report [[<report-id>]]`
+   - `description`: `row.summary` + ` — derived from research-report [[<report-id>]]` — this is the guarantee that the composed title costs nothing: the full, unclipped summary always reaches the change body
    - `project`: `report.project` (composes the new change into the report's owning project)
+   - `issue_number`: `inputs.tickets[String(i)]` when the map has an entry for this index. OMIT the input entirely otherwise — do not pass an empty string, `dev-add-change` validates its digits-only pattern against any value it receives. This is what makes headless scaffolding work against ticket-first repos, where the ticket gate refuses to prompt.
 
    Note: `derived_from_report` is NOT passed as an input — it is not in `dev-add-change.inputs` (verified against `.claude/skills/dev-add-change/SKILL.md` lines 8–61). It is persisted via a post-create surgical edit (next step).
 
@@ -193,6 +201,7 @@ The top-level `report` key feeds `record-dashboard-action.mjs`'s attribution ext
 - Report has no `project` → reject (a research-report must own a project per archetype)
 - Project not found / no `repos[0]` → reject
 - Any index out of range → hard reject before any dispatch begins (lists bad indices)
+- `inputs.tickets` malformed (a key that isn't a non-negative integer, or a value that isn't digits-only) → hard reject before any dispatch begins (lists the offending entries)
 - Empty `inputs.indices` → idempotent stop (no error)
 - Sub-dispatch failure mid-loop → partial-failure path per Step 5 (stops immediately, leaves succeeded items on disk)
 - Slug-collision cap exhausted on a single item → partial-failure per Step 5 with reason

@@ -21,7 +21,12 @@ import {
   type TabDef,
   Tabbar,
 } from '../components';
-import type { ResearchReportDetail, ResearchReportSummary, ResearchUiState } from '../data';
+import type {
+  ReportStepId,
+  ResearchReportDetail,
+  ResearchReportSummary,
+  ResearchUiState,
+} from '../data';
 import { stateFor } from '../data';
 import {
   MaterialsTab,
@@ -470,19 +475,18 @@ function BannerForState({
 
 function computeLifecycle(
   r: ResearchReportSummary,
-  onClick: (id: 'drafted' | 'reviewed' | 'approved' | 'updated') => void,
+  onClick: (id: ReportStepId) => void,
   onNotify: (eventType: string, existingRuleId: string | null) => void,
   subscriptionMap: Map<string, string>,
   catalog: EventCatalogEntry[],
 ): StepperStep[] {
-  // Step statuses are server-computed (lib/lifecycle-state.ts deriveReportSteps)
-  // — this function only decorates them with click/notify handlers. Deriving
-  // here from raw frontmatter was the Finding 4.3 dialect-drift pattern.
-  const { drafted, reviewed, approved, updated } = r.step_statuses;
+  // Step statuses, render order and the loop marker are all server-computed
+  // (lib/lifecycle-state.ts deriveReportSteps) — this function only decorates
+  // them with click/notify handlers. Deriving here from raw frontmatter was
+  // the dialect-drift pattern.
+  const { drafted, reviewed, approved, updated, order, cycled_step } = r.step_statuses;
 
-  const decorate = (
-    step: StepperStep & { id: 'drafted' | 'reviewed' | 'approved' | 'updated' },
-  ): StepperStep => {
+  const decorate = (step: StepperStep & { id: ReportStepId }): StepperStep => {
     const eventType = findEventForStep(catalog, 'research-report', step.id);
     if (!eventType) return step;
     const subscribedRuleId = subscriptionMap.get(eventType) ?? null;
@@ -496,31 +500,37 @@ function computeLifecycle(
     };
   };
 
-  return [
-    decorate({
+  const steps: Record<ReportStepId, StepperStep & { id: ReportStepId }> = {
+    drafted: {
       id: 'drafted',
       label: 'Drafted',
       status: drafted,
       onClick: () => onClick('drafted'),
-    }),
-    decorate({
+    },
+    reviewed: {
       id: 'reviewed',
       label: 'Reviewed',
       status: reviewed,
       onClick: () => onClick('reviewed'),
-    }),
-    decorate({
+    },
+    approved: {
       id: 'approved',
       label: 'Approved',
       status: approved,
       onClick: () => onClick('approved'),
-    }),
-    decorate({
+    },
+    updated: {
       id: 'updated',
       label: 'Updated',
       status: updated,
       hint: r.update_count > 0 ? `×${r.update_count}` : undefined,
       onClick: () => onClick('updated'),
-    }),
-  ];
+    },
+  };
+
+  // The loop-back step gets both markers: the ↻ says "second pass", the
+  // dashed inbound connector says "reached by looping back, not linearly".
+  return order.map((id) =>
+    decorate({ ...steps[id], cycled: id === cycled_step, dashedIn: id === cycled_step }),
+  );
 }

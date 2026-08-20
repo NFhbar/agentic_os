@@ -47,11 +47,21 @@ export type ResearchReviewStatus =
 // clients render, never re-derive; Finding 4.3).
 export type ReportStepStatus = 'done' | 'current' | 'pending';
 
+export type ReportStepId = 'drafted' | 'reviewed' | 'approved' | 'updated';
+
 export interface ReportStepStatuses {
   drafted: ReportStepStatus;
   reviewed: ReportStepStatus;
   approved: ReportStepStatus;
   updated: ReportStepStatus;
+  // Chronological render order. Linear by default; during an active
+  // update→re-review loop `updated` moves ahead of `reviewed`. Ordering is
+  // server-computed for the same reason the statuses are — the client
+  // renders, it never re-derives.
+  order: ReportStepId[];
+  // The step the loop cycles back into — rendered with a cycle glyph and a
+  // dashed inbound connector. Null when no loop is active.
+  cycled_step: ReportStepId | null;
 }
 
 export interface ResearchReportSummary {
@@ -94,7 +104,8 @@ export interface MaterialRef {
 export type UpdateTriggerKind =
   | 'new-materials-ingested'
   | 'staleness-threshold-passed'
-  | 'recommended-change-merged';
+  | 'recommended-change-merged'
+  | 'unconsidered-note';
 
 export interface UpdateTrigger {
   id: string;

@@ -27,6 +27,7 @@ import type {
 } from '../routes/changes.types.js';
 import type { OwnedChangeRef } from '../routes/projects.types.js';
 import type {
+  ReportStepId,
   ReportStepStatus,
   ReportStepStatuses,
   ResearchReportSummary,
@@ -355,6 +356,17 @@ export function computeLifecycle(
 // report-level `status: approved`. `overridden` deliberately does NOT light
 // the approved step here even though planStageId treats it as approved at
 // the project tier; changing that is a product decision, not a refactor.
+//
+// Step ORDER is derived here too, for the same reason the statuses are: the
+// research-report lifecycle is not linear once `research-update` runs, and a
+// client deciding the order from raw frontmatter would be the same dialect
+// drift one layer down.
+
+// Canonical linear order — the lifecycle as it runs when no update fires.
+const LINEAR_STEP_ORDER: readonly ReportStepId[] = ['drafted', 'reviewed', 'approved', 'updated'];
+// Chronological order during an active update→re-review loop: the update
+// already happened, the review it triggered has not.
+const LOOP_STEP_ORDER: readonly ReportStepId[] = ['drafted', 'updated', 'reviewed', 'approved'];
 
 export function deriveReportSteps(r: {
   status: string | null;
@@ -373,5 +385,20 @@ export function deriveReportSteps(r: {
         ? 'current'
         : 'pending';
   const updated: ReportStepStatus = (r.update_count ?? 0) > 0 ? 'done' : 'pending';
-  return { drafted: 'done', reviewed, approved, updated };
+  // The loop is active when an update has landed but the review that follows
+  // it has not completed — `research-update` resets `review_status` to
+  // pending, which pulls `reviewed` back to `current` with `updated` already
+  // done. Rendered linearly that reads done·current·pending·done: a finished
+  // last step sitting behind an unfinished one, with a phantom gap between.
+  // Reordering chronologically closes the gap; the ↻ on the re-entered step
+  // is what tells the user it is a second pass, not a first one.
+  const loopActive = updated === 'done' && reviewed !== 'done';
+  return {
+    drafted: 'done',
+    reviewed,
+    approved,
+    updated,
+    order: [...(loopActive ? LOOP_STEP_ORDER : LINEAR_STEP_ORDER)],
+    cycled_step: loopActive ? 'reviewed' : null,
+  };
 }

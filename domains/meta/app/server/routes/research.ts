@@ -411,6 +411,23 @@ export async function detectUpdateTriggers(
     }
   }
 
+  // unconsidered-note — per-note id, same dismissable shape as the
+  // per-recommendation ids above. Any note whose `considered_by` is empty
+  // fires: no lifecycle skill has folded it in yet. Without this kind the
+  // report dead-ends — an update resets `review_status` to pending, and a
+  // note added afterwards had no way to enable another update.
+  for (const note of readNotesLog(fm)) {
+    if (note.considered_by.length > 0) continue;
+    const id = `unconsidered-note:${note.index}`;
+    if (dismissed.has(id)) continue;
+    out.push({
+      id,
+      kind: 'unconsidered-note',
+      fired_at: note.ts,
+      reason: `note ${note.index} (${note.severity}) has not been considered by any run`,
+    });
+  }
+
   return out;
 }
 
@@ -1028,7 +1045,7 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary whe
   // per-item dev-add-change loop + report-frontmatter writeback.
   fastify.post<{
     Params: { id: string };
-    Body: { subset?: number[]; origin?: string };
+    Body: { subset?: number[]; tickets?: Record<string, string>; origin?: string };
   }>('/:id/scaffold-recommendations', async (req, reply) => {
     const reportId = req.params.id;
     const parsedOrigin = parseRunOrigin(req.body?.origin);
@@ -1078,12 +1095,42 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary whe
       return { ok: false, error: 'no proposed recommendations to scaffold' };
     }
 
+    // Optional recommendation-index → ticket map, threaded straight through to
+    // the skill (which passes each entry to dev-add-change as `issue_number`).
+    // Values are digits-only because that is what `issue_number` accepts — it
+    // composes the branch name, so free-form ticket ids would leak arbitrary
+    // characters into git refs. Ticket-first repos gate change creation on a
+    // ticket and that gate is headless-refuse by design, so a headless
+    // scaffold has no way to satisfy it without pre-supplied ids.
+    const rawTickets = req.body?.tickets;
+    let tickets: Record<string, string> | null = null;
+    if (rawTickets !== undefined) {
+      if (typeof rawTickets !== 'object' || rawTickets === null || Array.isArray(rawTickets)) {
+        reply.code(400);
+        return { ok: false, error: 'tickets must be an object mapping index → ticket id' };
+      }
+      const badTickets: string[] = [];
+      for (const [key, value] of Object.entries(rawTickets)) {
+        if (!/^\d+$/.test(key) || typeof value !== 'string' || !/^\d+$/.test(value)) {
+          badTickets.push(`${key}: ${JSON.stringify(value)}`);
+        }
+      }
+      if (badTickets.length > 0) {
+        reply.code(400);
+        return {
+          ok: false,
+          error: `tickets entries must map an integer index to a digits-only ticket id: ${badTickets.join(', ')}`,
+        };
+      }
+      if (Object.keys(rawTickets).length > 0) tickets = rawTickets;
+    }
+
     const subsetJson = JSON.stringify(resolvedSubset);
     const dispatcherPrompt = `Run the research-scaffold-recommendations skill for report "${reportId}".
 
 Inputs:
 - report: ${reportId}
-- indices: ${subsetJson}
+- indices: ${subsetJson}${tickets ? `\n- tickets: ${JSON.stringify(tickets)}` : ''}
 
 Read .claude/skills/research-scaffold-recommendations/SKILL.md and follow its Procedure exactly.
 Do NOT use AskUserQuestion or any interactive prompt. Report a tight per-item summary when done.`;
@@ -1107,7 +1154,12 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight per-item su
     }
     recordAudit(
       'research-scaffold-recommendations-dispatch',
-      { report_id: reportId, subset: resolvedSubset, run_id: result.run_id },
+      {
+        report_id: reportId,
+        subset: resolvedSubset,
+        ...(tickets ? { tickets } : {}),
+        run_id: result.run_id,
+      },
       [],
     );
     return { ok: true, run_id: result.run_id };
