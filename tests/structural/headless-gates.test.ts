@@ -21,16 +21,13 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { listSkillDirs, relPath } from '../helpers/vault.js';
 
-// Skills with a real interactive gate deliberately left to a follow-up wave —
-// same gate class as the in-scope nine but NOT in this change's scope. Add
-// SPARINGLY, with a reason, and burn down. The companion assertion below fails
-// if any listed skill stops being a genuine carrier, so a stale exception can
-// never silently pre-exempt a future gate.
-const GATE_EXCEPTIONS = new Set<string>([
-  // Pattern-5 carriers scheduled for the next headless-policy wave.
-  'meta-add-schedule',
-  'meta-add-app',
-]);
+// Skills with a real interactive gate deliberately left to a follow-up wave.
+// Empty since headless-gate policies landed on meta-add-schedule (overwrite
+// gate) and meta-add-app (standalone-justification gate) — the invariant is now
+// enforced repo-wide. Add SPARINGLY, with a reason, and burn down. The
+// companion assertion below fails if any listed skill stops being a genuine
+// carrier, so a stale exception can never silently pre-exempt a future gate.
+const GATE_EXCEPTIONS = new Set<string>([]);
 
 // A line carries a *positive* interactive-tool mention when it names a tool AND
 // is not the "Do NOT use …" negation the standard uses to document headlessness.

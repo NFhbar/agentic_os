@@ -60,6 +60,10 @@ tick (`scripts/scheduler-tick.mjs`) picks it up on the next minute and fires
    `/os add-domain` first.
 4. Target path: `vault/wiki/<input.domain>/runbook/<input.name>.md`.
    If it already exists, AskUserQuestion: overwrite, rename, or abort? Default abort.
+   `Headless: refuse` — formalizes that default: abort (never overwrite a runbook in a
+   headless run) — print `⊘ Runbook <name> already exists in <domain> — aborting in a headless run`,
+   name the remedy (re-dispatch with a different `name`, or delete the existing runbook
+   first), and stop with no side effects.
 5. Read `_templates/wiki-entry/runbook.md.tmpl`.
 6. Substitute Mustache placeholders:
    - `{{slug}}` → input.name
@@ -98,7 +102,7 @@ tick (`scripts/scheduler-tick.mjs`) picks it up on the next minute and fires
 - Invalid name → reject with reason
 - Invalid cron (not 5 fields) → reject with example: `"0 9 * * *"`
 - Domain does not exist → suggest `/os add-domain <domain>` first
-- Target file exists → ask before overwriting
+- Target file exists → ask before overwriting. `Headless: refuse` — abort, never overwrite a runbook in a headless run (`⊘ Runbook <name> already exists`)
 - Missing template → OS templates broken, report and stop
 
 ## See also

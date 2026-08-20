@@ -86,7 +86,7 @@ Otherwise infer:
 
 If a wiki entry at `vault/wiki/development/entity/<slug>.md` already exists AND `overwrite=false`, abort with: "entity `<slug>` already exists — pass `overwrite: true` to re-ingest, or use a different `slug`."
 
-If it exists AND `overwrite=true`, **read the existing entry first** and retain its `created`, `current_branch`, and any user-added tags (tags not in the derived `[repo, <language>, <ci>]` set). These are agent state, not derived from the repo — re-ingestion must preserve them (see [[standard-repo-ingestion]] § Re-ingestion). Only `ingested_at` / `updated` and repo-derived fields get refreshed.
+If it exists AND `overwrite=true`, **read the existing entry first** and retain its `created`, `current_branch`, its fork-mode fields (`sync_policy` / `upstream_reviewed_sha`, when present), and any user-added tags (tags not in the derived `[repo, <language>, <ci>]` set). These are agent / operator state, not derived from the repo — re-ingestion must preserve them (see [[standard-repo-ingestion]] § Re-ingestion). Only `ingested_at` / `updated` and repo-derived fields get refreshed.
 
 ### 3. Clone or reference
 
@@ -163,7 +163,7 @@ Identify likely **entry points** (best-effort, language-aware):
 
 Use `_templates/wiki-entry/entity.md.tmpl` as the base. Substitute placeholders and fill the body sections below. Final file path: `vault/wiki/development/entity/<slug>.md`.
 
-**On re-ingestion (`overwrite=true`):** carry forward the preserved fields from the existing entry read in step 2 — keep its original `created` (do not stamp a fresh datetime), its `current_branch` (from step 4), and merge any user-added tags (those beyond the derived `[repo, <language>, <ci>]` set) back into the `tags` array. Only `updated`, `ingested_at`, and repo-derived fields (`default_branch`, `language`, `build_command`, `test_command`, `ci`, `license`, structure/entry-points) are refreshed.
+**On re-ingestion (`overwrite=true`):** carry forward the preserved fields from the existing entry read in step 2 — keep its original `created` (do not stamp a fresh datetime), its `current_branch` (from step 4), its fork-mode fields (`sync_policy` / `upstream_reviewed_sha` — operator-set, never derived here; see [[archetype-entity]] § Fork-mode sync), and merge any user-added tags (those beyond the derived `[repo, <language>, <ci>]` set) back into the `tags` array. Only `updated`, `ingested_at`, and repo-derived fields (`default_branch`, `language`, `build_command`, `test_command`, `ci`, `license`, structure/entry-points) are refreshed.
 
 ````markdown
 ---

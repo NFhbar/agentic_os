@@ -23,6 +23,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { EXPECTED_COLUMNS as EVENTS_DB_EXPECTED_COLUMNS } from './events-db-init.mjs';
 import { RUNS_EXPECTED_COLUMNS, RUN_ORIGINS } from './runs-db-init.mjs';
+import { ARGS_JSON_TYPE_SQL, tallyUnattributed } from './audit-attribution-scope.mjs';
+import { classifyGitSync } from './audit-git-sync.mjs';
 import { classifyRunsOrigin } from './audit-runs-origin.mjs';
 import {
   CHANGE_SCOPED_SKILLS,
@@ -1586,6 +1588,10 @@ function checkPrReviewCacheOrphans() {
 // the Activity tab shows empty state even though work happened. Surface
 // untagged rows so we know to patch the writer (or extend
 // scripts/extract-event-attribution.mjs).
+//
+// Rows that carry no attribution by construction (router/route + ai-prompt
+// envelopes, explicit-null args) are out of scope — tallyUnattributed owns
+// that vocabulary; see audit-attribution-scope.mjs for why.
 function checkEventAttribution() {
   const findings = [];
   if (!existsSync(EVENTS_DB_PATH)) return findings;
@@ -1593,16 +1599,15 @@ function checkEventAttribution() {
   try {
     const db = new DatabaseSync(EVENTS_DB_PATH);
     const placeholders = [...CHANGE_SCOPED_SKILLS].map(() => '?').join(', ');
-    untagged = db
+    const rows = db
       .prepare(`
-        SELECT skill, COUNT(*) AS n
+        SELECT skill, kind, action, ${ARGS_JSON_TYPE_SQL}
         FROM events
         WHERE skill IN (${placeholders})
           AND change_id IS NULL
-        GROUP BY skill
-        ORDER BY n DESC
       `)
       .all(...CHANGE_SCOPED_SKILLS);
+    untagged = tallyUnattributed(rows);
     db.close();
   } catch {
     // checkEventsDb surfaces readability problems; don't double-report here.
@@ -1870,6 +1875,12 @@ function checkEventsDbFreshness() {
 // they diverge, the local clone is stale (or ahead) — flag it so the user
 // can pull. Skips entities without `remote_url` (e.g. the self-pointing
 // agentic-os entity).
+//
+// `sync_policy: fork` entities are read differently: the divergence is
+// intentional, so the question is whether origin has moved past the
+// `upstream_reviewed_sha` stamp. classifyGitSync owns that branch (and the
+// never-suggest-merge hint); we map its decision kinds to finding ids here so
+// the audit check-id scanners — which read only audit.mjs — stay in sync.
 function checkGitSyncGap() {
   const findings = [];
   const entityDir = join(REPO_ROOT, 'vault', 'wiki', 'development', 'entity');
@@ -1900,14 +1911,34 @@ function checkGitSyncGap() {
     if (remote.status !== 0) continue;
     const localSha = local.stdout.trim();
     const remoteSha = (remote.stdout.split(/\s+/)[0] || '').trim();
-    if (!localSha || !remoteSha || localSha === remoteSha) continue;
-    findings.push({
-      id: 'git-sync-gap',
-      severity: 'info',
-      path: relative(REPO_ROOT, file),
-      message: `Local ${branch} (${localSha.slice(0, 7)}) diverges from origin/${branch} (${remoteSha.slice(0, 7)}) for repo "${fm.id}".`,
-      hint: `Run: git -C ${fm.local_path} checkout ${branch} && git pull --ff-only origin ${branch}`,
+    const decisions = classifyGitSync({
+      repoId: fm.id,
+      branch,
+      localPath: fm.local_path,
+      localSha,
+      remoteSha,
+      syncPolicy: fm.sync_policy ?? null,
+      reviewedSha: fm.upstream_reviewed_sha ?? null,
     });
+    for (const d of decisions) {
+      if (d.kind === 'upstream-unreviewed') {
+        findings.push({
+          id: 'git-upstream-unreviewed',
+          severity: d.severity,
+          path: relative(REPO_ROOT, file),
+          message: d.message,
+          hint: d.hint,
+        });
+      } else {
+        findings.push({
+          id: 'git-sync-gap',
+          severity: d.severity,
+          path: relative(REPO_ROOT, file),
+          message: d.message,
+          hint: d.hint,
+        });
+      }
+    }
   }
   return findings;
 }
@@ -2071,16 +2102,15 @@ function checkProjectAttribution() {
   try {
     const db = new DatabaseSync(EVENTS_DB_PATH);
     const placeholders = [...PROJECT_SCOPED_SKILLS].map(() => '?').join(', ');
-    untagged = db
+    const rows = db
       .prepare(`
-        SELECT skill, COUNT(*) AS n
+        SELECT skill, kind, action, ${ARGS_JSON_TYPE_SQL}
         FROM events
         WHERE skill IN (${placeholders})
           AND project IS NULL
-        GROUP BY skill
-        ORDER BY n DESC
       `)
       .all(...PROJECT_SCOPED_SKILLS);
+    untagged = tallyUnattributed(rows);
     db.close();
   } catch {
     return findings;
@@ -2663,16 +2693,15 @@ function checkReportAttribution() {
       return findings;
     }
     const placeholders = [...REPORT_SCOPED_SKILLS].map(() => '?').join(', ');
-    untagged = db
+    const rows = db
       .prepare(`
-        SELECT skill, COUNT(*) AS n
+        SELECT skill, kind, action, ${ARGS_JSON_TYPE_SQL}
         FROM events
         WHERE skill IN (${placeholders})
           AND report_id IS NULL
-        GROUP BY skill
-        ORDER BY n DESC
       `)
       .all(...REPORT_SCOPED_SKILLS);
+    untagged = tallyUnattributed(rows);
     db.close();
   } catch {
     return findings;
