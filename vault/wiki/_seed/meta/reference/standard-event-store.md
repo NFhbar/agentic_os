@@ -187,6 +187,8 @@ Every writer above must populate `change_id`, `project`, and `domain` on its eve
 
 **Contract:** events whose `skill` is in `CHANGE_SCOPED_SKILLS` (`dev-add-change`, `dev-write-change`, `dev-review-change`, `dev-open-pr`, `dev-close-change`, `dev-pr-review`, `dev-address-comments`) MUST have `change_id` set. Events whose `skill` is in `REPORT_SCOPED_SKILLS` (`research-write`, `research-review`, `research-revise`, `research-update`, `research-scaffold-recommendations`) MUST have `report_id` set. The audit checks `events-skill-attribution-missing` and `events-report-attribution-missing` enforce these — surfacing untagged rows so a missed writer doesn't silently empty the Changes / Research views' Activity tabs.
 
+**Out of scope (never flagged):** rows that carry no attribution by construction — `ai-prompt` dispatch envelopes and `router` / `route` rows (whose `skill` is inferred from the prompt or intent, often before the entity even exists), plus rows whose `args` were explicitly recorded as `null` (nothing for the helpers to lift). Flagging those would produce perpetual action items nobody can clear. The vocabulary lives in `scripts/audit-attribution-scope.mjs` and applies to all three checks.
+
 When adding a new `recordEvent` call site: import the appropriate helper, pass the result through to the event payload. When adding a new change-scoped skill: append it to `CHANGE_SCOPED_SKILLS` so the audit knows to enforce attribution.
 
 Retroactive cleanup uses `scripts/events-db-tag-changes.mjs`, which replays the JSONL audit logs through the same helper and updates events.db rows that were written before a writer was patched. Idempotent; `--dry-run` for preview.

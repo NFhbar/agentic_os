@@ -207,9 +207,9 @@ Use when there's an explicit reason the app can't live inside the dashboard. The
 
 ### Procedure
 
-1. **Require justification.** Reject the request unless the user has provided a clear reason in `inputs.description`. The reason MUST be one of: different auth boundary, GPU-bound runtime, cross-machine bridge, mobile-first PWA, or a free-form explanation. Surface the question explicitly via AskUserQuestion if not provided.
+1. **Require justification.** Reject the request unless the user has provided a clear reason in `inputs.description`. The reason MUST be one of: different auth boundary, GPU-bound runtime, cross-machine bridge, mobile-first PWA, or a free-form explanation. Surface the question explicitly via AskUserQuestion if not provided. `Headless: default(module shape)` — an unjustified request does not qualify for standalone (the justification is the qualification, per § Standalone shape), so fall back to the documented default: run the **module-shape** procedure above instead, record `"shape":"module","standalone_downgraded":true` in the step-10 audit-event args, and say so in the run report — the operator re-dispatches with `shape: standalone` plus a `description` when the reason is real.
 2. Validate inputs. Verify `domains/<input.domain>/` exists.
-3. Target: `domains/<input.domain>/<input.app_name>/app/`. If it exists, ask before overwriting.
+3. Target: `domains/<input.domain>/<input.app_name>/app/`. If it exists, ask before overwriting. `Headless: refuse` — abort, never overwrite an existing app in a headless run (`⊘ App <app_name> already exists`), matching the module shape's step 3.
 4. Walk `_templates/app/` recursively. For each file:
    - Read content
    - Substitute placeholders: `{{domain}}`, `{{app_name}}`, `{{display_name}}`, `{{datetime}}`
@@ -246,7 +246,7 @@ Use when there's an explicit reason the app can't live inside the dashboard. The
 - Domain missing → suggest `/os add-domain` first
 - App name collision → abort, don't overwrite
 - For module: `shared/` design system not present → abort with install hint
-- For standalone: justification not provided → AskUserQuestion to collect it (don't proceed without)
+- For standalone: justification not provided → AskUserQuestion to collect it (don't proceed without). `Headless: default(module shape)` — never scaffold an unjustified standalone app in a headless run; scaffold the module shape instead and record the downgrade (see Standalone shape § Procedure step 1)
 - For standalone: `npm install` fails → keep scaffold, report error
 - For standalone: port conflict → pick the next available port automatically
 
