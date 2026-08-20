@@ -6,11 +6,33 @@
 // sweepDeadRuns() on boot + a periodic interval as the fallback for installs
 // without the scheduler. Both paths converge on runs-finalize.mjs, so a dead
 // run is always finalized from its journal evidence rather than blanket-
-// marked failed.
+// marked failed. Both paths also stamp a supervision heartbeat, which is what
+// lets the audit notice that supervision itself has died.
+//
+// NOTE: no top-level runs-db / dispatch-claude imports — runs-db pulls
+// node:sqlite, which vitest's resolver cannot load, and the decision logic
+// here (PID ownership, the kill ladder, the heartbeat merge) is unit-tested.
+// resolveDeps() imports them lazily; callers may inject the whole set instead,
+// which skips the imports altogether. Same pattern as runs-finalize.mjs.
 
-import { resolveWallTimeCapMs } from './dispatch-claude.mjs';
-import { finalizeDeadRun } from './runs-finalize.mjs';
-import { finishRun, listActiveRuns, setRunError } from './runs-db.mjs';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = join(__dirname, '..');
+
+// A child spawns within moments of its row being written. Anything born more
+// than this after the row's started_at cannot be that child — the number was
+// recycled by the OS onto somebody else's process.
+export const PID_OWNERSHIP_GRACE_MS = 5 * 60 * 1000;
+
+export const HEARTBEAT_PATH = join(REPO_ROOT, '.claude', 'state', 'supervision-heartbeat.json');
+
+// ---------------------------------------------------------------------------
+// PID ownership — a live PID is not evidence the run's child is alive.
+// ---------------------------------------------------------------------------
 
 function isPidAlive(pid) {
   if (!pid) return false;
@@ -22,17 +44,144 @@ function isPidAlive(pid) {
   }
 }
 
+// `ps -o etime=` elapsed time: [[DD-]HH:]MM:SS. Returns ms, or null when the
+// field doesn't match (busybox variants pad differently on some builds).
+export function parseEtimeMs(etime) {
+  const m = /^(?:(\d+)-)?(?:(\d+):)?(\d{1,2}):(\d{2})$/.exec(String(etime ?? '').trim());
+  if (!m) return null;
+  const days = Number(m[1] ?? 0);
+  const hours = Number(m[2] ?? 0);
+  const minutes = Number(m[3]);
+  const seconds = Number(m[4]);
+  return ((days * 24 + hours) * 60 + minutes) * 60000 + seconds * 1000;
+}
+
+function ps(args) {
+  // LC_ALL=C pins lstart's month/day names to the English form Date.parse
+  // accepts — a French/German locale would otherwise produce an unparseable
+  // string and silently degrade every ownership read.
+  const r = spawnSync('ps', args, { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } });
+  if (r.error || r.status !== 0) return null;
+  const out = (r.stdout ?? '').trim();
+  return out || null;
+}
+
+// Process start time in epoch ms, or null when the read is degraded (no ps,
+// ps failed, the process already exited, unparseable output).
+//
+// Two probes because the `ps` implementations we run on print different
+// things: darwin + procps(linux) both support `lstart` (an absolute local
+// timestamp Date.parse handles, e.g. "Thu Aug 20 13:37:16 2026"); the
+// busybox/toybox builds that appear in slim containers do not, and `etime`
+// (elapsed) is the only start signal they expose.
+export function readProcStartMs(pid, nowMs = Date.now()) {
+  const lstart = ps(['-o', 'lstart=', '-p', String(pid)]);
+  const parsed = lstart ? Date.parse(lstart) : NaN;
+  if (Number.isFinite(parsed)) return parsed;
+  const elapsedMs = parseEtimeMs(ps(['-o', 'etime=', '-p', String(pid)]));
+  return elapsedMs === null ? null : nowMs - elapsedMs;
+}
+
+// Pure half of the ownership decision. Degraded reads stay conservative:
+// assume the PID is ours. Signalling our own child a pass late is
+// recoverable; SIGTERMing a stranger that inherited the number is not.
+export function ownsPid({ procStartMs, runStartedMs, graceMs = PID_OWNERSHIP_GRACE_MS }) {
+  if (procStartMs === null || procStartMs === undefined) return true;
+  if (!Number.isFinite(procStartMs) || !Number.isFinite(runStartedMs)) return true;
+  return procStartMs <= runStartedMs + graceMs;
+}
+
+// Does the live process behind `pid` belong to the run that started at
+// `startedAt`? False means the number was recycled — the run's own child is
+// gone, so the row gets finalized and NO signal is sent.
+export function pidBelongsToRun(pid, startedAt, deps = {}) {
+  const nowMs = (deps.now ?? Date.now)();
+  const read = deps.readProcStartMs ?? readProcStartMs;
+  return ownsPid({
+    procStartMs: read(pid, nowMs),
+    runStartedMs: startedAt ? Date.parse(startedAt) : NaN,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Supervision heartbeat — who watches the watchers.
+// ---------------------------------------------------------------------------
+
+// Merge `{ <source>: <ISO now> }` into .claude/state/supervision-heartbeat.json.
+// Every supervision host stamps its own source ('scheduler-tick', 'api-server')
+// after a completed pass; audit.mjs's supervision-stale check reads the file
+// and flags a source that has gone quiet past its window. A corrupt or
+// non-object file is rebuilt from scratch rather than propagated — a broken
+// heartbeat must not be able to break supervision.
+export function stampSupervisionHeartbeat(source, { path = HEARTBEAT_PATH, now = Date.now } = {}) {
+  let state = {};
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) state = parsed;
+  } catch {
+    /* missing or unparseable — rebuild */
+  }
+  state[source] = new Date(now()).toISOString();
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(state, null, 2) + '\n');
+  return state;
+}
+
+// ---------------------------------------------------------------------------
+// Dependency resolution.
+// ---------------------------------------------------------------------------
+
+const RUNTIME_DEP_KEYS = [
+  'listActiveRuns',
+  'finishRun',
+  'setRunError',
+  'resolveWallTimeCapMs',
+  'finalizeDeadRun',
+];
+
+// Build the dependency set for one supervision pass. Callers that supply every
+// runtime key (tests) never touch the sqlite-backed modules; production callers
+// supply nothing and get the lazy imports.
+export async function resolveDeps(overrides = {}) {
+  const deps = {
+    isPidAlive,
+    readProcStartMs,
+    kill: (pid, signal) => process.kill(pid, signal),
+    now: () => Date.now(),
+    ...overrides,
+  };
+  if (RUNTIME_DEP_KEYS.every((k) => typeof deps[k] === 'function')) return deps;
+  const [db, dispatch, finalize] = await Promise.all([
+    import('./runs-db.mjs'),
+    import('./dispatch-claude.mjs'),
+    import('./runs-finalize.mjs'),
+  ]);
+  return {
+    listActiveRuns: db.listActiveRuns,
+    finishRun: db.finishRun,
+    setRunError: db.setRunError,
+    resolveWallTimeCapMs: dispatch.resolveWallTimeCapMs,
+    finalizeDeadRun: finalize.finalizeDeadRun,
+    ...deps,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Passes.
+// ---------------------------------------------------------------------------
+
 // Sweep dead runs. `mode`:
 //   - 'boot'     — also fails queued rows without a PID (the prior process
 //                  died before spawning; nothing will ever pick them up)
 //   - 'periodic' — leaves queued-without-PID rows alone (mid-spawn race)
 // Returns the number of rows finalized.
-export async function sweepDeadRuns(reason = 'PID not alive', mode = 'periodic') {
+export async function sweepDeadRuns(reason = 'PID not alive', mode = 'periodic', overrides) {
+  const deps = await resolveDeps(overrides);
   let swept = 0;
-  for (const row of listActiveRuns()) {
+  for (const row of deps.listActiveRuns()) {
     if (row.state === 'queued' || !row.pid) {
       if (mode === 'boot') {
-        finishRun(row.id, {
+        deps.finishRun(row.id, {
           state: 'failed',
           exit_status: null,
           duration_ms: null,
@@ -42,8 +191,19 @@ export async function sweepDeadRuns(reason = 'PID not alive', mode = 'periodic')
       }
       continue;
     }
-    if (isPidAlive(row.pid)) continue;
-    await finalizeDeadRun(row, { reason });
+    if (deps.isPidAlive(row.pid)) {
+      if (pidBelongsToRun(row.pid, row.started_at, deps)) continue;
+      // The number is alive but the process behind it was born long after the
+      // row — the OS recycled the PID onto a stranger. Our child is dead:
+      // finalize from journal evidence exactly as if the PID were gone, and
+      // send nothing.
+      await deps.finalizeDeadRun(row, {
+        reason: `${reason} — pid ${row.pid} was recycled onto another process`,
+      });
+      swept += 1;
+      continue;
+    }
+    await deps.finalizeDeadRun(row, { reason });
     swept += 1;
   }
   return swept;
@@ -54,21 +214,26 @@ export async function sweepDeadRuns(reason = 'PID not alive', mode = 'periodic')
 // dispatch-claude.mjs resolveWallTimeCapMs). SIGTERM on first breach
 // (marker written to the row's error column), SIGKILL escalation on the
 // next pass if the process is still alive. Returns counters for logging.
-export async function superviseRuns() {
-  const reaped = await sweepDeadRuns('supervisor: PID not alive', 'periodic');
+export async function superviseRuns(overrides) {
+  const deps = await resolveDeps(overrides);
+  const reaped = await sweepDeadRuns('supervisor: PID not alive', 'periodic', deps);
   let terminated = 0;
   let escalated = 0;
-  const now = Date.now();
-  for (const row of listActiveRuns()) {
-    if (row.state !== 'running' || !row.pid || !isPidAlive(row.pid)) continue;
+  const now = deps.now();
+  for (const row of deps.listActiveRuns()) {
+    if (row.state !== 'running' || !row.pid || !deps.isPidAlive(row.pid)) continue;
     const startedMs = row.started_at ? Date.parse(row.started_at) : NaN;
     if (!Number.isFinite(startedMs)) continue;
-    const capMs = await resolveWallTimeCapMs(row.skill ?? null);
+    // Defense in depth: the sweep above already finalized recycled-PID rows,
+    // but re-check before signalling. The kill ladder is the one place where
+    // being wrong costs somebody else their process.
+    if (!pidBelongsToRun(row.pid, row.started_at, deps)) continue;
+    const capMs = await deps.resolveWallTimeCapMs(row.skill ?? null);
     if (now - startedMs <= capMs) continue;
     if (row.error?.startsWith('killed:')) {
       // Already SIGTERM'd on a prior pass — escalate.
       try {
-        process.kill(row.pid, 'SIGKILL');
+        deps.kill(row.pid, 'SIGKILL');
         escalated += 1;
       } catch {
         /* died between checks — next sweep finalizes */
@@ -76,9 +241,9 @@ export async function superviseRuns() {
       continue;
     }
     const minutes = Math.floor(capMs / 60000);
-    setRunError(row.id, `killed: wall-time cap exceeded (${minutes}m)`);
+    deps.setRunError(row.id, `killed: wall-time cap exceeded (${minutes}m)`);
     try {
-      process.kill(row.pid, 'SIGTERM');
+      deps.kill(row.pid, 'SIGTERM');
       terminated += 1;
     } catch {
       /* died between checks — next sweep finalizes */

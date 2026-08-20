@@ -26,6 +26,8 @@ import { RUNS_EXPECTED_COLUMNS, RUN_ORIGINS } from './runs-db-init.mjs';
 import { ARGS_JSON_TYPE_SQL, tallyUnattributed } from './audit-attribution-scope.mjs';
 import { classifyGitSync } from './audit-git-sync.mjs';
 import { classifyRunsOrigin } from './audit-runs-origin.mjs';
+import { classifySupervisionStaleness } from './audit-supervision.mjs';
+import { HEARTBEAT_PATH as SUPERVISION_HEARTBEAT_PATH } from './runs-supervisor.mjs';
 import {
   CHANGE_SCOPED_SKILLS,
   PROJECT_SCOPED_SKILLS,
@@ -3727,6 +3729,72 @@ function checkStaleSkillLiterals(knownTargets) {
   return findings;
 }
 
+// ---------------------------------------------------------------------------
+// Supervision liveness — who watches the watchers.
+//
+// Run supervision (dead-run reaping + the wall-time kill ladder) is hosted by
+// the scheduler tick and the dashboard server; both stamp
+// .claude/state/supervision-heartbeat.json after a completed pass (see
+// stampSupervisionHeartbeat in scripts/runs-supervisor.mjs). When a host dies,
+// runs silently stop being finalized and overdue children are never killed —
+// invisible precisely when it matters. The staleness decision table lives in
+// scripts/audit-supervision.mjs so it's unit-testable without node:sqlite; the
+// finding id literal stays here for the audit-check-id scanners.
+// ---------------------------------------------------------------------------
+
+function countRunningRuns() {
+  if (!existsSync(EVENTS_DB_PATH)) return 0;
+  let db;
+  try {
+    db = new DatabaseSync(EVENTS_DB_PATH);
+  } catch {
+    return 0; // covered by events-db-readable
+  }
+  try {
+    return db.prepare("SELECT count(*) AS n FROM runs WHERE state = 'running'").get()?.n ?? 0;
+  } catch {
+    return 0; // runs table absent — covered by runs-db-schema-current
+  } finally {
+    db.close();
+  }
+}
+
+function checkSupervisionStale() {
+  const findings = [];
+  // Path comes from the writer (runs-supervisor.mjs) so the two can't drift.
+  const hbPath = SUPERVISION_HEARTBEAT_PATH;
+  const hbRel = relative(REPO_ROOT, hbPath);
+  // null means "no usable heartbeat" — missing file and corrupt file are the
+  // same signal here, and the next supervision pass rebuilds either one.
+  let heartbeat = null;
+  if (existsSync(hbPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(hbPath, 'utf8'));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) heartbeat = parsed;
+    } catch {
+      /* corrupt — stays null */
+    }
+  }
+  const decisions = classifySupervisionStaleness({
+    heartbeat,
+    nowMs: Date.now(),
+    runningRuns: countRunningRuns(),
+  });
+  for (const d of decisions) {
+    findings.push({
+      id: 'supervision-stale',
+      severity: d.severity,
+      path: hbRel,
+      message: d.message,
+      // `dedupe_key` — the message interpolates a drifting age + run count;
+      // the source is the stable identity of the finding (#424).
+      dedupe_key: d.source ?? d.kind,
+      hint: d.hint,
+    });
+  }
+  return findings;
+}
+
 function main() {
   const args = process.argv.slice(2);
   const json = args.includes('--json');
@@ -3837,6 +3905,8 @@ function main() {
   // and the last_transition timestamp.
   findings.push(...checkAutomationStuckRunning());
   findings.push(...checkAutomationStalePaused());
+  // Supervision liveness — the heartbeat both supervision hosts stamp.
+  findings.push(...checkSupervisionStale());
   // Audit-of-audit always runs (no section flag) — it's cheap (two file reads)
   // and the drift it catches is global to the audit registry, not scoped.
   findings.push(...checkAuditRegistry());
