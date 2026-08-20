@@ -75,6 +75,29 @@ export function rewriteFrontmatter(content: string, updates: Record<string, unkn
   return `---\n${out.join('\n')}\n---\n${body}`;
 }
 
+const FRONTMATTER_BLOCK = /^---\n[\s\S]*?\n---/;
+
+// Frontmatter-preservation guard for whole-file writes (POST /api/edit).
+// Editors can submit body-only content — a body-only client, or a human who
+// deleted the block in the textarea — and writing that verbatim silently
+// destroys the frontmatter, which orphans the entry from every typed listing:
+// the file is still on disk, but nothing that lists by archetype can see it.
+// So when the file on disk opens with a block and the incoming content does
+// not, re-attach the existing block with its `updated:` line bumped to now.
+// Content that already carries frontmatter passes through byte-for-byte — a
+// deliberate frontmatter edit is still the author's to make. A block with no
+// `updated:` line is preserved as-is rather than having one invented.
+//
+// Line-replace rather than rewriteFrontmatter(): the body comes from the
+// caller here, not from the source file, and an absent `updated:` must stay
+// absent (the rewriter appends missing keys).
+export function preserveFrontmatter(existing: string, incoming: string, nowIso: string): string {
+  if (FRONTMATTER_BLOCK.test(incoming)) return incoming;
+  const block = existing.match(FRONTMATTER_BLOCK);
+  if (!block) return incoming;
+  return `${block[0].replace(/^updated:[^\n]*$/m, `updated: ${nowIso}`)}\n${incoming}`;
+}
+
 // Drop top-level frontmatter keys entirely (whole line). Used for lifecycle
 // transitions that revert a state stamp (e.g. project reopen clearing
 // `completed_at`). Nested keys aren't supported — the existing surgical

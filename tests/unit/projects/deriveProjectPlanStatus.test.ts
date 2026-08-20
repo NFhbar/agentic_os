@@ -83,13 +83,22 @@ describe('deriveProjectPlanState', () => {
     expect(planStageId(s)).toBe('request-changes');
   });
 
-  it('approved, nothing scaffolded → drafted / approved (approved stage)', () => {
+  it('approved, nothing scaffolded and nothing owned → drafted / approved (approved stage)', () => {
     const s = deriveProjectPlanState(
       [makeReport({ status: 'reviewed', review_status: 'approved' })],
       [],
     );
     expect(s).toEqual({ plan_status: 'drafted', review_status: 'approved' });
     expect(planStageId(s)).toBe('approved');
+  });
+
+  it('approved, zero scaffolded recs but a live owned change → scaffolded / approved', () => {
+    const s = deriveProjectPlanState(
+      [makeReport({ status: 'reviewed', review_status: 'approved' })],
+      [makeChange('planning')],
+    );
+    expect(s).toEqual({ plan_status: 'scaffolded', review_status: 'approved' });
+    expect(planStageId(s)).toBe('scaffolded');
   });
 
   it('approved + scaffolded, no in-flight changes → scaffolded / approved', () => {
@@ -167,9 +176,34 @@ describe('deriveProjectPlanState', () => {
   });
 });
 
+// Materialization evidence is `scaffoldedRecs > 0 || liveOwnedChanges > 0` —
+// a plan materialized straight into change entries (zero scaffolded
+// recommendations) used to read "awaiting review" forever.
 describe('derivePostApprovalStage', () => {
-  it('zero scaffolded recommendations → drafted', () => {
+  it('zero scaffolded recommendations and no owned changes → drafted', () => {
     expect(derivePostApprovalStage(makeReport(), [])).toBe('drafted');
+  });
+
+  it('zero scaffolded recommendations + live owned changes → materialized', () => {
+    expect(derivePostApprovalStage(makeReport(), [makeChange('planning')])).toBe('scaffolded');
+    expect(
+      derivePostApprovalStage(makeReport(), [makeChange('planning'), makeChange('in-review')]),
+    ).toBe('active');
+  });
+
+  it('abandoned-only owned changes are not evidence → drafted', () => {
+    expect(derivePostApprovalStage(makeReport(), [makeChange('abandoned')])).toBe('drafted');
+    expect(
+      derivePostApprovalStage(makeReport(), [makeChange('abandoned'), makeChange('abandoned')]),
+    ).toBe('drafted');
+  });
+
+  it('scaffolded recs still count on their own, abandoned changes notwithstanding', () => {
+    expect(
+      derivePostApprovalStage(makeReport({ recommended_changes_scaffolded: 2 }), [
+        makeChange('abandoned'),
+      ]),
+    ).toBe('scaffolded');
   });
 });
 

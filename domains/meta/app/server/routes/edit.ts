@@ -1,10 +1,11 @@
-import { appendFile, mkdir, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import type { FastifyPluginAsync } from 'fastify';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { recordEvent } from '../../../../../scripts/events-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { extractFromPath } from '../../../../../scripts/extract-event-attribution.mjs';
+import { preserveFrontmatter } from '../frontmatter-rewrite.js';
 import { REPO_ROOT, safePath } from '../repo.js';
 
 // Paths the dashboard is allowed to write to directly (non-AI edits).
@@ -31,8 +32,17 @@ export const editRoutes: FastifyPluginAsync = async (fastify) => {
 
     const startedMs = Date.now();
     await mkdir(dirname(abs), { recursive: true });
-    await writeFile(abs, content, 'utf8');
+    // Read-before-write feeds the frontmatter-preservation guard: a body-only
+    // save must not delete the block the entry is listed by. See
+    // preserveFrontmatter in ../frontmatter-rewrite.ts.
+    let existing = '';
+    try {
+      existing = await readFile(abs, 'utf8');
+    } catch {
+      /* new file — nothing to preserve */
+    }
     const ts = new Date().toISOString();
+    await writeFile(abs, preserveFrontmatter(existing, content, ts), 'utf8');
 
     await mkdir(dirname(AUDIT_LOG), { recursive: true });
     await appendFile(

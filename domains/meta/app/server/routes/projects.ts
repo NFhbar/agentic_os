@@ -550,8 +550,9 @@ function deriveLifecycleStage(
 //   draft                     → { in-research, pending }
 //   reviewed + pending review → { drafted, pending }
 //   reviewed + request-changes→ { drafted, request-changes }
-//   approved, no scaffolded   → { drafted, approved }
-//   approved, scaffolded recs → { scaffolded|active, approved }
+//   approved, nothing yet     → { drafted, approved }
+//   approved, scaffolded recs
+//     or live owned changes   → { scaffolded|active, approved }
 // Pure derivers live in ../lib/lifecycle-state.ts — the single lifecycle
 // derivation module (project / change / report) — so unit tests can exercise
 // the transitions without the I/O-heavy projects.ts transitive graph.
