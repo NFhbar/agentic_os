@@ -314,6 +314,32 @@ function composeProjectStepDetail(
   return run_summary ? `${detail}; run summary: "${run_summary}"` : detail;
 }
 
+// An infrastructure death, as classified by scripts/model-error-policy.mjs's
+// classifyEnvironmentFailure. Structurally duplicated here rather than
+// imported: this module is the pure half and takes no dependencies, and the
+// .mjs classifier carries no type declarations. `signature` is the class name
+// (e.g. `session-limit`, `model-unavailable(credits)`); `reset_at` is the
+// moment the condition lifts, when the evidence carried one.
+export interface EnvironmentFailure {
+  signature: string;
+  reset_at?: string | null;
+}
+
+// Park reason for a run the environment killed. Distinct prefix from
+// `skill-failure` on purpose: park reasons are the substrate for per-skill
+// quality metrics, and a run that died because the session window closed or
+// the API refused traffic carries no information about the skill that was
+// running. Counting those against the skill is the pollution this prefix
+// exists to prevent. One line — park reasons serialize into single-line YAML.
+export function composeEnvFailureReason(
+  step: string | null,
+  env: EnvironmentFailure,
+  exit: number,
+): string {
+  const reset = env.reset_at ? ` (resets ${env.reset_at})` : '';
+  return `env-failure: ${step ?? '<unknown step>'} died on ${env.signature}${reset} — the environment, not the skill; exit ${exit}. Re-dispatch once it lifts`;
+}
+
 // Decide the next gesture given the change's current state + the outcome of
 // the most recent run. Pure function — no side effects, no I/O.
 export function decideNextChangeStep(args: {
@@ -346,10 +372,23 @@ export function decideNextChangeStep(args: {
   // summary line when available). Composed by the caller; lands verbatim in
   // the park reason.
   artifact_detail?: string | null;
+  // Environment classification for the run that just failed, computed by the
+  // caller from the run row's error column + journal tail. Non-null routes the
+  // failure park to `env-failure` instead of `skill-failure`. Null / omitted
+  // (including every non-failure path) keeps existing behavior.
+  env_failure?: EnvironmentFailure | null;
 }): ChangeAutomationDecision {
   // Failure → park. Captures both unexpected exit codes and the orphan-sweep
   // case (subprocess died with non-zero before writeback).
   if (args.last_exit !== 0) {
+    // Infrastructure deaths park under their own prefix — see
+    // composeEnvFailureReason for why the two must not be conflated.
+    if (args.env_failure?.signature) {
+      return {
+        action: 'park',
+        reason: composeEnvFailureReason(args.current_step, args.env_failure, args.last_exit),
+      };
+    }
     return {
       action: 'park',
       reason: `skill-failure: ${args.current_step ?? '<unknown step>'} exited ${args.last_exit}`,
@@ -454,7 +493,16 @@ export type ParkReconciliation =
 //                                 debounce/dirty-tree refusal that IS the
 //                                 operator's cue, within one poll
 // See standard-automation-loop § Park reconciliation.
-const AUTO_UNPARK_PREFIXES = ['skill-failure', 'skill-refused'] as const;
+//
+// `env-failure` sits alongside `skill-failure` because it is the same park
+// split by cause, not a new class of park: the run produced nothing either
+// way, and if the step later completes out-of-band both bars below still have
+// to hold before anything unparks. Leaving it out would silently strip
+// reconciliation from the exact runs that most often get re-driven by hand.
+//
+// Exported so the I/O layer's cheap pre-filter (which decides whether a change
+// is worth a git spawn) reads the same list rather than a hand-kept copy.
+export const AUTO_UNPARK_PREFIXES = ['skill-failure', 'skill-refused', 'env-failure'] as const;
 
 function stepRank(step: string | null): number {
   return (STEP_RANK as Record<string, number | undefined>)[step ?? ''] ?? 0;
@@ -586,4 +634,45 @@ export function composeDirtyTreeRefusal(
   const shown = dirtyFiles.slice(0, CAP).join(' · ');
   const extra = dirtyFiles.length > CAP ? ` · +${dirtyFiles.length - CAP} more` : '';
   return `dirty-tree: cannot dispatch ${step} — working tree at ${localPath} has ${dirtyFiles.length} uncommitted change(s): ${shown}${extra} — commit/stash/discard first (mirrors dev-write-change's own pre-branch abort)`;
+}
+
+// Companion to the clean-tree gate: is the clone on the branch this dispatch
+// needs? A tree-writing step run from the wrong branch is the same waste the
+// dirty-tree gate exists to prevent — dev-write-change verifies the checkout
+// and aborts, after a full run has already been paid for.
+//
+// Which branch is right depends on where the change is:
+//   - the change's own branch already exists → resumed work belongs on it
+//     (address-comments commits onto the open PR's branch; a second EXECUTE
+//     continues where the first stopped)
+//   - it doesn't exist yet → the branch is about to be cut, and it must be cut
+//     from the repo's default branch
+//
+// Fail-open on every unknown — a degraded git read, an entity with no
+// default_branch, a change with no branch configured. The gate may only refuse
+// on two known, unequal branch names.
+export function evaluateDispatchBranch(args: {
+  current_branch: string | null;
+  change_branch: string | null;
+  change_branch_exists: boolean;
+  default_branch: string | null;
+}): { refuse: false } | { refuse: true; expected: string } {
+  const { current_branch, change_branch, change_branch_exists, default_branch } = args;
+  if (!current_branch) return { refuse: false };
+  const expected = change_branch_exists && change_branch ? change_branch : default_branch;
+  if (!expected) return { refuse: false };
+  if (current_branch === expected) return { refuse: false };
+  return { refuse: true, expected };
+}
+
+// Single-line wrong-branch refusal. Same one-line constraint and same voice as
+// composeDirtyTreeRefusal — these two land in the same field and are read side
+// by side.
+export function composeBranchMismatchRefusal(
+  step: string,
+  localPath: string,
+  currentBranch: string,
+  expected: string,
+): string {
+  return `wrong-branch: cannot dispatch ${step} — clone at ${localPath} is on '${currentBranch}', expected '${expected}' — check out the expected branch first (mirrors dev-write-change's own pre-branch abort)`;
 }

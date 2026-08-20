@@ -16,6 +16,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   PID_OWNERSHIP_GRACE_MS,
+  QUEUED_REAP_GRACE_MS,
+  composeQueuedReapError,
+  decideQueuedReap,
   ownsPid,
   parseEtimeMs,
   stampSupervisionHeartbeat,
@@ -139,6 +142,123 @@ describe('sweepDeadRuns — recycled PIDs', () => {
     const { deps, finished } = fakeDeps([runningRow({ state: 'queued', pid: null })]);
     expect(await sweepDeadRuns('server restart: PID not alive', 'boot', deps)).toBe(1);
     expect(finished[0].error).toContain('never spawned');
+  });
+});
+
+// A run row is written BEFORE its child is spawned, because the per-change
+// concurrency gate reads rows. Anything that ends the dispatching process in
+// that window leaves a `queued` row with no pid — and nothing else can ever
+// clear it: no pid to watch die, no journal to finalize from, no process for
+// cancel to signal. The change's gate stays held and every later dispatch for
+// it is refused. This is the rule that frees it, and the three facts it turns
+// on: no pid, no journal, older than the grace window.
+describe('decideQueuedReap — the pid-less queued row', () => {
+  const OLD = QUEUED_REAP_GRACE_MS + 1;
+
+  it('pid-less, journal-less and past the grace window is reaped', () => {
+    expect(decideQueuedReap({ pid: null, journalExists: false, ageMs: OLD })).toEqual({
+      reap: true,
+      reason: 'never-spawned',
+    });
+  });
+
+  it('a young row is left alone — it may be milliseconds from its spawn', () => {
+    expect(decideQueuedReap({ pid: null, journalExists: false, ageMs: 1000 })).toEqual({
+      reap: false,
+      reason: 'within-grace',
+    });
+  });
+
+  it('exactly at the grace boundary is reapable; one millisecond short is not', () => {
+    expect(
+      decideQueuedReap({ pid: null, journalExists: false, ageMs: QUEUED_REAP_GRACE_MS }).reap,
+    ).toBe(true);
+    expect(
+      decideQueuedReap({ pid: null, journalExists: false, ageMs: QUEUED_REAP_GRACE_MS - 1 }).reap,
+    ).toBe(false);
+  });
+
+  it('a journal means a live orphan to adopt, never a row to reap', () => {
+    // The child re-parents to PID 1 and outlives its dispatcher. Bytes on disk
+    // prove it started; finalizing the row here would abandon a running run.
+    expect(decideQueuedReap({ pid: null, journalExists: true, ageMs: OLD })).toEqual({
+      reap: false,
+      reason: 'journal-exists',
+    });
+  });
+
+  it('a pid short-circuits everything — that row has a child to supervise', () => {
+    expect(decideQueuedReap({ pid: 4242, journalExists: false, ageMs: OLD })).toEqual({
+      reap: false,
+      reason: 'has-pid',
+    });
+  });
+
+  it('an unreadable age stays conservative while a grace window applies', () => {
+    expect(decideQueuedReap({ pid: null, journalExists: false, ageMs: Number.NaN })).toEqual({
+      reap: false,
+      reason: 'age-unknown',
+    });
+  });
+
+  it('a zero grace (boot: the dispatcher is provably gone) reaps regardless of age', () => {
+    expect(
+      decideQueuedReap({ pid: null, journalExists: false, ageMs: 0, graceMs: 0 }).reap,
+    ).toBe(true);
+    expect(
+      decideQueuedReap({ pid: null, journalExists: false, ageMs: Number.NaN, graceMs: 0 }).reap,
+    ).toBe(true);
+  });
+
+  it('but a zero grace still yields to a journal', () => {
+    expect(
+      decideQueuedReap({ pid: null, journalExists: true, ageMs: OLD, graceMs: 0 }).reason,
+    ).toBe('journal-exists');
+  });
+});
+
+describe('composeQueuedReapError', () => {
+  it('says nothing ran, in one line, with the age', () => {
+    const msg = composeQueuedReapError(5 * 60 * 1000);
+    expect(msg.startsWith('env-failure:')).toBe(true);
+    expect(msg).toContain('never spawned');
+    expect(msg).toContain('5m');
+    expect(msg).toContain('Nothing ran');
+    expect(msg.includes('\n')).toBe(false);
+  });
+
+  it('degrades honestly when the row carries no readable age', () => {
+    expect(composeQueuedReapError(Number.NaN)).toContain('indefinitely');
+  });
+});
+
+describe('sweepDeadRuns — stranded queued rows', () => {
+  function queuedRow(over: Partial<Row> = {}): Row {
+    return { id: 'run-q', state: 'queued', pid: null, started_at: RUN_START, error: null, ...over };
+  }
+
+  it('reaps a pid-less journal-less queued row once it is past the grace window', async () => {
+    // fakeDeps' clock sits one hour past the row.
+    const { deps, finished } = fakeDeps([queuedRow()], { journalExists: () => false });
+    expect(await sweepDeadRuns('supervisor: PID not alive', 'periodic', deps)).toBe(1);
+    expect(finished).toHaveLength(1);
+    expect(finished[0].error).toContain('never spawned');
+  });
+
+  it('leaves a young queued row for the next pass', async () => {
+    const { deps, finished } = fakeDeps([queuedRow()], {
+      journalExists: () => false,
+      now: () => RUN_START_MS + 1000,
+    });
+    expect(await sweepDeadRuns('supervisor: PID not alive', 'periodic', deps)).toBe(0);
+    expect(finished).toEqual([]);
+  });
+
+  it('leaves a queued row whose child is already writing a journal', async () => {
+    const { deps, finished, finalized } = fakeDeps([queuedRow()], { journalExists: () => true });
+    expect(await sweepDeadRuns('supervisor: PID not alive', 'periodic', deps)).toBe(0);
+    expect(finished).toEqual([]);
+    expect(finalized).toEqual([]);
   });
 });
 

@@ -70,6 +70,135 @@ export const MODEL_UNAVAILABILITY_PATTERNS = [
   ['rate-limit', /rate.?limit|\b429\b|overloaded_error|overloaded/i],
 ];
 
+// ---------------------------------------------------------------------------
+// Environment failures — the host died, not the skill.
+// ---------------------------------------------------------------------------
+//
+// The classes above name a MODEL the run could not reach. These name a HOST
+// condition that kills any run on any model: the account's session window
+// closing, or the API refusing traffic it cannot serve. Kept in a SEPARATE
+// table on purpose — the fallback hook reads MODEL_UNAVAILABILITY_PATTERNS and
+// re-dispatches on another model, which cures neither of these and would just
+// buy a second death.
+//
+// FIRST-MATCH-WINS, case-insensitive, same as the table above.
+export const ENV_FAILURE_PATTERNS = [
+  [
+    'session-limit',
+    /(?:hit|reached|exceeded)[^\n]{0,30}\b(?:session|usage)\s+limit|\b(?:session|usage)\s+limit\s+(?:reached|hit)/i,
+  ],
+  // `overloaded` on its own is the operative word in every shape of this one
+  // (the API's own `overloaded_error` type, the CLI's "API Error 529
+  // {"type":"overloaded_error"…}" echo). The bare-number arms cover the
+  // shapes that print the status without the word; both anchor the 529 to
+  // error/status wording so a digit sequence inside a sha or a token count
+  // cannot masquerade as one.
+  ['api-overloaded', /overloaded_error|\boverloaded\b|api error[^\n]{0,8}\b529\b|\bhttp[ /]?529\b/i],
+];
+
+// Reset-time probes for the session-limit banner, in preference order. The
+// banner carries the moment the window reopens — the single most actionable
+// fact in the whole message, and the reason this classifier bothers to parse
+// rather than just name the class. Absent in some phrasings; null then.
+const SESSION_RESET_PATTERNS = [
+  /\breset(?:s|ting)?\s+at\s+([^\n.;]{1,40})/i,
+  /\b(?:try|available)\s+again\s+at\s+([^\n.;]{1,40})/i,
+  /\bresets?\s+(?:in\s+)?(\d{1,2}\s*(?:h|hr|hours?|m|min|minutes?)[^\n.;]{0,20})/i,
+];
+
+// Drop closing brackets the capture picked up without their opener — a banner
+// phrased "(resets at 3pm)" ends the capture on a paren that belongs to the
+// sentence, not the time. Balanced pairs are kept: "4pm (UTC)" must not be
+// truncated to "4pm (UTC".
+function trimUnbalancedClose(text) {
+  let out = text;
+  for (const [open, close] of [
+    ['(', ')'],
+    ['[', ']'],
+  ]) {
+    let opens = out.split(open).length - 1;
+    let closes = out.split(close).length - 1;
+    while (closes > opens && out.endsWith(close)) {
+      out = out.slice(0, -1).trimEnd();
+      closes -= 1;
+      opens = out.split(open).length - 1;
+    }
+  }
+  return out;
+}
+
+// One line, no control characters, bounded length — every consumer of this
+// string is a single-line YAML park reason.
+function sanitizeOneLine(value, cap = 60) {
+  const flat = trimUnbalancedClose(String(value).replace(/\s+/g, ' ').trim());
+  if (flat === '') return null;
+  return flat.length > cap ? `${flat.slice(0, cap)}…` : flat;
+}
+
+// Pull the reset time out of a session-limit banner. Null when the banner
+// doesn't carry one — a missing reset time is not a reason to withhold the
+// classification.
+export function extractSessionResetTime(text) {
+  if (typeof text !== 'string' || text === '') return null;
+  for (const re of SESSION_RESET_PATTERNS) {
+    const m = re.exec(text);
+    if (m) {
+      const cleaned = sanitizeOneLine(m[1]);
+      if (cleaned) return cleaned;
+    }
+  }
+  return null;
+}
+
+// A structured availability line already written onto a run's `error` column by
+// the terminal path (composeModelUnavailableError). Reading it back beats
+// re-classifying free text: the row's error is the verdict the finalize path
+// reached with the full evidence in hand.
+const STRUCTURED_MODEL_UNAVAILABLE = /model-unavailable\(([a-z-]+)\)/i;
+
+// Free-text environment classification. Returns `{ signature, reset_at }` or
+// null (= not an environment death; ordinary failure handling applies).
+export function classifyEnvironmentText(text) {
+  if (typeof text !== 'string' || text === '') return null;
+  for (const [signature, re] of ENV_FAILURE_PATTERNS) {
+    if (!re.test(text)) continue;
+    return {
+      signature,
+      reset_at: signature === 'session-limit' ? extractSessionResetTime(text) : null,
+    };
+  }
+  return null;
+}
+
+// The environment-failure decision for one terminated run, as a PURE function
+// over the two pieces of evidence the caller gathers.
+//
+// `error` — the run row's error column — is consulted FIRST and on its own
+// terms: a `model-unavailable(<class>)` line there means the availability
+// classifier already ruled, with the full journal + stderr tails in hand, and
+// its verdict is reported verbatim rather than re-derived. Only when the error
+// column says nothing does the journal `tail` get scanned, and only for the
+// host conditions the availability table doesn't name.
+//
+// Returns null for an ordinary failure. Callers treat null as "the skill
+// failed on its own merits" — which is what park-reason analytics need it to
+// mean, since an infrastructure death says nothing about a skill's quality.
+export function classifyEnvironmentFailure({ error = null, tail = null } = {}) {
+  const structured =
+    typeof error === 'string' ? STRUCTURED_MODEL_UNAVAILABLE.exec(error) : null;
+  if (structured) {
+    return {
+      signature: `model-unavailable(${structured[1].toLowerCase()})`,
+      reset_at: extractSessionResetTime(error),
+    };
+  }
+  for (const text of [error, tail]) {
+    const hit = classifyEnvironmentText(text);
+    if (hit) return hit;
+  }
+  return null;
+}
+
 // Classify free text (journal tail, stderr tail, an error column) into one of
 // the four availability classes, or null.
 export function classifyModelUnavailability(text) {
@@ -173,6 +302,20 @@ export function classifyRunFailure(row) {
   const stderrPath = stderrSiblingPath(journal);
   const evidence = [readTail(journal), stderrPath ? readTail(stderrPath) : ''].join('\n');
   return classifyModelUnavailability(evidence);
+}
+
+// I/O wrapper around classifyEnvironmentFailure: gathers the evidence for one
+// run row (its own error column, then the journal + stderr tails) and returns
+// the pure verdict. Bounded reads, same tail cap as the availability path.
+// Any unreadable path contributes '' rather than throwing — a park decision
+// must never fail because a journal was evicted.
+export function classifyRunEnvironmentFailure(row) {
+  const journal = typeof row?.output_path === 'string' ? row.output_path : null;
+  const stderrPath = journal ? stderrSiblingPath(journal) : null;
+  const tail = journal
+    ? [readTail(journal), stderrPath ? readTail(stderrPath) : ''].join('\n')
+    : null;
+  return classifyEnvironmentFailure({ error: row?.error ?? null, tail });
 }
 
 // Terminal-path entry point: null when the run did not die on availability,
