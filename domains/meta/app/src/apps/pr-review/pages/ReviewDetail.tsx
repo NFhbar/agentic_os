@@ -2,12 +2,13 @@
 // Heaviest page in the prototype. Single-file port for now; can extract
 // sub-components if it gets unwieldy.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Rendered } from '../../../components/EditableMarkdown';
 import { useDispatch } from '../../../lib/dispatch';
 import {
   AgentChip,
+  AuthorChip,
   CodeLine,
   Empty,
   Icons,
@@ -25,8 +26,65 @@ import type {
   ReviewComment,
   ReviewDetail as ReviewDetailType,
   ReviewPass,
+  SnippetSource,
 } from '../data';
 import { Field } from './Repos';
+
+// ─── Thread model ────────────────────────────────────────────────────────
+// Replies carry an `in_reply_to` header naming their parent in one of two
+// vocabularies: a comment id of this entry (`pass-2-comment-3`) for parents
+// the OS itself published, or `github:<id>` for parents that only ever
+// existed on GitHub. Both have to resolve, because a thread is only useful
+// if it holds together across that boundary.
+
+interface ThreadIndex {
+  // Every comment across every pass, by its own id.
+  byId: Map<string, ReviewComment>;
+  // Resolve an `in_reply_to` value to the comment it names, or null.
+  resolve: (ref: string | undefined) => ReviewComment | null;
+  // Parents with at least one PUBLISHED reply — the answered set, which drives
+  // the checkmark. A drafted-but-unsent reply doesn't count here: the mark
+  // means "this person has heard back", and nobody has.
+  answered: Set<string>;
+  // Comments from other reviewers with no reply at all, drafted or sent.
+  //
+  // This asks a different question from the checkmark: not "have they heard
+  // back?" but "is there anything left to write?". Counting a drafted-but-
+  // unsent reply as still-unanswered would make every press of Draft response
+  // produce a second answer to the same comment.
+  unansweredExternal: ReviewComment[];
+}
+
+function isPublishedComment(c: ReviewComment): boolean {
+  return c.githubCommentId != null || c.status === 'published-as-body';
+}
+
+function buildThreadIndex(passes: ReviewPass[]): ThreadIndex {
+  const all = passes.flatMap((p) => p.comments);
+  const byId = new Map(all.map((c) => [c.id, c]));
+  const byGithubId = new Map<string, ReviewComment>();
+  for (const c of all) {
+    if (c.githubCommentId != null) byGithubId.set(`github:${c.githubCommentId}`, c);
+  }
+  const resolve = (ref: string | undefined): ReviewComment | null => {
+    if (!ref) return null;
+    return byId.get(ref) ?? byGithubId.get(ref) ?? null;
+  };
+  const answered = new Set<string>();
+  const repliedTo = new Set<string>();
+  for (const c of all) {
+    const parent = resolve(c.headers?.in_reply_to);
+    if (!parent) continue;
+    repliedTo.add(parent.id);
+    if (isPublishedComment(c)) answered.add(parent.id);
+  }
+  // A dismissed external comment is a decision, not an omission — the operator
+  // has said it needs no answer, so it shouldn't keep asking for one.
+  const unansweredExternal = all.filter(
+    (c) => c.agent === 'external' && !repliedTo.has(c.id) && c.state !== 'dismissed',
+  );
+  return { byId, resolve, answered, unansweredExternal };
+}
 
 export function ReviewDetail({
   detail,
@@ -37,6 +95,7 @@ export function ReviewDetail({
   onReimplement,
   onReReview,
   onMarkReady,
+  onDraftResponse,
   toast,
 }: {
   detail: ReviewDetailType;
@@ -46,7 +105,11 @@ export function ReviewDetail({
   // the github MCP inline here. After the run completes the parent refetches
   // /api/reviews and the new github_comment_id/github_review_id surface on
   // each comment card automatically.
-  onPublish: (passN: number) => void;
+  //
+  // `responseBody` is the operator's own words for the review body. It goes
+  // out byte-for-byte, so it travels as its own argument rather than being
+  // folded into prose the dispatcher composes.
+  onPublish: (passN: number, responseBody: string) => void;
   // Triggered when a reviewer asks for a re-analysis of a single comment.
   // The parent dispatches dev-pr-review with focus_notes scoped to that
   // comment; we don't run the model inline here.
@@ -69,6 +132,11 @@ export function ReviewDetail({
   // dev-mark-pr-ready against the linked change. Receives the change_id
   // (only renders when detail.linkedChange?.id is set).
   onMarkReady: (changeId: string) => void;
+  // Triggered by the "Draft response" button — parent dispatches the review
+  // skill in response mode so it answers the unanswered external comments
+  // instead of hunting for new findings. Receives the count purely so the
+  // dispatch title can name it.
+  onDraftResponse: (unansweredCount: number) => void;
   toast: (m: string) => void;
 }) {
   // Local copy of passes so we can mutate comment state + append new passes.
@@ -126,6 +194,13 @@ export function ReviewDetail({
   const [retriggering, setRetriggering] = useState(false);
   const [retrigProgress, setRetrigProgress] = useState(0);
   const [publishOpen, setPublishOpen] = useState(false);
+  // The operator's own words for the review body, posted byte-for-byte on
+  // publish. Lives on the page rather than inside the confirm dialog: writing
+  // it is composition, and composition wants room and a stable surface.
+  const [responseBody, setResponseBody] = useState('');
+  // Comment the reader jumped to via a reply's "re:" link. Cleared on a timer
+  // so the ring is a pointer, not a permanent decoration.
+  const [threadTargetId, setThreadTargetId] = useState<string | null>(null);
 
   // Live PR state from GitHub — fetched once on mount when there's a linked
   // change (OS-authored PRs). External-PR reviews (no change_id) skip this;
@@ -219,14 +294,35 @@ export function ReviewDetail({
     return [...m.entries()];
   }, [filtered]);
 
-  function updatePassComments(mutator: (cs: ReviewComment[]) => ReviewComment[]) {
-    setPasses((ps) =>
-      ps.map((p) => (p.id === currentPassId ? { ...p, comments: mutator(p.comments) } : p)),
-    );
-  }
-  function editMessage(id: string, message: string) {
-    updatePassComments((cs) => cs.map((c) => (c.id === id ? { ...c, message } : c)));
-  }
+  // Threads span passes — a reply written in pass 3 answers a comment ingested
+  // in pass 2 — so the index is built over every pass, not the visible one.
+  const thread = useMemo(() => buildThreadIndex(passes), [passes]);
+
+  // Jump to a comment named by a reply's parent ref. The parent frequently
+  // lives in a different pass, and may be hidden by the active filters, so
+  // both are reset before scrolling — landing on nothing would read as a
+  // broken link rather than a filtered view.
+  const jumpToComment = useCallback(
+    (target: ReviewComment) => {
+      const owningPass = passes.find((p) => p.comments.some((c) => c.id === target.id));
+      if (owningPass) setCurrentPassId(owningPass.id);
+      setSev('all');
+      setAgentFilter('all');
+      setStatusFilter('all');
+      setThreadTargetId(target.id);
+    },
+    [passes],
+  );
+
+  // Scroll + ring, once the target is actually on screen (it may have needed
+  // the pass switch above to render first).
+  useEffect(() => {
+    if (!threadTargetId) return;
+    const el = document.getElementById(`comment-${threadTargetId}`);
+    el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const t = setTimeout(() => setThreadTargetId(null), 2600);
+    return () => clearTimeout(t);
+  }, [threadTargetId]);
 
   // Parse a comment id like `pass-2-comment-3` into its passN / commentN pair
   // for the mutation endpoint. The id shape is set server-side by
@@ -235,6 +331,57 @@ export function ReviewDetail({
     const m = id.match(/^pass-(\d+)-comment-(\d+)$/);
     if (!m) return null;
     return { passN: Number(m[1]), commentN: Number(m[2]) };
+  }
+
+  // Fold a server response's passes back into local state, keeping the local
+  // ReviewPass fields the API doesn't carry (commit / duration / progress).
+  function absorbServerPasses(srvPasses: ReviewPass[]) {
+    setPasses((local) =>
+      srvPasses.map((srv) => {
+        const prior = local.find((p) => p.id === srv.id);
+        return prior ? { ...prior, ...srv, comments: srv.comments } : srv;
+      }),
+    );
+  }
+
+  // Persist an edited comment message. The entry is the file of record, so an
+  // edit that lives only in browser state is a lie the next reader inherits —
+  // this writes through and adopts whatever the server says came back.
+  async function editMessage(id: string, message: string): Promise<boolean> {
+    const parsed = parseCommentId(id);
+    if (!parsed) {
+      toast('This comment is not persistable (legacy mock data)');
+      return false;
+    }
+    setMutating(id);
+    try {
+      const url =
+        `/api/reviews/${encodeURIComponent(detail.id)}` +
+        `/comments/${parsed.passN}/${parsed.commentN}/message`;
+      const res = await fetch(url, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: message }),
+      });
+      if (!res.ok) {
+        const j = (await res.json().catch(() => null)) as { error?: string } | null;
+        toast(
+          res.status === 409
+            ? 'Published comments can’t be edited — reply instead'
+            : `Save failed${j?.error ? ` — ${j.error.slice(0, 80)}` : ''}`,
+        );
+        return false;
+      }
+      const j = (await res.json()) as { review: { passes: ReviewPass[] } };
+      absorbServerPasses(j.review.passes);
+      toast('Comment updated');
+      return true;
+    } catch (err) {
+      toast(`Save failed — ${(err as Error).message}`);
+      return false;
+    } finally {
+      setMutating(null);
+    }
   }
 
   async function mutateComment(
@@ -258,8 +405,12 @@ export function ReviewDetail({
         body: JSON.stringify({ action, note: note.trim() || null }),
       });
       if (!res.ok) {
-        const txt = await res.text().catch(() => '');
-        toast(`Save failed${txt ? ` — ${txt.slice(0, 80)}` : ''}`);
+        const j = (await res.json().catch(() => null)) as { error?: string } | null;
+        toast(
+          res.status === 409
+            ? 'Published comments can’t be re-triaged — reply instead'
+            : `Save failed${j?.error ? ` — ${j.error.slice(0, 80)}` : ''}`,
+        );
         return false;
       }
       const j = (await res.json()) as { review: { passes: ReviewPass[] } };
@@ -267,12 +418,7 @@ export function ReviewDetail({
       // source of truth for status/acceptNote/dismissReason; preserve local
       // ReviewPass commit/duration/recommendation fields the API doesn't carry
       // by overlaying onto current `passes`.
-      setPasses((local) =>
-        j.review.passes.map((srv) => {
-          const prior = local.find((p) => p.id === srv.id);
-          return prior ? { ...prior, ...srv, comments: srv.comments } : srv;
-        }),
-      );
+      absorbServerPasses(j.review.passes);
       toast(action === 'accept' ? 'Comment accepted' : 'Comment dismissed');
       return true;
     } catch (err) {
@@ -334,12 +480,7 @@ export function ReviewDetail({
         accepted: number;
         review: { passes: ReviewPass[] };
       };
-      setPasses((local) =>
-        j.review.passes.map((srv) => {
-          const prior = local.find((p) => p.id === srv.id);
-          return prior ? { ...prior, ...srv, comments: srv.comments } : srv;
-        }),
-      );
+      absorbServerPasses(j.review.passes);
       toast(`Accepted ${j.accepted} comment${j.accepted !== 1 ? 's' : ''}`);
     } catch (err) {
       toast(`Accept-all failed — ${(err as Error).message}`);
@@ -438,6 +579,18 @@ export function ReviewDetail({
           >
             <Icons.Refresh size={13} /> Pull comments
           </button>
+          {thread.unansweredExternal.length > 0 && (
+            <button
+              type="button"
+              className="btn"
+              onClick={() => onDraftResponse(thread.unansweredExternal.length)}
+              title={`Runs the review skill in response mode against the ${thread.unansweredExternal.length} external comment${
+                thread.unansweredExternal.length !== 1 ? 's' : ''
+              } that have no published reply yet. Response mode answers what was asked instead of hunting for new findings; each answer lands as a draft reply you triage and publish. Watch the drawer for live output.`}
+            >
+              <Icons.Sparkles size={13} /> Draft response ({thread.unansweredExternal.length})
+            </button>
+          )}
           <a className="btn" href={detail.url} target="_blank" rel="noreferrer">
             <Icons.External size={13} /> Open PR
           </a>
@@ -564,6 +717,12 @@ export function ReviewDetail({
 
       <ConfigSnapshotCard config={detail.config} />
 
+      <ResponseBodyCard
+        value={responseBody}
+        onChange={setResponseBody}
+        publishable={countPublishable(comments)}
+      />
+
       <div className="filter-row" style={{ marginTop: 18 }}>
         <div className="tabs">
           {(
@@ -674,6 +833,9 @@ export function ReviewDetail({
             mutating={mutating}
             prUrl={detail.url}
             reviewId={detail.id}
+            thread={thread}
+            threadTargetId={threadTargetId}
+            onJumpToComment={jumpToComment}
             onMutate={mutateComment}
             onReanalyze={onReanalyze}
             onEdit={editMessage}
@@ -686,10 +848,11 @@ export function ReviewDetail({
           detail={detail}
           pass={currentPass}
           comments={comments}
+          responseBody={responseBody}
           onClose={() => setPublishOpen(false)}
           onConfirm={() => {
             setPublishOpen(false);
-            onPublish(currentPass.n);
+            onPublish(currentPass.n, responseBody.trim());
           }}
         />
       )}
@@ -936,6 +1099,87 @@ function SummaryStat({
   );
 }
 
+// The review body the operator writes in their own voice. Two decisions worth
+// stating: it lives on the page rather than in the publish dialog, because
+// composing prose in a modal is a cramped way to write something other people
+// will read; and the label promises verbatim posting, because that is the
+// contract the publish path honours — no header, footer, count, or framing is
+// wrapped around these words.
+//
+// Hidden until there is something to publish, so a review nobody is shipping
+// doesn't carry an empty writing surface.
+function ResponseBodyCard({
+  value,
+  onChange,
+  publishable,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  publishable: number;
+}) {
+  const [open, setOpen] = useState(false);
+  if (publishable === 0 && value.trim() === '') return null;
+  const chars = value.trim().length;
+  return (
+    <div className="card" style={{ marginTop: 14, padding: '10px 14px' }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          width: '100%',
+          background: 'transparent',
+          border: 0,
+          padding: 0,
+          color: 'inherit',
+          cursor: 'pointer',
+          textAlign: 'left',
+        }}
+        aria-expanded={open}
+      >
+        <span
+          className="tiny"
+          style={{
+            fontSize: 10.5,
+            textTransform: 'uppercase',
+            letterSpacing: 0.4,
+            color: 'var(--muted)',
+            fontWeight: 600,
+          }}
+        >
+          Response body
+        </span>
+        <span className="tiny" style={{ color: 'var(--muted)' }}>
+          {chars === 0 ? 'empty — the review posts with comments only' : `${chars} characters`}
+        </span>
+        <span style={{ flex: 1 }} />
+        <span className="tiny" style={{ color: 'var(--text-3)', fontSize: 11 }} aria-hidden>
+          {open ? '▾' : '▸'}
+        </span>
+      </button>
+      {open && (
+        <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <textarea
+            className="textarea"
+            rows={6}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder="Your reply to the PR author, in your own words…"
+            style={{ fontSize: 12.5 }}
+          />
+          <div className="tiny" style={{ color: 'var(--muted)' }}>
+            Posted <strong>verbatim</strong> as the GitHub review body — byte for byte, with no
+            headers, footers, counts, or framing added around it. Leave it empty to publish the
+            accepted comments on their own.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FileGroup({
   file,
   items,
@@ -943,6 +1187,9 @@ function FileGroup({
   mutating,
   prUrl,
   reviewId,
+  thread,
+  threadTargetId,
+  onJumpToComment,
   onMutate,
   onReanalyze,
   onEdit,
@@ -957,9 +1204,14 @@ function FileGroup({
   // Review entry id — used by the per-comment SourceSnippet fetcher to
   // resolve the repo's local_path via /api/reviews/:id/snippet.
   reviewId: string;
+  // Cross-pass thread index — resolves parent refs and answers "does this
+  // comment already have a published reply?".
+  thread: ThreadIndex;
+  threadTargetId: string | null;
+  onJumpToComment: (target: ReviewComment) => void;
   onMutate: (id: string, action: 'accept' | 'dismiss', note: string) => Promise<boolean>;
   onReanalyze: (args: { passN: number; commentN: number; hint: string; file: string }) => void;
-  onEdit: (id: string, message: string) => void;
+  onEdit: (id: string, message: string) => Promise<boolean>;
 }) {
   const [open, setOpen] = useState(true);
   return (
@@ -1002,6 +1254,10 @@ function FileGroup({
             busy={mutating === c.id}
             prUrl={prUrl}
             reviewId={reviewId}
+            parent={thread.resolve(c.headers?.in_reply_to)}
+            answered={thread.answered.has(c.id)}
+            isThreadTarget={threadTargetId === c.id}
+            onJumpToComment={onJumpToComment}
             onMutate={(action, note) => onMutate(c.id, action, note)}
             onReanalyze={(hint) => {
               const m = c.id.match(/^pass-(\d+)-comment-(\d+)$/);
@@ -1337,11 +1593,14 @@ function ActionNoteForm({
   );
 }
 
-// SourceSnippet — fetches the actual source lines around a comment's
-// target line from the linked repo's local clone (via
-// /api/reviews/:id/snippet) and renders them with the focus line highlighted.
-// Falls back to a small hint when the file can't be resolved (e.g. the
-// local working tree is on a different branch).
+// SourceSnippet — fetches the source lines around a comment's target line
+// (via /api/reviews/:id/snippet) and renders them with the focus line
+// highlighted.
+//
+// The endpoint prefers the reviewed head commit, which is the only revision
+// whose line numbers match the comment's anchor. When it has to fall back to
+// a working tree it says so, and this component surfaces that rather than
+// letting possibly-shifted lines pass as the reviewed code.
 function SourceSnippet({
   reviewId,
   file,
@@ -1358,6 +1617,10 @@ function SourceSnippet({
         focus: number;
         file: string;
         totalLines: number;
+        source?: SnippetSource;
+        degraded?: boolean;
+        degradedReason?: string | null;
+        headSha?: string | null;
       }
     | { ok: false; error: string };
   const [data, setData] = useState<SnippetResp | null>(null);
@@ -1420,6 +1683,23 @@ function SourceSnippet({
   }
   return (
     <div className="code-body">
+      {data.degraded && (
+        <div
+          className="tiny"
+          style={{
+            padding: '4px 12px',
+            color: 'var(--warning-text)',
+            fontStyle: 'italic',
+          }}
+          title={
+            data.degradedReason ??
+            'Read from the local working tree instead of the reviewed commit.'
+          }
+        >
+          Not the reviewed commit — shown from the local working tree, so line numbers may have
+          shifted.
+        </div>
+      )}
       {data.lines.map((l) => (
         <CodeLine key={l.n} n={l.n} t={l.t} kind={l.kind} />
       ))}
@@ -1433,6 +1713,10 @@ function CommentCard({
   busy,
   prUrl,
   reviewId,
+  parent,
+  answered,
+  isThreadTarget,
+  onJumpToComment,
   onMutate,
   onReanalyze,
   onEdit,
@@ -1444,9 +1728,17 @@ function CommentCard({
   prUrl: string;
   // Review entry id — used by SourceSnippet to fetch source context.
   reviewId: string;
+  // The comment this one replies to, resolved from its `in_reply_to` header.
+  // Null when it isn't a reply, or when the parent isn't in this entry.
+  parent: ReviewComment | null;
+  // True when some published reply answers THIS comment.
+  answered: boolean;
+  // True while this card is the destination of a "re:" jump.
+  isThreadTarget: boolean;
+  onJumpToComment: (target: ReviewComment) => void;
   onMutate: (action: 'accept' | 'dismiss', note: string) => Promise<boolean>;
   onReanalyze: (hint: string) => void;
-  onEdit: (msg: string) => void;
+  onEdit: (msg: string) => Promise<boolean>;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(c.message);
@@ -1486,6 +1778,12 @@ function CommentCard({
     setHint('');
   }
 
+  // Published text is immutable — the record of what other people read must
+  // not change under them. The server enforces this (409); the disabled
+  // control is how the reader learns it before trying.
+  const published = c.githubCommentId != null || c.status === 'published-as-body';
+  const author = c.headers?.author;
+
   const opacity = c.state === 'dismissed' || c.passStatus === 'resolved' ? 0.78 : 1;
   const borderColor =
     c.passStatus === 'resolved'
@@ -1504,12 +1802,43 @@ function CommentCard({
     : {};
 
   return (
-    <div className="comment-card" style={{ opacity, ...borderStyle }}>
+    <div
+      id={`comment-${c.id}`}
+      className={`comment-card${isThreadTarget ? ' thread-target' : ''}`}
+      style={{ opacity, ...borderStyle }}
+    >
       <div className="comment-head">
         <span className={sevClass(c.severity)}>
           {sevIcon(c.severity, 11)} {sevLabel(c.severity)}
         </span>
         <AgentChip agent={c.agent} />
+        {author && <AuthorChip author={author} />}
+        {parent && (
+          <button
+            type="button"
+            className="thread-link"
+            onClick={() => onJumpToComment(parent)}
+            title={`Replies to ${parent.id}${parent.headers?.author ? ` by @${parent.headers.author}` : ''} — click to jump to it`}
+          >
+            re: {parent.headers?.author ? `@${parent.headers.author}` : parent.id}
+          </button>
+        )}
+        {answered && (
+          <span
+            className="badge success"
+            title="A reply to this comment has been published to GitHub."
+          >
+            <Icons.Check size={11} /> Answered
+          </span>
+        )}
+        {c.headers?.body_source === 'operator' && (
+          <span
+            className="badge"
+            title="You wrote this body, so it publishes byte-for-byte — no marker, no footer, no framing added around your words."
+          >
+            Your words · verbatim
+          </span>
+        )}
         <span className="comment-loc mono">
           {c.endLine != null ? `Line ${c.startLine}–${c.endLine}` : `Line ${c.startLine}`}
         </span>
@@ -1774,7 +2103,12 @@ function CommentCard({
                 type="button"
                 className="btn btn-sm btn-ghost"
                 onClick={() => setEditing(true)}
-                disabled={busy}
+                disabled={busy || published}
+                title={
+                  published
+                    ? 'Already on GitHub — published text is immutable. Post a reply to correct it.'
+                    : 'Rewrite this comment’s message. Saves to the review entry, so the change survives a reload and is what publish will send.'
+                }
               >
                 Edit message
               </button>
@@ -1796,16 +2130,31 @@ function CommentCard({
               <button
                 type="button"
                 className="btn btn-sm btn-primary"
-                onClick={() => {
-                  onEdit(draft);
-                  setEditing(false);
+                disabled={busy || draft.trim() === ''}
+                title={
+                  draft.trim() === ''
+                    ? 'A comment can’t be empty — clearing it would erase the finding rather than revise it.'
+                    : 'Write this message back to the review entry.'
+                }
+                onClick={async () => {
+                  // Stay in edit mode when the save fails so the typed text
+                  // isn't thrown away by a rejection the user can act on.
+                  const ok = await onEdit(draft);
+                  if (ok) setEditing(false);
                 }}
               >
-                Save
+                {busy ? (
+                  <>
+                    <Icons.Refresh size={12} className="spin" /> Saving…
+                  </>
+                ) : (
+                  'Save'
+                )}
               </button>
               <button
                 type="button"
                 className="btn btn-sm"
+                disabled={busy}
                 onClick={() => {
                   setDraft(c.message);
                   setEditing(false);
@@ -1929,16 +2278,22 @@ function PublishModal({
   detail,
   pass,
   comments,
+  responseBody,
   onClose,
   onConfirm,
 }: {
   detail: ReviewDetailType;
   pass: ReviewPass;
   comments: ReviewComment[];
+  // Read-only here on purpose: this dialog confirms, it doesn't compose. The
+  // text is written in the Response body card on the page; showing it back
+  // unaltered is the last chance to see exactly what GitHub will receive.
+  responseBody: string;
   onClose: () => void;
   onConfirm: () => void;
 }) {
   const publishCount = countPublishable(comments);
+  const body = responseBody.trim();
   const dismissedCount = comments.filter((c) => c.state === 'dismissed').length;
   const newCount = comments.filter((c) => c.state === 'open').length;
   const alreadyPublishedCount = comments.filter((c) => c.githubCommentId != null).length;
@@ -2015,7 +2370,46 @@ function PublishModal({
           <Row k="Already published (skipped)" v={alreadyPublishedCount} />
           <Row k="Dismissed (skipped)" v={dismissedCount} />
           <Row k="Not yet accepted (skipped)" v={newCount} />
+          <Row k="Response body" v={body ? `${body.length} chars · verbatim` : 'none'} />
         </div>
+        {body && (
+          <div
+            style={{
+              background: 'var(--panel-2)',
+              border: '1px solid var(--border)',
+              borderRadius: 8,
+              padding: 12,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6,
+            }}
+          >
+            <span
+              className="tiny"
+              style={{
+                textTransform: 'uppercase',
+                letterSpacing: 0.6,
+                color: 'var(--muted)',
+              }}
+            >
+              Review body — posted verbatim
+            </span>
+            <pre
+              className="mono"
+              style={{
+                margin: 0,
+                fontSize: 12,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                maxHeight: 200,
+                overflowY: 'auto',
+                color: 'var(--text-2)',
+              }}
+            >
+              {body}
+            </pre>
+          </div>
+        )}
         <div className="tiny" style={{ color: 'var(--muted)' }}>
           One batched GitHub review will be created with the {publishCount} accepted comment
           {publishCount !== 1 ? 's' : ''} inlined. Already-published comments are skipped

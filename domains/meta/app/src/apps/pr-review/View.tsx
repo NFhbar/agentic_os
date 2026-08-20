@@ -86,8 +86,7 @@ export default function PrReview() {
       (r) =>
         (r.state === 'queued' || r.state === 'running') &&
         r.skill != null &&
-        (r.skill === 'dev-cache-pr-review-repo' ||
-          r.skill === 'dev-analyze-repo-for-review') &&
+        (r.skill === 'dev-cache-pr-review-repo' || r.skill === 'dev-analyze-repo-for-review') &&
         r.repo != null,
     );
     if (!active || !active.repo) return null;
@@ -376,7 +375,7 @@ export default function PrReview() {
       '',
       'IMPORTANT — headless dashboard-driven call:',
       '- Do NOT use AskUserQuestion or any interactive prompt.',
-      "- Status is in-review and pr_review_path is set: enter the ADDRESS-COMMENTS phase, re-implement against accepted-but-not-acted-on comments on the existing branch, commit the follow-up, mark each comment status: acted-on.",
+      '- Status is in-review and pr_review_path is set: enter the ADDRESS-COMMENTS phase, re-implement against accepted-but-not-acted-on comments on the existing branch, commit the follow-up, mark each comment status: acted-on.',
       '- Never deviate; if tests fail, write the log and stop.',
       '- Report a short summary of what changed and what comments were addressed.',
     ].join('\n');
@@ -387,25 +386,110 @@ export default function PrReview() {
     });
   }
 
-  function publishReview(d: ReviewDetailType, passN: number) {
-    const prompt = [
+  function publishReview(d: ReviewDetailType, passN: number, responseBody: string) {
+    const lines = [
       `Run the dev-pr-review-publish skill to publish pass ${passN} of "${d.id}" to GitHub.`,
       'Read .claude/skills/dev-pr-review-publish/SKILL.md and follow its Procedure exactly.',
       '',
       'Inputs:',
       `- review: ${JSON.stringify(d.id)}`,
       `- pass: ${passN}`,
+    ];
+    if (responseBody) {
+      // JSON-encoded so newlines and quotes survive the single-line input
+      // shape. `body_source: operator` is the marker the publish path already
+      // keys off for byte-for-byte handling — the same one an operator-edited
+      // comment carries in its block — so the words below are covered by the
+      // rule that already exists rather than a new one invented here.
+      lines.push(`- response_body: ${JSON.stringify(responseBody)}`);
+      lines.push('- body_source: operator');
+    }
+    lines.push(
       '',
       'IMPORTANT — headless dashboard-driven call:',
       '- Do NOT use AskUserQuestion or any interactive prompt.',
       '- The skill is non-interactive: it derives the verdict from the entry,',
       '  filters accepted-only, and submits one batched GitHub review.',
-      '- Report the tight summary block at the end (✓ or ↻ format per the SKILL.md).',
-    ].join('\n');
-    dispatchSkill(prompt, `Publishing ${shortPrLabel(d.url)} pass ${passN}`, {
+    );
+    if (responseBody) {
+      lines.push(
+        '- response_body carries body_source: operator — a person wrote it. Post it byte-for-byte',
+        '  as the review body: no headers, no footers, no counts, no framing, no rewording.',
+        '  Use it in place of the summary-derived body, not in addition to it.',
+      );
+    }
+    lines.push('- Report the tight summary block at the end (✓ or ↻ format per the SKILL.md).');
+    dispatchSkill(lines.join('\n'), `Publishing ${shortPrLabel(d.url)} pass ${passN}`, {
       skill: 'dev-pr-review-publish',
       domain: 'development',
     });
+  }
+
+  // Triggered from ReviewDetail's "Draft response" button. Runs the review
+  // skill in response mode: instead of hunting for new findings it answers
+  // the external comments that have no published reply yet. Each answer is
+  // written as a draft the user triages and publishes like any other comment,
+  // so nothing reaches the PR author unread.
+  function draftResponse(d: ReviewDetailType, unansweredCount: number) {
+    const prompt = [
+      `Run the dev-pr-review skill in response mode against PR ${d.url}.`,
+      'Read .claude/skills/dev-pr-review/SKILL.md and follow its Procedure exactly.',
+      '',
+      'Inputs:',
+      `- pr: ${JSON.stringify(d.url)}`,
+      `- review: ${JSON.stringify(d.id)}`,
+      '- mode: response',
+      '',
+      'IMPORTANT — headless dashboard-driven call:',
+      '- Do NOT use AskUserQuestion or any interactive prompt.',
+      '- Response mode answers what was asked: address the external comments on the',
+      '  entry that have no published reply yet, rather than looking for new issues.',
+      '- Write each answer as a reply carrying an in_reply_to header naming its parent,',
+      '  and leave it status: new so it is triaged before anything is posted.',
+      '- A replies-only pass carries no verdict — do not set a result on it.',
+      '- Report a tight summary (comments answered / skipped) at the end.',
+    ].join('\n');
+    dispatchSkill(
+      prompt,
+      `Drafting ${unansweredCount} response${unansweredCount !== 1 ? 's' : ''} for ${shortPrLabel(d.url)}`,
+      { skill: 'dev-pr-review', domain: 'development' },
+    );
+  }
+
+  // Batch re-check of every open PR's merged/closed state. Server-side TTL
+  // means a re-press inside the window is a no-op, so this is safe to reach
+  // for whenever the list looks stale.
+  async function refreshPrStates() {
+    try {
+      const res = await fetch('/api/reviews/refresh-pr-states', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const j = (await res.json().catch(() => null)) as {
+        ok?: boolean;
+        error?: string;
+        checked?: number;
+        updated?: number;
+        failed?: unknown[];
+      } | null;
+      if (!res.ok || !j?.ok) {
+        toast(`PR refresh failed${j?.error ? ` — ${j.error.slice(0, 80)}` : ''}`);
+        return;
+      }
+      const failedCount = Array.isArray(j.failed) ? j.failed.length : 0;
+      if ((j.checked ?? 0) === 0) {
+        toast('PR states are already up to date');
+      } else {
+        toast(
+          `Checked ${j.checked} PR${j.checked === 1 ? '' : 's'} · ${j.updated ?? 0} updated` +
+            (failedCount > 0 ? ` · ${failedCount} unreachable` : ''),
+        );
+      }
+      refreshReviews();
+    } catch (err) {
+      toast(`PR refresh failed — ${(err as Error).message}`);
+    }
   }
 
   // Triggered from ReviewDetail's "Pull comments" button. Dispatches
@@ -470,11 +554,10 @@ export default function PrReview() {
       '  a separate entry).',
       '- Report a tight summary at the end.',
     ].join('\n');
-    dispatchSkill(
-      prompt,
-      `Re-analyzing ${shortPrLabel(detail.url)} comment ${args.commentN}`,
-      { skill: 'dev-pr-review', domain: 'development' },
-    );
+    dispatchSkill(prompt, `Re-analyzing ${shortPrLabel(detail.url)} comment ${args.commentN}`, {
+      skill: 'dev-pr-review',
+      domain: 'development',
+    });
   }
 
   function analyzeRepo(id: string) {
@@ -551,17 +634,20 @@ export default function PrReview() {
             dispatching={dispatching}
           />
         )}
-        {tab === 'reviews' && !reviewId && <Reviews reviews={reviews} onOpen={openReview} />}
+        {tab === 'reviews' && !reviewId && (
+          <Reviews reviews={reviews} onOpen={openReview} onRefreshPrStates={refreshPrStates} />
+        )}
         {tab === 'reviews' && reviewId && detail && (
           <ReviewDetail
             detail={detail}
             onBack={() => setReviewId(null)}
-            onPublish={(passN) => publishReview(detail, passN)}
+            onPublish={(passN, responseBody) => publishReview(detail, passN, responseBody)}
             onReanalyze={reanalyzeComment}
             onPullComments={() => pullExternalComments(detail)}
             onReimplement={(changeId) => reimplementForChange(changeId)}
             onReReview={() => reReviewPr(detail)}
             onMarkReady={(changeId) => markPrReadyForChange(changeId)}
+            onDraftResponse={(n) => draftResponse(detail, n)}
             toast={toast}
           />
         )}

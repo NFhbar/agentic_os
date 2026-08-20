@@ -24,6 +24,23 @@ export type PassStatus = 'resolved' | 'unresolved' | 'new';
 // granular value for the UI to surface.
 export type CommentState = 'open' | 'accepted' | 'dismissed';
 
+// Which revision a code snippet was read from. `head` is the reviewed commit
+// (the only revision whose line numbers match the comment anchors); anything
+// else is a labelled fallback the reader should not mistake for it.
+export type SnippetSource = 'head' | 'working-tree';
+
+// Which agent produced a comment. The first six are analysis aspects the
+// review model assigns per comment; `external` is an origin rather than an
+// aspect — the comment came from another reviewer and was ingested.
+export type CommentAgent =
+  | 'logic'
+  | 'security'
+  | 'performance'
+  | 'style'
+  | 'tests'
+  | 'docs'
+  | 'external';
+
 // One row in GET /api/reviews.
 export interface ReviewRow {
   id: string;
@@ -56,6 +73,16 @@ export interface ReviewRow {
   // The linked change id itself — used by the UI to click through to the
   // change in the Changes app.
   changeId: string | null;
+  // Last known live PR state (`open` / `closed` / `merged`), recorded on the
+  // review entry by the batch PR-state refresh. This is the only merge signal
+  // an external-PR review has — without a linked change there is nothing else
+  // to tell the list that the work has shipped. Null until first refreshed.
+  prState: string | null;
+  // When the PR merged, per GitHub. Null unless `prState` is `merged`.
+  prMergedAt: string | null;
+  // When the state above was last confirmed against GitHub. Drives the
+  // per-PR refresh TTL and the "as of" hint in the UI.
+  prStateCheckedAt: string | null;
   // Client-only field — used by the UI when a review is still in flight to
   // render a progress bar. Server never sets this; it's part of the
   // canonical type so the client can add it locally without widening.
@@ -78,7 +105,7 @@ export interface ReviewComment {
   // states like 'published-as-body' that the derived `state` collapses.
   status: string;
   severity: 'bug' | 'nit' | 'suggestion';
-  agent: 'logic' | 'security' | 'performance' | 'style' | 'tests' | 'docs';
+  agent: CommentAgent;
   file: string;
   // Anchor. `startLine` is the single-line anchor OR the range start; `endLine`
   // is the range end (null for single-line comments). SourceSnippet keys off
@@ -95,6 +122,21 @@ export interface ReviewComment {
   actedOnAt: string | null;
   resolvedAt: string | null;
   resolvedInPass: number | null;
+  // Every `- key: value` header line on the comment block that has no typed
+  // field above, keyed by header name. The parser captures these instead of
+  // letting them fall into the message body, and mutations carry them through
+  // untouched, so a writer can add a header without a parser change.
+  //
+  // Three keys the review UI reads today:
+  //   - `author`      — the GitHub login behind an ingested comment.
+  //   - `in_reply_to` — the parent this comment answers, as either a comment
+  //                     id of this entry (`pass-<N>-comment-<M>`) or a
+  //                     GitHub-side id (`github:<id>`) when the parent was
+  //                     never written here.
+  //   - `body_source` — `operator` when a person wrote the body, which is what
+  //                     makes it publishable byte-for-byte. Stamped by the
+  //                     edit-message endpoint.
+  headers: Record<string, string>;
 }
 
 // Stats summary for one pass.

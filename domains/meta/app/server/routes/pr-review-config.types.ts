@@ -22,6 +22,12 @@ export type ContextStrategy = 'full-diff' | 'symbol-graph' | 'semantic';
 // own runtime context; this config file no longer carries it.
 export interface PrReviewConfig {
   comment_style: CommentStyle;
+  // Voice the review comments are written in — applied to every comment body,
+  // on top of whatever `comment_style` says about length. Free-form prose
+  // rather than an enum: the operator is describing a register ("friendly and
+  // conversational, no jargon"), and a fixed list would only ever approximate
+  // what they mean. Empty string means no tone guidance is applied.
+  comment_tone: string;
   focus_areas: string[];
   context_strategy: ContextStrategy;
   custom_instructions: string;
@@ -38,6 +44,7 @@ export interface PrReviewConfig {
 // route; use /api/settings/model and /api/settings/skills/:skill/model.
 export interface PrReviewConfigUpdateBody {
   comment_style?: CommentStyle;
+  comment_tone?: string;
   focus_areas?: string[];
   context_strategy?: 'full-diff';
   custom_instructions?: string;

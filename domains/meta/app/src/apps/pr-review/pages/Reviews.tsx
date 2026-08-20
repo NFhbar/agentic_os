@@ -7,14 +7,35 @@ import { SeverityCounts } from './Dashboard';
 
 type TabId = 'all' | 'running' | 'changes' | 'approve' | 'failed';
 
+// A review is "settled" when its PR can no longer change: the linked change
+// reached a terminal status, or the PR itself is merged or closed on GitHub.
+//
+// The second half is what covers external PRs. A review with no linked change
+// has no OS-side lifecycle to read, so before the PR-state refresh existed
+// those rows stayed in the active list forever no matter what happened
+// upstream. `prState` is written straight onto the review entry, which gives
+// every review — linked or not — a way to leave.
+function isSettled(r: ReviewRow): boolean {
+  if (r.changeStatus === 'merged' || r.changeStatus === 'abandoned') return true;
+  return r.prState === 'merged' || r.prState === 'closed';
+}
+
 export function Reviews({
   reviews,
   onOpen,
-}: { reviews: ReviewRow[]; onOpen: (id: string) => void }) {
+  onRefreshPrStates,
+}: {
+  reviews: ReviewRow[];
+  onOpen: (id: string) => void;
+  // Batch re-check of open PRs' merged/closed state. Server-side TTL makes
+  // repeated presses cheap, so this is a plain button rather than a gated one.
+  onRefreshPrStates: () => Promise<void>;
+}) {
   const [tab, setTab] = useState<TabId>('all');
   const [filter, setFilter] = useState('');
   const [repoFilter, setRepoFilter] = useState('all');
-  // Merged reviews collapse into a dedicated section below the active rows.
+  const [refreshing, setRefreshing] = useState(false);
+  // Settled reviews collapse into a dedicated section below the active rows.
   // Default collapsed so a repo with hundreds of historical merges doesn't
   // crowd the view; click the divider to expand. Persists via localStorage.
   const [mergedExpanded, setMergedExpanded] = useState<boolean>(() => {
@@ -39,10 +60,31 @@ export function Reviews({
       changes: reviews.filter((r) => r.result === 'changes').length,
       approve: reviews.filter((r) => r.result === 'approve').length,
       failed: reviews.filter((r) => r.status === 'failed').length,
-      merged: reviews.filter((r) => r.changeStatus === 'merged').length,
+      merged: reviews.filter(isSettled).length,
     }),
     [reviews],
   );
+
+  // Newest PR-state check across the list — the honest answer to "as of when?"
+  // on the refresh button.
+  const lastChecked = useMemo(() => {
+    let best: string | null = null;
+    for (const r of reviews) {
+      const t = r.prStateCheckedAt;
+      if (t && (best === null || t > best)) best = t;
+    }
+    return best;
+  }, [reviews]);
+
+  async function refresh() {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await onRefreshPrStates();
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   const filtered = reviews.filter((r) => {
     if (tab === 'running' && r.status !== 'running') return false;
@@ -56,10 +98,10 @@ export function Reviews({
     return true;
   });
 
-  // Split into active vs merged so the merged tail can collapse into a
+  // Split into active vs settled so the settled tail can collapse into a
   // dedicated section below the active rows. Same filter applied to both.
-  const activeFiltered = filtered.filter((r) => r.changeStatus !== 'merged');
-  const mergedFiltered = filtered.filter((r) => r.changeStatus === 'merged');
+  const activeFiltered = filtered.filter((r) => !isSettled(r));
+  const mergedFiltered = filtered.filter(isSettled);
 
   const repos = Array.from(new Set(reviews.map((r) => r.repo)));
 
@@ -72,6 +114,19 @@ export function Reviews({
             Every review the agents have performed against your indexed repos.
           </div>
         </div>
+        <span style={{ flex: 1 }} />
+        <button
+          type="button"
+          className="btn"
+          onClick={refresh}
+          disabled={refreshing}
+          title={`Re-checks every PR that might still be open against GitHub, then collapses the ones that merged or closed. Each PR is only re-checked every 30 minutes, so pressing this again straight away costs nothing. PRs that can't be reached are skipped, not failed.${
+            lastChecked ? ` Last check: ${new Date(lastChecked).toLocaleString()}.` : ''
+          }`}
+        >
+          <Icons.Refresh size={13} className={refreshing ? 'spin' : ''} />
+          {refreshing ? 'Checking…' : 'Refresh PR states'}
+        </button>
       </div>
 
       <div className="filter-row">
@@ -162,7 +217,7 @@ export function Reviews({
                 >
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                     <span aria-hidden="true">{mergedExpanded ? '▾' : '▸'}</span>
-                    Merged <span className="count">{mergedFiltered.length}</span>
+                    Merged / closed <span className="count">{mergedFiltered.length}</span>
                     <span className="subtle" style={{ marginLeft: 6, fontWeight: 400 }}>
                       {mergedExpanded ? '(click to collapse)' : '(click to expand)'}
                     </span>
@@ -217,6 +272,39 @@ function ChangeStatusBadge({ status }: { status: string | null }) {
     );
   }
   return null;
+}
+
+// Live GitHub state of the PR itself, as of the last batch refresh. Renders
+// only when it adds something the change-status badge doesn't already say —
+// which in practice means external PRs (no linked change) and the case where
+// a PR was closed without merging.
+function PrStateBadge({ row }: { row: ReviewRow }) {
+  const state = row.prState;
+  if (state !== 'merged' && state !== 'closed') return null;
+  if (row.changeStatus === 'merged' && state === 'merged') return null;
+  const asOf = row.prStateCheckedAt
+    ? ` Checked ${new Date(row.prStateCheckedAt).toLocaleString()}.`
+    : '';
+  if (state === 'merged') {
+    return (
+      <span
+        className="badge success"
+        title={`Merged on GitHub${row.prMergedAt ? ` on ${new Date(row.prMergedAt).toLocaleDateString()}` : ''}.${asOf}`}
+        style={{ fontSize: 11, gap: 4 }}
+      >
+        <Icons.Check size={10} /> merged
+      </span>
+    );
+  }
+  return (
+    <span
+      className="badge muted"
+      title={`Closed on GitHub without merging.${asOf}`}
+      style={{ fontSize: 11 }}
+    >
+      closed
+    </span>
+  );
 }
 
 // Surfaces the linked change's pr_review_status when it carries actionable
@@ -300,6 +388,7 @@ function ReviewRowItem({ rv, onOpen }: { rv: ReviewRow; onOpen: (id: string) => 
           {rv.status === 'running' && <span className="dot running" />}
           <span style={{ fontWeight: 500 }}>{rv.title}</span>
           <ChangeStatusBadge status={rv.changeStatus ?? null} />
+          <PrStateBadge row={rv} />
           <PrReviewStatusBadge
             changeStatus={rv.changeStatus ?? null}
             prReviewStatus={rv.changePrReviewStatus ?? null}

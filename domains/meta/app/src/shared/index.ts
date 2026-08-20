@@ -12,6 +12,7 @@ export {
   Icon,
   Icons,
   AgentChip,
+  AuthorChip,
   StatusBadge,
   ResultBadge,
   Sparkline,

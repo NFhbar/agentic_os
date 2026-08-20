@@ -13,8 +13,8 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
-import { rewriteFrontmatter, serializeYamlValue } from '../frontmatter-rewrite.js';
 import type { FastifyPluginAsync } from 'fastify';
+import { rewriteFrontmatter, serializeYamlValue } from '../frontmatter-rewrite.js';
 import { parseFrontmatter } from '../frontmatter.js';
 import { REPO_ROOT } from '../repo.js';
 import type { PrReviewConfig, PrReviewConfigUpdateBody } from './pr-review-config.types.js';
@@ -73,6 +73,7 @@ function asStringArray(v: unknown): string[] {
 // drift is loud rather than silent.
 const EDITABLE_FIELDS = new Set([
   'comment_style',
+  'comment_tone',
   'focus_areas',
   'context_strategy',
   'custom_instructions',
@@ -104,6 +105,15 @@ function validateUpdate(
       return { ok: false, error: `comment_style must be one of ${[...COMMENT_STYLES].join(', ')}` };
     }
     updates.comment_style = b.comment_style as UpdateBody['comment_style'];
+  }
+  if ('comment_tone' in b) {
+    // Free-form prose, so the only constraint is the type — an enum here
+    // would force the operator to pick the nearest listed register instead of
+    // saying what they actually want. Empty string clears the guidance.
+    if (typeof b.comment_tone !== 'string') {
+      return { ok: false, error: 'comment_tone must be a string' };
+    }
+    updates.comment_tone = b.comment_tone;
   }
   if ('focus_areas' in b) {
     if (!Array.isArray(b.focus_areas) || !b.focus_areas.every((x) => typeof x === 'string')) {
@@ -162,6 +172,7 @@ export const prReviewConfigRoutes: FastifyPluginAsync = async (fastify) => {
     const config: PrReviewConfig = {
       comment_style:
         (asString(fm.comment_style, 'concise') as PrReviewConfig['comment_style']) ?? 'concise',
+      comment_tone: asString(fm.comment_tone),
       focus_areas: asStringArray(fm.focus_areas),
       context_strategy:
         (asString(fm.context_strategy, 'full-diff') as PrReviewConfig['context_strategy']) ??
@@ -255,6 +266,7 @@ export const prReviewConfigRoutes: FastifyPluginAsync = async (fastify) => {
       comment_style:
         (asString(updatedFm.comment_style, 'concise') as PrReviewConfig['comment_style']) ??
         'concise',
+      comment_tone: asString(updatedFm.comment_tone),
       focus_areas: asStringArray(updatedFm.focus_areas),
       context_strategy:
         (asString(updatedFm.context_strategy, 'full-diff') as PrReviewConfig['context_strategy']) ??
