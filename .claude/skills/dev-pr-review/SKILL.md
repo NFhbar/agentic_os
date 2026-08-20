@@ -195,6 +195,14 @@ The review is a **single-model, single-call** review: one prompt that asks the m
 
    If `gh` is not authenticated, surface: `gh CLI not authenticated. Run \`gh auth login\` and re-run.`and stop. If the diff is empty (no-op PR), surface:`PR has no diff — nothing to review.` and stop without writing.
 
+   **Annotator resolution ladder.** The annotator is a workspace script, and the workspace can be mid-checkout or on a branch that predates it — a missing or erroring `scripts/annotate-diff-lines.mjs` is a degradation case, not a stop. When the command above is not found or exits non-zero (other than the empty-stdin exit), walk these rungs in order and use the first that produces annotated output:
+   1. **Workspace** — `scripts/annotate-diff-lines.mjs` (the invocation above).
+   2. **PR-head worktree** — `<cache_path>/scripts/annotate-diff-lines.mjs`, once step 10a has materialized it. When reviewing a PR against this OS repo, the head checkout carries the script (often the very version under review); the script is a self-contained node CLI reading stdin, so running a copy from another checkout is safe. If step 10a has not run yet, defer annotation until it has, then retry from this rung.
+   3. **Base cache** — `.claude/state/pr-review-cache/<owner>/<repo>/scripts/annotate-diff-lines.mjs`, the same script at origin/HEAD.
+   4. **Raw-diff degrade** — set `annotated_diff = raw_diff` and `anchors: unvalidated`. Anchors must then be computed from `@@` headers by hand, which is exactly the off-by-N source the annotator exists to remove, so: keep comments file-level (`line: null`) unless the line is unambiguous in the hunk, **skip step 11a entirely** (there is no validator to run), and carry a **loud warning** through to the final report and the entry's config line — `annotator: unavailable (<reason>) — anchors unvalidated, computed from @@ headers`.
+
+   Record which rung produced the annotation (`annotator: workspace | pr-head-worktree | base-cache | unavailable`) so a reader can tell a validated pass from a degraded one.
+
 10. **Ensure the repo cache is fresh + load repo knowledge.** Two sub-steps:
 
     **a. Cache pull + PR-head worktree.** Invoke [[dev-cache-pr-review-repo]] with `pr: <canonical_pr_url>` **and `pr_head_worktree: true`**. The sub-skill owns its own 5-minute staleness gate for the base pull, materializes the PR head as a detached sibling worktree, and on the first-ever clone auto-triggers [[dev-analyze-repo-for-review]]. Back-to-back reviews on the same repo don't trigger redundant base fetches.

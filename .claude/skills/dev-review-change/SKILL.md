@@ -98,6 +98,8 @@ Walk the categories below. Note specific findings.
 - Security: any disabled checks (`--no-verify`, `--insecure`, eval on untrusted), unparameterized SQL, secrets at risk?
 - Backward compatibility considered?
 - Any "Risk" item in the plan that the user actually understated?
+- **Cited probes answer.** When a step gates on a runtime response — probe an endpoint, run a command and branch on its output — does the responder exist? Trace it: a handler registered at that exact path and method, the flag implemented in the command the step invokes. Registration is not behavior; a mounted prefix with no matching handler 404s, and a plan step whose probe can never succeed is dead on arrival. Verifying the plan's `file:line` citation only proves the citation.
+- **Contract self-consistency.** When the plan ships both an enforcement surface (validator, guard, schema constraint) and documentation of the fields that surface governs, do the two agree? Check the documented semantics are reachable under the enforcement — each artifact can be individually correct while the pair describes a field the enforcement makes unusable.
 
 **Test coverage** (per [[standard-code-quality]] § 5)
 
@@ -106,6 +108,7 @@ Walk the categories below. Note specific findings.
 - Edge cases enumerated (or trivially complete)?
 - Test count appropriate for change size? (small change should have a few tests; large change should have many)
 - Any existing tests likely to break that the plan didn't surface?
+- **Assertions discriminate what they claim to pin.** For each spec'd source-pin or contract-test assertion, ask what else could satisfy it: a bare word matches the same word in a comment, a log line, or an embedded prompt string, so the pin passes while the property it guards is gone. Property-shaped patterns (a key, a call shape, a structural match) discriminate; bare substrings usually don't.
 
 **Existing code respect** (per [[standard-code-quality]] § 1, § 7)
 
@@ -170,12 +173,15 @@ Write to `vault/output/<domain>/changes/<change>-review.md`. Use this exact stru
 - [x] / [ ] No touches to auth / data migrations / security (or justified)
 - [x] / [ ] No breaking API changes (or justified)
 - [x] / [ ] Backward compatibility considered
+- [x] / [ ] Cited probes answer — each runtime-gated step traced to a live responder
+- [x] / [ ] Documented contract matches the enforced contract
 <notes>
 
 ### Test coverage
 - [x] / [ ] New code has planned tests
 - [x] / [ ] Edge cases enumerated
 - [x] / [ ] Test count appropriate for change size
+- [x] / [ ] Planned assertions discriminate what they claim to pin
 <notes>
 
 ### Existing code respect
@@ -210,7 +216,9 @@ Edit the change entry's frontmatter:
 
 ### Step 8: Audit log + summary
 
-Record the review event via the dual-write wrapper:
+**Record the review event — unconditionally, on every pass.** This step is not optional and has no verdict, revision, or pass-number condition attached: a re-review of a revised plan records its own event exactly like a first review, an `approve` records exactly like a `request-changes`, and a pass that finds nothing new still records. The event is the only trace that says a review pass happened at all — the review file and `reviewed_at` say a review exists, not how many passes produced it, so a skipped record makes review work invisible to per-skill cadence, cost, and verdict analytics.
+
+Record **before** printing the report below, so no early exit can strand it. Fire it via the dual-write wrapper:
 
 ```bash
 node scripts/record-dashboard-action.mjs \
@@ -220,7 +228,7 @@ node scripts/record-dashboard-action.mjs \
   --files-touched '["<review_path>","<change_entry>"]'
 ```
 
-Print:
+Then print:
 
 ```
 <✓ if approve, ⚠ if request-changes, ✗ if reject> Review complete for <title>
