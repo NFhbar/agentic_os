@@ -3,7 +3,7 @@ name: dev-pr-review
 description: 'Review a pull request — read the diff, produce categorized comments, write a structured pr-review archetype entry to the vault. Supports multi-pass review: re-running on the same PR appends a new pass. Also runs in response mode, drafting answers to external comments nobody has answered yet.'
 user-invocable: true
 recommended_effort: max
-version: 5
+version: 6
 domain: development
 tags: [review, pr, github, mcp, archetype, lifecycle]
 inputs:
@@ -300,6 +300,7 @@ The review is a **single-model, single-call** review: one prompt that asks the m
        - file: the path relative to the repo root (or null for PR-level comments)
        - line: the anchor line, READ off the annotated diff's R column (new file) — or the L column when the comment is about deleted code (then also set side: LEFT). For a finding that spans multiple lines, set line to the END line and start_line to the START line — both read off the columns, SAME side, SAME hunk, start_line < line. Use null for file-level / PR-level comments. Do NOT author range strings like "42-58"; emit line + start_line instead.
        - side / start_side: omit for the common RIGHT-side case; set side: LEFT only when anchoring to deleted (old-file) lines. start_side is only needed on the rare cross-side range and otherwise defaults to side.
+       - quote: the exact code the comment is about, copied off the annotated diff at that anchor — the code only, with the L/R gutter and the leading +/-/space marker stripped. One line for a single-line anchor; for a range, the lines of the span joined with spaces. Bare text: no wrapping backticks, no ellipsis, no paraphrase, no commentary. Emit it on EVERY comment that carries a line; omit it only on file-level comments (line: null). Step 11a checks the anchor against this text — quoting the code is what turns "this line number is postable" into "this comment is about this code", and a quote you cannot copy off the diff means the anchor is wrong.
        - body: the comment text. Respect the COMMENT STYLE knob and the COMMENT TONE block.
     3. Suggest a `result` for the review overall: one of approved | request-changes | comment | none
        - approved: no blockers, optional suggestions only
@@ -370,21 +371,24 @@ The review is a **single-model, single-call** review: one prompt that asks the m
 
      Do the analysis. Produce replies matching the requirements.
 
-11a. **Validate + snap every anchor (layer 1 — write time).** Skip in response mode — a reply's anchor is mirrored from the comment it answers and is display-only; `in_reply_to` is what routes it. Running the validator would snap replies onto lines nobody was talking about. Before formatting the entry, run the composed comments' anchors through the annotator's validator against the SAME raw diff bytes from step 9 (`$TMPDIFF`). Build a JSON array — one object per comment that has a `file` + non-null `line` — and validate:
+11a. **Validate + snap every anchor (layer 1 — write time).** Skip in response mode — a reply's anchor is mirrored from the comment it answers and is display-only; `in_reply_to` is what routes it. Running the validator would snap replies onto lines nobody was talking about. Before formatting the entry, run the composed comments' anchors through the annotator's validator against the SAME raw diff bytes from step 9 (`$TMPDIFF`). Build a JSON array — one object per comment that has a `file` + non-null `line`, each carrying that comment's `quote` — and validate:
 
     ```bash
     node scripts/annotate-diff-lines.mjs --validate \
-      --anchors '[{"id":"c1","file":"<file>","line":<line>,"start_line":<start_or_omit>,"side":"<LEFT_or_omit>","start_side":"<LEFT_or_omit>"}, ...]' \
+      --anchors '[{"id":"c1","file":"<file>","line":<line>,"start_line":<start_or_omit>,"side":"<LEFT_or_omit>","start_side":"<LEFT_or_omit>","quote":"<the quoted code>"}, ...]' \
       < "$TMPDIFF"
     ```
 
-    (File-level comments — `line: null` — are excluded from the array; they need no anchor.) The validator returns one verdict per anchor; apply each:
-    - `valid` → keep the anchor as authored.
-    - `snapped` → adopt the returned `line` (the validator moved it to the nearest in-diff line within ±3, tie → higher). Mention the shift in the comment body's first line only when it's material to the reader; otherwise adopt silently.
-    - `degraded-to-endpoint` → adopt the returned single `line` (the range collapsed to its valid endpoint) and drop `start_line`. Keep the intended range in the body prose if it aids the reader.
-    - `file-level` → the anchor isn't in the diff (file absent, or line beyond the snap window). Re-read the annotated diff you already hold and correct the anchor if you mis-read it; if the comment genuinely targets code outside the diff, convert it to file-level (`line: null`) and name the intended location in the body.
+    **The validator confirms content, not just position.** A line number only says whether GitHub will accept an anchor there; the quote says whether that is the line the comment is about. So send the quote on every anchor that has one: the validator then confirms the code is at the claimed lines, or moves the anchor to where that code actually lives, or refuses the anchor outright. Matching is whitespace-normalized (indentation, re-wrapping, and internal spacing are ignored), so copy the code exactly as the diff shows it and don't fuss over alignment. An anchor sent without a quote gets position-only checking — the old behavior, where a comment can validate cleanly onto a line that has nothing to do with the finding.
 
-    **No comment is written with an anchor the validator rejected.** This is the write-time half of the layered defense; [[dev-pr-review-publish]] re-validates against the LIVE head at publish time (layer 2), since the head may move between review and publish.
+    (File-level comments — `line: null` — are excluded from the array; they need no anchor.) The validator returns one verdict per anchor, plus a `quote` block when a quote was sent; apply each:
+    - `valid` → keep the anchor as authored. With `quote.status: confirmed`, the quoted code is verified to be at those lines.
+    - `snapped` → adopt the returned `line`, and the returned `start_line` when the anchor came back as a range. `quote.status: relocated` means the anchor moved to where the quoted code actually is (which supersedes nearest-line snapping and is not bounded by the ±3 window) — trust it over the line you authored, and re-read the diff there to confirm the comment still says the right thing about the code it landed on. Without a quote it is the old nearest-in-diff move within ±3 (tie → higher). Mention the shift in the comment body's first line only when it's material to the reader; otherwise adopt silently.
+    - `degraded-to-endpoint` → adopt the returned single `line` (the range collapsed to its valid endpoint) and drop `start_line`. Keep the intended range in the body prose if it aids the reader.
+    - `file-level` → the anchor can't be placed; read `reason` to know why. `quote-not-found` means the quoted code appears nowhere in the diff's commentable lines — usually the quote was paraphrased or reflowed (fix the quote off the annotated diff and re-validate), sometimes the comment is genuinely about code the diff doesn't contain. `beyond-snap-window` / `file-not-in-diff` mean the line or the file isn't in the diff at all. Either way: re-read the annotated diff you already hold and correct the anchor if you mis-read it; if the comment genuinely targets code outside the diff, convert it to file-level (`line: null`) and name the intended location in the body.
+    - Any verdict carrying `quote.status: ambiguous` → the quoted code appears in several places and none of them is the claimed anchor, so content couldn't decide and the verdict fell back to position alone. Lengthen the quote (pull in the line above or below until the span is unique) and re-validate rather than shipping a coin-flip anchor.
+
+    **No comment is written with an anchor the validator rejected**, and no comment is written with an anchor its own quote contradicts. This is the write-time half of the layered defense; [[dev-pr-review-publish]] re-validates against the LIVE head at publish time (layer 2), since the head may move between review and publish.
 
 12. **Format the entry body.** Two cases:
 
@@ -458,6 +462,7 @@ The review is a **single-model, single-call** review: one prompt that asks the m
     - start_line: <start>        ← emit ONLY for a multi-line range (else omit this line entirely)
     - side: <LEFT>               ← emit ONLY when anchoring to the old (deleted) side (else omit)
     - start_side: <LEFT>         ← emit ONLY on the rare cross-side range (else omit)
+    - quote: <code at the anchor> ← the validated quote from step 11a, bare on one line; omit only when line is null
     - status: new
 
     <comment body>
@@ -499,7 +504,7 @@ The review is a **single-model, single-call** review: one prompt that asks the m
        - code context: <code_context from step 10a>
        ```
 
-    2. **Every comment is a reply.** Each is headed `#### Comment <n>: response · suggestion` (a reply is not a finding, so it takes neither a focus-area category nor a blocking severity) and carries `- in_reply_to: pass-<N>-comment-<M>` (the `ref` copied from step 11r's prompt, unchanged) plus the mirrored `file` / `line`, and `- status: new` like any other draft comment — a human still triages before it goes out. Emit no `start_line` / `side` / `start_side`; a reply has no range of its own. Emit no `prior:` — that field links re-raised findings across passes, and a reply re-raises nothing.
+    2. **Every comment is a reply.** Each is headed `#### Comment <n>: response · suggestion` (a reply is not a finding, so it takes neither a focus-area category nor a blocking severity) and carries `- in_reply_to: pass-<N>-comment-<M>` (the `ref` copied from step 11r's prompt, unchanged) plus the mirrored `file` / `line`, and `- status: new` like any other draft comment — a human still triages before it goes out. Emit no `start_line` / `side` / `start_side` / `quote`; a reply has no range and no anchor of its own — the mirrored `line` is display context, and quoting code would invite a validator that this pass deliberately skips. Emit no `prior:` — that field links re-raised findings across passes, and a reply re-raises nothing.
 
     3. **The Summary records the exchange, not an assessment.** Rewrite it as: `Pass <N> (response): answered <n> of <m> unanswered comment(s) from <comma-joined authors>.` Leave the prior pass's assessment prose intact below it if the Summary carries any — a response pass adds to the record instead of overwriting the review's conclusion.
 
@@ -629,5 +634,5 @@ The review is a **single-model, single-call** review: one prompt that asks the m
 - [[standard-mcp-usage]] — calling MCP tools from a skill (pre-flight + naming + auth + errors)
 - [[decision-github-mcp-custom-not-hosted]] — why the github MCP uses PAT, not OAuth
 - `scripts/check-mcp.mjs` — pre-flight helper used in step 1
-- `scripts/annotate-diff-lines.mjs` — deterministic diff line-numbering (step 9) + write-time anchor validate/snap (step 11a)
+- `scripts/annotate-diff-lines.mjs` — deterministic diff line-numbering (step 9) + write-time anchor validate/snap (step 11a), including the quote layer that confirms a comment's code is where the anchor claims
 - `scripts/record-dashboard-action.mjs` — event-recording wrapper used in step 15
