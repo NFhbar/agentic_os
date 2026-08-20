@@ -3,7 +3,7 @@ id: os-version
 type: reference
 domain: meta
 created: 2026-06-03T18:00:00Z
-updated: 2026-08-20T21:30:00Z
+updated: 2026-08-20T23:00:00Z
 tags: [version, distribution, compatibility]
 source: seed
 private: false
@@ -11,7 +11,7 @@ title: OS version — canonical version marker for compatibility tracking
 url: internal://reference/os-version
 kind: reference
 last_verified: 2026-08-20
-version: 0.7.0
+version: 0.8.0
 ---
 
 # OS version
