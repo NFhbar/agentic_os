@@ -269,6 +269,7 @@ Detail: `vault/wiki/_seed/meta/reference/standard-index-schema.md`
 | `pr-review-repo-cache` | cached repo clone metadata backing PR-review reads                                                 |
 | `repo-knowledge`       | curated prose summary of a repo's stack, structure, conventions                                    |
 | `lifecycle-audit`      | Overseer audit of a completed change lifecycle (scores + tuning suggestions)                       |
+| `review-protocol`      | per-system contract for a recurring health review (KPI, taxonomy, monitor gates)                   |
 | `note`                 | free-form (escape hatch)                                                                           |
 
 Adding new archetypes: `/os add-archetype`. Detail per archetype: `vault/wiki/_seed/meta/reference/archetype-*.md`.

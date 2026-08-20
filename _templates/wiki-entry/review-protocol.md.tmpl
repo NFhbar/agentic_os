@@ -1,0 +1,77 @@
+---
+id: {{slug}}
+type: review-protocol
+domain: {{domain}}
+created: {{datetime}}
+updated: {{datetime}}
+tags: [ops, health-review]
+source: {{source}}
+private: false
+title: '{{title}}'
+target: {{target}}
+owner: {{owner}}
+scan_minutes: {{scan_minutes}}
+kpi: {"name": "{{kpi_name}}", "formula": "{{kpi_formula}}", "baseline": null, "target": null, "window_days": {{kpi_window_days}}, "guardrail": null}
+verify_tickets: []
+monitors: []
+reports_dir: vault/output/ops/health-reviews/{{slug}}
+last_reviewed: null
+last_verdict: null
+---
+
+# {{title}}
+
+<!--
+  kpi / verify_tickets / monitors are SINGLE-LINE JSON on purpose. Line-oriented
+  frontmatter readers drop multi-line structures without erroring, so a block
+  form does not fail — it vanishes. Keep each on one line, however long.
+  baseline / target / guardrail stay `null` until measured; never guess them.
+-->
+
+## Sources
+
+Where the review looks. One bullet per source: what it is, how to reach it read-only, and what it is authoritative for. Mark any source that needs credentials the review may not have — an unreachable source becomes a recorded gap, not a failed run.
+
+- TODO
+
+## Metric queries
+
+The exact read-only queries behind the KPI and the supporting counts. Give each a name the report can cite, the query text, and the window it covers.
+
+- TODO
+
+## Log queries
+
+The read-only searches that surface failures for classification. Name each one, state its window, and note the volume to expect so a suspiciously empty result reads as a gap rather than as health.
+
+- TODO
+
+## Failure-class taxonomy
+
+The closed set of classes every observed failure is sorted into. One subsection per class: what it looks like, what distinguishes it from its nearest neighbour, and any caution that has previously caused a misclassification. An `unclassified` bucket is mandatory — a class that does not exist yet must surface as unclassified, never get forced into the closest match.
+
+- TODO
+
+## Fix verification checks
+
+Per entry in `verify_tickets`: what shipped, how to tell from read-only evidence whether it is actually deployed, and what observable signal proves it worked. A check with no observable signal is not a check — say so rather than inventing one.
+
+- TODO
+
+## Monitor publication gates
+
+Per entry in `monitors`: what the monitor would watch and the gate — the condition that must hold before a human is asked to publish it. Reviews evaluate the gate and recommend; they never publish, enable, silence, or edit a monitor.
+
+- TODO
+
+## Forecast heuristics
+
+How to project the next 24–72 hours from what the review just measured: which quantities extrapolate, which do not, known cyclicality, and the conditions under which the forecast should be withheld instead of guessed.
+
+- TODO
+
+## Safety rails
+
+Protocol-specific limits on top of the domain's read-only default: queries that are expensive enough to need a narrower window, fields that must be redacted before they reach a report, and anything a review must refuse outright.
+
+- TODO

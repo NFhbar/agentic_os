@@ -59,12 +59,15 @@ export const ALL_SKILL_IDS: readonly SkillId[] = Object.values(SKILL);
 `;
 }
 
-// Whole-string literals that look like skill ids: quote + (dev|meta|research)-…
+// Whole-string literals that look like skill ids: quote + (dev|meta|research|ops)-…
 // + the SAME quote. Prose mentions inside longer strings deliberately don't
 // match — the check targets identifier-position literals (tags, maps, keys).
+// The alternation tracks the domain prefixes skills actually ship under; a
+// domain missing from it is a silent hole where a stale literal outlives a
+// rename, so extend it when a new domain starts shipping skills.
 export function extractSkillLikeLiterals(source) {
   const out = [];
-  const re = /(['"`])((?:dev|meta|research)-[a-z][a-z0-9-]*)\1/g;
+  const re = /(['"`])((?:dev|meta|research|ops)-[a-z][a-z0-9-]*)\1/g;
   let m = re.exec(source);
   while (m) {
     out.push(m[2]);

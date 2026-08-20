@@ -6,11 +6,12 @@ The entry-point map for an interconnected, self-extending workflow OS built on C
 
 ## Domains
 
-| domain      | purpose                                        | playbook                                                           |
-| ----------- | ---------------------------------------------- | ------------------------------------------------------------------ |
-| meta        | evolve the OS itself; ships with the dashboard | [domains/meta/playbook.md](domains/meta/playbook.md)               |
-| development | code, repos, PR review                         | [domains/development/playbook.md](domains/development/playbook.md) |
-| research    | read, synthesize, capture decisions            | [domains/research/playbook.md](domains/research/playbook.md)       |
+| domain      | purpose                                         | playbook                                                           |
+| ----------- | ----------------------------------------------- | ------------------------------------------------------------------ |
+| meta        | evolve the OS itself; ships with the dashboard  | [domains/meta/playbook.md](domains/meta/playbook.md)               |
+| development | code, repos, PR review                          | [domains/development/playbook.md](domains/development/playbook.md) |
+| research    | read, synthesize, capture decisions             | [domains/research/playbook.md](domains/research/playbook.md)       |
+| ops         | recurring health reviews; read-only by contract | [domains/ops/playbook.md](domains/ops/playbook.md)                 |
 
 New domains are scaffolded via `/os add-domain <name>`.
 
@@ -107,6 +108,8 @@ Direct invocation (`/dev-pr-review`, `/meta-dashboard`) is a power-user escape h
 | `close change`, `mark merged`, `finalize change`, `pr merged`                              | `dev-close-change`                  |
 | `pull pr comments`, `ingest review comments`, `sync external review`, `import pr feedback` | `dev-pull-pr-comments`              |
 | `setup repo identity`, `signing setup`, `headless signing`, `repo identity`                | `dev-setup-repo-identity`           |
+| `add protocol`, `new review protocol`, `scaffold health protocol`                          | `ops-add-protocol`                  |
+| `health review`, `run health review`, `review system health`, `ops review`                 | `ops-health-review`                 |
 
 Misses (no match) are logged with the original intent so we can grow the vocabulary.
 
@@ -159,6 +162,7 @@ Every wiki entry must declare one of these `type:` values in its frontmatter.
 | `pr-review-repo-cache` | cached repo clone metadata backing PR-review reads                                                 |
 | `repo-knowledge`       | curated prose summary of a repo's stack, structure, conventions                                    |
 | `lifecycle-audit`      | Overseer audit of a completed change lifecycle (scores + tuning suggestions)                       |
+| `review-protocol`      | per-system contract for a recurring health review (KPI, taxonomy, monitor gates)                   |
 | `note`                 | free-form (escape hatch)                                                                           |
 
 Per-archetype frontmatter contracts: `vault/wiki/_seed/meta/` (one reference entry per archetype).

@@ -43,6 +43,7 @@ import { healthRoutes } from './routes/health.js';
 import { mcpsRoutes } from './routes/mcps.js';
 import { modelsRoutes } from './routes/models.js';
 import { notificationsRoutes } from './routes/notifications.js';
+import { opsRoutes } from './routes/ops.js';
 import { prReviewConfigRoutes } from './routes/pr-review-config.js';
 import { prReviewMetricsRoutes } from './routes/pr-review-metrics.js';
 import { projectsRoutes } from './routes/projects.js';
@@ -106,6 +107,10 @@ await fastify.register(reposRoutes, { prefix: '/api/repos' });
 await fastify.register(prReviewConfigRoutes, { prefix: '/api/pr-review/config' });
 await fastify.register(prReviewMetricsRoutes, { prefix: '/api/pr-review/dashboard-metrics' });
 await fastify.register(mcpsRoutes, { prefix: '/api/mcps' });
+// Ops — read-only over review protocols + their dated reports. Reviews are
+// dispatched through /api/runs like every other skill run; this surface has no
+// write path by design.
+await fastify.register(opsRoutes, { prefix: '/api/ops' });
 await fastify.register(notificationsRoutes, { prefix: '/api/notifications' });
 await fastify.register(actionRoutes, { prefix: '/api/action' });
 await fastify.register(runsRoutes, { prefix: '/api/runs' });

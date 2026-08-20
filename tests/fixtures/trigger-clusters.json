@@ -1,0 +1,196 @@
+{
+  "purpose": "Trigger-collision fixtures. Each cluster is a set of skills whose descriptions compete for the same natural-language intents — the places where a routing mistake is plausible rather than exotic. Every case names the skill that should win; every OTHER skill in the same cluster is an implicit must-NOT-trigger for that phrasing. These fixtures are the pass/fail gate for any rewrite of a skill's `description`: change a description, replay the cases, and a regression shows up as a phrasing that now routes to a cluster sibling. Author the fixture BEFORE touching a description, never after — a gate written to match the new behavior grades nothing.",
+  "clusters": [
+    {
+      "id": "reviews",
+      "skills": [
+        "dev-pr-review",
+        "dev-review-change",
+        "research-review",
+        "meta-review-project-plan",
+        "ops-health-review"
+      ],
+      "cases": [
+        { "prompt": "review PR 214 on acme/api", "expect": "dev-pr-review" },
+        {
+          "prompt": "read the diff on that pull request and leave categorized comments",
+          "expect": "dev-pr-review"
+        },
+        {
+          "prompt": "peer review the plan for the add-license change before I run execute",
+          "expect": "dev-review-change"
+        },
+        {
+          "prompt": "the change plan is drafted — give it a verdict so execute can run",
+          "expect": "dev-review-change"
+        },
+        {
+          "prompt": "review the research report on vector stores and give me a verdict",
+          "expect": "research-review"
+        },
+        {
+          "prompt": "peer review the report I just wrote under the retrieval project",
+          "expect": "research-review"
+        },
+        {
+          "prompt": "review the project plan for the billing migration",
+          "expect": "meta-review-project-plan"
+        },
+        {
+          "prompt": "the project plan needs a verdict before we scaffold its changes",
+          "expect": "meta-review-project-plan"
+        },
+        {
+          "prompt": "run the weekly health review for the ingest pipeline",
+          "expect": "ops-health-review"
+        },
+        {
+          "prompt": "is the ingest pipeline still healthy? check it against its protocol",
+          "expect": "ops-health-review"
+        }
+      ]
+    },
+    {
+      "id": "repo-ops",
+      "skills": ["dev-ingest-repo", "dev-cache-pr-review-repo", "dev-analyze-repo-for-review"],
+      "cases": [
+        {
+          "prompt": "ingest github.com/acme/api so the OS can work on it",
+          "expect": "dev-ingest-repo"
+        },
+        {
+          "prompt": "add this local repo to the OS: /Users/me/code/tool",
+          "expect": "dev-ingest-repo"
+        },
+        {
+          "prompt": "refresh the review cache for acme/api, it is a few days stale",
+          "expect": "dev-cache-pr-review-repo"
+        },
+        {
+          "prompt": "pull the latest for acme/api before I review this pull request",
+          "expect": "dev-cache-pr-review-repo"
+        },
+        {
+          "prompt": "re-analyze acme/api conventions — the knowledge entry is stale",
+          "expect": "dev-analyze-repo-for-review"
+        },
+        {
+          "prompt": "index this repo's conventions so reviews judge against them",
+          "expect": "dev-analyze-repo-for-review"
+        }
+      ]
+    },
+    {
+      "id": "brief-vs-status",
+      "skills": ["meta-brief", "meta-status-report"],
+      "cases": [
+        { "prompt": "what's new since yesterday?", "expect": "meta-brief" },
+        { "prompt": "give me a session brief", "expect": "meta-brief" },
+        {
+          "prompt": "what is in flight right now and what is still pending?",
+          "expect": "meta-brief"
+        },
+        {
+          "prompt": "write the weekly status report for the billing migration project",
+          "expect": "meta-status-report"
+        },
+        {
+          "prompt": "generate a status update I can send to the project stakeholders",
+          "expect": "meta-status-report"
+        },
+        {
+          "prompt": "produce the project status report covering the last two weeks",
+          "expect": "meta-status-report"
+        }
+      ]
+    },
+    {
+      "id": "audit-vs-overseer",
+      "skills": ["meta-audit", "meta-overseer-review", "meta-audit-followups"],
+      "cases": [
+        { "prompt": "audit the OS for standards compliance", "expect": "meta-audit" },
+        {
+          "prompt": "lint the OS — are the skills and wiki entries conformant?",
+          "expect": "meta-audit"
+        },
+        {
+          "prompt": "check the playbooks and archetype contracts against the documented standards",
+          "expect": "meta-audit"
+        },
+        {
+          "prompt": "audit the lifecycle of the add-license change and score the skills that ran",
+          "expect": "meta-overseer-review"
+        },
+        {
+          "prompt": "score how well the skills performed on the change that just merged",
+          "expect": "meta-overseer-review"
+        },
+        {
+          "prompt": "sweep the provisional audits and fold in the follow-up changes that landed since",
+          "expect": "meta-audit-followups"
+        },
+        {
+          "prompt": "update the forward-look signals on the existing lifecycle audits",
+          "expect": "meta-audit-followups"
+        }
+      ]
+    },
+    {
+      "id": "notes",
+      "skills": ["meta-add-note", "meta-add-research-note"],
+      "cases": [
+        { "prompt": "jot a note about the flaky test in the dashboard", "expect": "meta-add-note" },
+        {
+          "prompt": "capture an observation about deploy friction under the development domain",
+          "expect": "meta-add-note"
+        },
+        {
+          "prompt": "note this lesson for later: prefer single-line JSON in frontmatter",
+          "expect": "meta-add-note"
+        },
+        {
+          "prompt": "add a note to the vector-store research report — it missed the licensing angle",
+          "expect": "meta-add-research-note"
+        },
+        {
+          "prompt": "flag an issue on that research report before anyone revises it",
+          "expect": "meta-add-research-note"
+        },
+        {
+          "prompt": "leave mid-lifecycle guidance on the report about its scope",
+          "expect": "meta-add-research-note"
+        }
+      ]
+    },
+    {
+      "id": "pr-review-family",
+      "skills": ["dev-pr-review", "dev-pr-review-publish", "dev-pull-pr-comments"],
+      "cases": [
+        {
+          "prompt": "do a fresh review pass on PR 88 — the author pushed changes",
+          "expect": "dev-pr-review"
+        },
+        {
+          "prompt": "review this pull request and write the review entry to the vault",
+          "expect": "dev-pr-review"
+        },
+        {
+          "prompt": "post the accepted comments from pass 2 back to GitHub",
+          "expect": "dev-pr-review-publish"
+        },
+        {
+          "prompt": "submit the review to GitHub with its verdict",
+          "expect": "dev-pr-review-publish"
+        },
+        {
+          "prompt": "pull in the comments the other reviewers left on the pull request",
+          "expect": "dev-pull-pr-comments"
+        },
+        {
+          "prompt": "ingest the external review feedback from GitHub into the review entry",
+          "expect": "dev-pull-pr-comments"
+        }
+      ]
+    }
+  ]
+}
