@@ -357,133 +357,180 @@ export async function startRun(input: StartRunOptions): Promise<StartRunResult> 
     return { ok: false, error: created.error };
   }
 
-  const evicted = evictBeyondCap() as Array<{ id: string; output_path: string }>;
-  for (const ev of evicted) unlinkOutput(ev.output_path);
+  // ── Crash-safe dispatch window ─────────────────────────────────────────
+  // The row exists before the child does, and must: the per-change
+  // concurrency gate reads rows, so writing the row first is what makes a
+  // second dispatch for the same change impossible from the instant the first
+  // is admitted. Inverting the order to spawn-then-record would trade a
+  // stranded row for an unrecorded in-flight child, which is the worse of the
+  // two — so the ordering stays, and the window it opens is covered instead.
+  //
+  // INVARIANT: no path may leave this function with the row still `queued`.
+  // Three arms hold it:
+  //   1. a spawn that reports no pid  → finalized below (finishAndRecord)
+  //   2. anything that THROWS in here → finalized by the catch
+  //   3. the process dying outright   → nothing in-process can act, so the
+  //      out-of-process reaper finalizes it (decideQueuedReap in
+  //      scripts/runs-supervisor.mjs: pid-less + journal-less + past grace).
+  // Arm 3 is why the reaper exists at all; arms 1 and 2 keep it from being
+  // the common case, since it costs a full grace window before the gate frees.
+  //
+  // `rowSettled` marks the point past which the row's fate is no longer this
+  // function's to decide — the spawn-failure path already finalized it, or the
+  // child is recorded and the follower + supervisor own it. Arm 2 must not
+  // touch the row after that: finalizing the row of a running child would free
+  // the gate under a live process and lose its output.
+  let rowSettled = false;
+  try {
+    const evicted = evictBeyondCap() as Array<{ id: string; output_path: string }>;
+    for (const ev of evicted) unlinkOutput(ev.output_path);
 
-  // Orphaned + file-redirected stdio: the child is spawned through the
-  // dispatch-holder trampoline, re-parents to PID 1, and writes straight to
-  // disk — it survives both a server death (pipes would EPIPE it) AND a
-  // parent-pid tree-kill (`concurrently -k`), which detached spawn alone
-  // does not. Supervision of children we can no longer see lives in
-  // scripts/runs-supervisor.mjs.
-  const errPath = stderrPathFor(output_path) as string;
-  const wallCapMs = (await resolveWallTimeCapMs(skill)) as number;
+    // Orphaned + file-redirected stdio: the child is spawned through the
+    // dispatch-holder trampoline, re-parents to PID 1, and writes straight to
+    // disk — it survives both a server death (pipes would EPIPE it) AND a
+    // parent-pid tree-kill (`concurrently -k`), which detached spawn alone
+    // does not. Supervision of children we can no longer see lives in
+    // scripts/runs-supervisor.mjs.
+    const errPath = stderrPathFor(output_path) as string;
+    const wallCapMs = (await resolveWallTimeCapMs(skill)) as number;
 
-  // Phase-aware EXECUTE overrides: when the dispatched skill declares
-  // `model_execute:` / `effort_execute:` AND the target change's review gate
-  // classifies this dispatch EXECUTE-bound, those replace the skill's `model:`
-  // / `effort:` pins (dual-phase skills like dev-write-change plan and execute
-  // from one skill, so static pins can't split phases). Classify ONCE, apply
-  // both. Fail-open by design — any read/parse/classify failure keeps today's
-  // behavior; the feature can only ever swap model/effort, never block.
-  let modelOverride: string | null = null;
-  let effortOverride: string | null = null;
-  if (skill && change_id) {
-    try {
-      const [modelExecute, effortExecute] = (await Promise.all([
-        resolveModelExecuteForRun(skill),
-        resolveEffortExecuteForRun(skill),
-      ])) as [string | null, string | null];
-      if (modelExecute || effortExecute) {
-        const gate = readChangeDispatchGate(change_id);
-        if (
-          gate &&
-          classifyChangeDispatchPhase({
-            review_status: gate.review_status,
-            plan_path: gate.plan_path,
-            prompt,
-          }) === 'execute-bound'
-        ) {
-          modelOverride = modelExecute;
-          effortOverride = effortExecute;
+    // Phase-aware EXECUTE overrides: when the dispatched skill declares
+    // `model_execute:` / `effort_execute:` AND the target change's review gate
+    // classifies this dispatch EXECUTE-bound, those replace the skill's `model:`
+    // / `effort:` pins (dual-phase skills like dev-write-change plan and execute
+    // from one skill, so static pins can't split phases). Classify ONCE, apply
+    // both. Fail-open by design — any read/parse/classify failure keeps today's
+    // behavior; the feature can only ever swap model/effort, never block.
+    let modelOverride: string | null = null;
+    let effortOverride: string | null = null;
+    if (skill && change_id) {
+      try {
+        const [modelExecute, effortExecute] = (await Promise.all([
+          resolveModelExecuteForRun(skill),
+          resolveEffortExecuteForRun(skill),
+        ])) as [string | null, string | null];
+        if (modelExecute || effortExecute) {
+          const gate = readChangeDispatchGate(change_id);
+          if (
+            gate &&
+            classifyChangeDispatchPhase({
+              review_status: gate.review_status,
+              plan_path: gate.plan_path,
+              prompt,
+            }) === 'execute-bound'
+          ) {
+            modelOverride = modelExecute;
+            effortOverride = effortExecute;
+          }
         }
+      } catch {
+        /* fail-open — dispatch proceeds on the model:/effort: chain */
       }
-    } catch {
-      /* fail-open — dispatch proceeds on the model:/effort: chain */
     }
-  }
 
-  // Explicit overrides win over everything resolved above — the sanctioned
-  // human escape hatch (a `required`-tier skill whose pin is unavailable) and
-  // the carrier for the auto-fallback hook's second leg. Recorded on the row
-  // like any other resolved model (setDispatchConfig below), so an override is
-  // never silent.
-  if (input.model_override) modelOverride = input.model_override;
-  if (input.effort_override) effortOverride = input.effort_override;
+    // Explicit overrides win over everything resolved above — the sanctioned
+    // human escape hatch (a `required`-tier skill whose pin is unavailable) and
+    // the carrier for the auto-fallback hook's second leg. Recorded on the row
+    // like any other resolved model (setDispatchConfig below), so an override is
+    // never silent.
+    if (input.model_override) modelOverride = input.model_override;
+    if (input.effort_override) effortOverride = input.effort_override;
 
-  mkdirSync(dirname(output_path), { recursive: true });
-  const spawned = (await spawnClaudeOrphaned(prompt, skill, {
-    outputPath: output_path,
-    stderrPath: errPath,
-    logPrefix: 'runs',
-    model: modelOverride,
-    effort: effortOverride,
-  })) as { pid: number | null; error?: string; effort?: string | null; model?: string | null };
+    mkdirSync(dirname(output_path), { recursive: true });
+    const spawned = (await spawnClaudeOrphaned(prompt, skill, {
+      outputPath: output_path,
+      stderrPath: errPath,
+      logPrefix: 'runs',
+      model: modelOverride,
+      effort: effortOverride,
+    })) as { pid: number | null; error?: string; effort?: string | null; model?: string | null };
 
-  // Stamp the dispatch-resolved model/effort on the row now — before the
-  // spawn-failure early-finalize below — so pre-init deaths and even
-  // spawn-level failures record what was attempted. finishRun's COALESCE
-  // keeps the model stamp unless a result event supplies the observed id.
-  setDispatchConfig(id, { model: spawned.model ?? null, effort: spawned.effort ?? null });
+    // Stamp the dispatch-resolved model/effort on the row now — before the
+    // spawn-failure early-finalize below — so pre-init deaths and even
+    // spawn-level failures record what was attempted. finishRun's COALESCE
+    // keeps the model stamp unless a result event supplies the observed id.
+    setDispatchConfig(id, { model: spawned.model ?? null, effort: spawned.effort ?? null });
 
-  const session: RunSession = {
-    id,
-    pid: spawned.pid,
-    subscribers: new Set(),
-    cancelled: false,
-    startedMs,
-    ts,
-    prompt,
-    skill,
-    change_id,
-    project,
-    domain,
-    report_id,
-    model: null,
-    dispatchModel: spawned.model ?? null,
-    tokensIn: null,
-    tokensOut: null,
-    tokensCacheRead: null,
-    tokensCacheWrite: null,
-    costUsd: null,
-    claudeDurationMs: null,
-    isError: false,
-    resultReceived: false,
-    spawnFailed: false,
-    lastJournalActivityMs: startedMs,
-    deadSettleScheduled: false,
-    combinedText: '',
-    stderrAll: '',
-    killedReason: null,
-    killedAt: null,
-    onFinished: input.onFinished ?? null,
-    outputPath: output_path,
-    stderrPath: errPath,
-    rawOffset: 0,
-    errOffset: 0,
-    rawBuf: '',
-    follower: null,
-    finished: false,
-    wallCapMs,
-  };
-  sessions.set(id, session);
+    const session: RunSession = {
+      id,
+      pid: spawned.pid,
+      subscribers: new Set(),
+      cancelled: false,
+      startedMs,
+      ts,
+      prompt,
+      skill,
+      change_id,
+      project,
+      domain,
+      report_id,
+      model: null,
+      dispatchModel: spawned.model ?? null,
+      tokensIn: null,
+      tokensOut: null,
+      tokensCacheRead: null,
+      tokensCacheWrite: null,
+      costUsd: null,
+      claudeDurationMs: null,
+      isError: false,
+      resultReceived: false,
+      spawnFailed: false,
+      lastJournalActivityMs: startedMs,
+      deadSettleScheduled: false,
+      combinedText: '',
+      stderrAll: '',
+      killedReason: null,
+      killedAt: null,
+      onFinished: input.onFinished ?? null,
+      outputPath: output_path,
+      stderrPath: errPath,
+      rawOffset: 0,
+      errOffset: 0,
+      rawBuf: '',
+      follower: null,
+      finished: false,
+      wallCapMs,
+    };
+    sessions.set(id, session);
 
-  if (spawned.pid == null) {
-    // Spawn failure (no pid, or holder died after reporting one — the
-    // grandchild was already SIGKILLed by spawnClaudeOrphaned). Finalize
-    // failed immediately; still ok:true so the client renders the failure.
-    const note = `spawn error: ${spawned.error ?? 'unknown'}\n`;
-    appendChunk(id, 'stderr', note);
-    session.stderrAll = note;
-    session.spawnFailed = true;
-    finishAndRecord(session);
+    if (spawned.pid == null) {
+      // Spawn failure (no pid, or holder died after reporting one — the
+      // grandchild was already SIGKILLed by spawnClaudeOrphaned). Finalize
+      // failed immediately; still ok:true so the client renders the failure.
+      const note = `spawn error: ${spawned.error ?? 'unknown'}\n`;
+      appendChunk(id, 'stderr', note);
+      session.stderrAll = note;
+      session.spawnFailed = true;
+      finishAndRecord(session);
+      rowSettled = true;
+      return { ok: true, run_id: id };
+    }
+
+    markRunning(id, spawned.pid);
+    rowSettled = true;
+    superviseSession(session);
+
     return { ok: true, run_id: id };
+  } catch (e) {
+    // Arm 2. Finalize here rather than leaving it to the reaper: the gate
+    // frees now instead of a grace window later, and the error names the real
+    // cause instead of "never spawned".
+    const detail = e instanceof Error ? e.message : String(e);
+    if (rowSettled) {
+      // The child is alive (or already finalized) — the row is not ours to
+      // rewrite. Report the dispatch as accepted and let supervision finish it.
+      console.error(`runs: ${id} threw after the child was recorded — ${detail}`);
+      return { ok: true, run_id: id };
+    }
+    sessions.delete(id);
+    finishRun(id, {
+      state: 'failed',
+      exit_status: null,
+      duration_ms: Date.now() - startedMs,
+      error: `dispatch error: ${detail}`,
+    });
+    return { ok: false, error: `dispatch error: ${detail}` };
   }
-
-  markRunning(id, spawned.pid);
-  superviseSession(session);
-
-  return { ok: true, run_id: id };
 }
 
 function ssePrelude(reply: FastifyReply) {

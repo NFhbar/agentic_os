@@ -24,6 +24,11 @@
 // Idempotent: re-running on the same session inserts no new rows (dedupe_key
 // in events-db.mjs is content-addressed).
 //
+// Turns that are really dispatched runs wearing a transcript's shape are
+// skipped, not imported — see the dispatch-dedupe section below. Without that
+// skip, every dashboard dispatch appears twice with two different cost
+// figures and any rollup summing both kinds double-counts it.
+//
 // Cost is computed via scripts/models-registry.mjs (the single pricing
 // source — rates + math live there, validated against CLI-reported
 // total_cost_usd). Models not in the registry get tokens captured but
@@ -42,6 +47,7 @@ import { homedir } from 'node:os';
 import { recordEvent } from './events-db.mjs';
 import { extractFromPrompt } from './extract-event-attribution.mjs';
 import { computeCost } from './models-registry.mjs';
+import { extractRunId, findDispatchMatch } from './session-dispatch-match.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
@@ -94,6 +100,46 @@ export function extractSlashSkill(text) {
   // Must look like a slash command — short token after the slash
   const m = trimmed.match(/^\/([a-z][a-z0-9-]*)\b/);
   return m ? m[1] : null;
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch dedupe — the same work must not be counted twice.
+// ---------------------------------------------------------------------------
+//
+// A dashboard-dispatched skill run is `claude -p` in a subprocess, and that
+// subprocess writes a session transcript of its own into the same directory
+// this script walks — one user string message then assistant work, the exact
+// shape of an interactive turn. Imported as-is, every dispatch lands in
+// events.db twice with two materially different cost figures, and any rollup
+// summing both kinds double-counts it.
+//
+// The recognition rule is the pure matcher in scripts/session-dispatch-match.mjs
+// (kept out of this file so it is unit-testable without node:sqlite in the
+// graph); this half supplies it with the index to match against.
+
+// Read the dispatch index out of the runs table. Returns [] when the table
+// doesn't exist yet (fresh install) or the read fails — an unavailable index
+// means no skipping, which is the same posture this script had before.
+async function loadDispatchIndex() {
+  try {
+    const { DatabaseSync } = await import('node:sqlite');
+    const dbPath = join(REPO_ROOT, '.claude', 'state', 'events.db');
+    if (!existsSync(dbPath)) return [];
+    const db = new DatabaseSync(dbPath);
+    let rows = [];
+    try {
+      rows = db.prepare('SELECT id, started_at, duration_ms FROM runs').all();
+    } finally {
+      db.close();
+    }
+    return rows.map((r) => ({
+      id: r.id,
+      started_ms: parseTs(r.started_at) ?? Number.NaN,
+      duration_ms: typeof r.duration_ms === 'number' ? r.duration_ms : Number.NaN,
+    }));
+  } catch {
+    return [];
+  }
 }
 
 function trimPreview(s, n) {
@@ -199,7 +245,7 @@ function legacyRawOf(b) {
   });
 }
 
-function importSession(sessionPath, { dryRun = false } = {}) {
+function importSession(sessionPath, { dryRun = false, dispatches = [] } = {}) {
   const { buckets } = collectBuckets(sessionPath);
   const sessionId = basename(sessionPath).replace(/\.jsonl$/, '');
 
@@ -207,7 +253,24 @@ function importSession(sessionPath, { dryRun = false } = {}) {
   let inserted = 0;
   let deduped = 0;
   let costless = 0;
+  let skippedDispatch = 0;
   for (const b of buckets) {
+    // A bucket that IS a recorded dispatch is already in events.db with the
+    // CLI's own cost figure. Skip rather than tag: the row would otherwise
+    // need every rollup to learn a new exclusion, and the dispatch row already
+    // holds strictly better data. Counted and logged so the skip is visible.
+    const match = findDispatchMatch(
+      {
+        runId: extractRunId(b.userMessage),
+        startMs: parseTs(b.startTs),
+        durationMs: (parseTs(b.endTs) ?? Number.NaN) - (parseTs(b.startTs) ?? Number.NaN),
+      },
+      dispatches,
+    );
+    if (match) {
+      skippedDispatch += 1;
+      continue;
+    }
     const cost = computeCost(b.model, b.tokens);
     if (cost == null) costless++;
     const durationMs = (parseTs(b.endTs) ?? 0) - (parseTs(b.startTs) ?? 0);
@@ -266,6 +329,7 @@ function importSession(sessionPath, { dryRun = false } = {}) {
     inserted,
     deduped,
     costless,
+    skippedDispatch,
   };
 }
 
@@ -471,23 +535,33 @@ async function main() {
   console.log(
     `importing ${sessions.length} session(s) — ${args.dryRun ? 'DRY RUN, no writes' : 'writing to events.db'}`,
   );
+  // One read for the whole invocation — the index is small and every session
+  // is matched against all of it.
+  const dispatches = await loadDispatchIndex();
   let totalInserted = 0;
   let totalDeduped = 0;
   let totalBuckets = 0;
   let totalCostless = 0;
+  let totalSkipped = 0;
   for (const s of sessions) {
-    const r = importSession(s.path, { dryRun: args.dryRun });
+    const r = importSession(s.path, { dryRun: args.dryRun, dispatches });
     console.log(
-      `  ${basename(s.path)}  buckets=${r.totalBuckets}  inserted=${r.inserted}  deduped=${r.deduped}  no-cost=${r.costless}`,
+      `  ${basename(s.path)}  buckets=${r.totalBuckets}  inserted=${r.inserted}  deduped=${r.deduped}  dispatch-skipped=${r.skippedDispatch}  no-cost=${r.costless}`,
     );
     totalInserted += r.inserted;
     totalDeduped += r.deduped;
     totalBuckets += r.totalBuckets;
     totalCostless += r.costless;
+    totalSkipped += r.skippedDispatch;
   }
   console.log(
-    `total — buckets=${totalBuckets}  inserted=${totalInserted}  deduped=${totalDeduped}  no-cost=${totalCostless}`,
+    `total — buckets=${totalBuckets}  inserted=${totalInserted}  deduped=${totalDeduped}  dispatch-skipped=${totalSkipped}  no-cost=${totalCostless}`,
   );
+  if (totalSkipped > 0) {
+    console.log(
+      `  ${totalSkipped} turn(s) matched a recorded dispatch and were skipped — their cost is already on the dispatch row`,
+    );
+  }
 }
 
 const invokedDirectly =

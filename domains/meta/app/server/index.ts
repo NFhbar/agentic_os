@@ -124,9 +124,10 @@ await fastify.register(usageRoutes, { prefix: '/api/usage' });
 // only finalizes rows whose PID is actually dead, via runs-finalize.mjs
 // (result-event recovery + artifact verification → done /
 // died-after-writeback / failed). Note 'periodic' mode at boot too — a
-// running row with a live PID is now a healthy adopted run, and queued
-// rows from a prior process get failed by the supervisor's next pass if
-// they never spawn.
+// running row with a live PID is now a healthy adopted run, and a queued row
+// stranded by the prior process (created, never spawned) is reaped by the
+// same pass once it is past the grace window and still has no pid and no
+// journal (decideQueuedReap in scripts/runs-supervisor.mjs).
 try {
   const swept = await sweepDeadRuns('server restart: PID not alive', 'periodic');
   if (swept > 0) console.log(`runs: finalized ${swept} dead run(s) from prior process`);

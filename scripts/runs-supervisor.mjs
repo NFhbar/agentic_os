@@ -16,7 +16,7 @@
 // which skips the imports altogether. Same pattern as runs-finalize.mjs.
 
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -27,6 +27,13 @@ const REPO_ROOT = join(__dirname, '..');
 // than this after the row's started_at cannot be that child — the number was
 // recycled by the OS onto somebody else's process.
 export const PID_OWNERSHIP_GRACE_MS = 5 * 60 * 1000;
+
+// How long a `queued` row may sit with no pid and no journal before it is
+// declared never-spawned. Generous relative to the real createRun→spawn window
+// (milliseconds) because the cost of being early is finalizing a run that was
+// about to start, and the cost of being late is a few extra minutes on a row
+// that is already dead.
+export const QUEUED_REAP_GRACE_MS = 2 * 60 * 1000;
 
 export const HEARTBEAT_PATH = join(REPO_ROOT, '.claude', 'state', 'supervision-heartbeat.json');
 
@@ -104,6 +111,55 @@ export function pidBelongsToRun(pid, startedAt, deps = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Stranded queued rows — a row whose child was never born.
+// ---------------------------------------------------------------------------
+
+// Dispatch writes the run row BEFORE it spawns the child, so the per-change
+// concurrency gate is armed from the instant a dispatch is admitted. The cost
+// of that ordering is a window: between the row and the spawn the row is
+// `queued` with no pid. Anything that ends the dispatching process inside that
+// window — a restart, a crash, a tree-kill — leaves the row there permanently.
+// Nothing else can clear it: there is no pid to watch die, no journal to
+// finalize from, and cancel has no process to signal. The change's gate stays
+// held, so every later dispatch for that change is refused, forever.
+//
+// Three facts separate that row from a healthy one:
+//   - no pid            — markRunning never ran
+//   - no journal        — the child never wrote a byte, so it never started
+//                         (a journal means a live child re-parented to PID 1
+//                         and outlived its dispatcher: an orphan to ADOPT via
+//                         the normal finalize-from-evidence path, never to
+//                         reap here)
+//   - older than grace  — past any plausible in-flight createRun→spawn gap
+//
+// Pure decision; the caller supplies the facts and applies the verdict. Every
+// `no` carries its own reason so a pass that reaps nothing still says why.
+export function decideQueuedReap({
+  pid = null,
+  journalExists = false,
+  ageMs = 0,
+  graceMs = QUEUED_REAP_GRACE_MS,
+} = {}) {
+  if (pid) return { reap: false, reason: 'has-pid' };
+  // A journal means a child exists (or existed) — it is not this rule's case.
+  if (journalExists) return { reap: false, reason: 'journal-exists' };
+  // A zero grace means the caller already knows the dispatcher is gone (boot),
+  // so age adds nothing — including when the row's stamp is unreadable.
+  if (graceMs > 0) {
+    if (!Number.isFinite(ageMs)) return { reap: false, reason: 'age-unknown' };
+    if (ageMs < graceMs) return { reap: false, reason: 'within-grace' };
+  }
+  return { reap: true, reason: 'never-spawned' };
+}
+
+// The honest error for a reaped row. Names what is known (nothing ran) rather
+// than guessing a cause, and says what to do about it.
+export function composeQueuedReapError(ageMs) {
+  const age = Number.isFinite(ageMs) ? `${Math.max(1, Math.round(ageMs / 60000))}m` : 'indefinitely';
+  return `env-failure: never spawned — queued ${age} with no pid and no journal; the dispatching process died between creating the row and starting the child. Nothing ran; re-dispatch`;
+}
+
+// ---------------------------------------------------------------------------
 // Supervision heartbeat — who watches the watchers.
 // ---------------------------------------------------------------------------
 
@@ -148,6 +204,7 @@ export async function resolveDeps(overrides = {}) {
     readProcStartMs,
     kill: (pid, signal) => process.kill(pid, signal),
     now: () => Date.now(),
+    journalExists: (path) => typeof path === 'string' && path !== '' && existsSync(path),
     ...overrides,
   };
   if (RUNTIME_DEP_KEYS.every((k) => typeof deps[k] === 'function')) return deps;
@@ -171,15 +228,41 @@ export async function resolveDeps(overrides = {}) {
 // ---------------------------------------------------------------------------
 
 // Sweep dead runs. `mode`:
-//   - 'boot'     — also fails queued rows without a PID (the prior process
-//                  died before spawning; nothing will ever pick them up)
-//   - 'periodic' — leaves queued-without-PID rows alone (mid-spawn race)
+//   - 'boot'     — the process that would have spawned any queued row's child
+//                  is provably gone, so the grace window collapses to zero
+//   - 'periodic' — a queued row may be milliseconds from its spawn; only rows
+//                  past QUEUED_REAP_GRACE_MS are eligible
+// Both modes run the same decideQueuedReap rule, which is what keeps a live
+// orphan (journal present, dispatcher gone) out of the reaper's reach in
+// either mode — that row belongs to the finalize-from-evidence path below.
 // Returns the number of rows finalized.
 export async function sweepDeadRuns(reason = 'PID not alive', mode = 'periodic', overrides) {
   const deps = await resolveDeps(overrides);
+  const nowMs = deps.now();
   let swept = 0;
   for (const row of deps.listActiveRuns()) {
-    if (row.state === 'queued' || !row.pid) {
+    if (row.state === 'queued') {
+      const startedMs = row.started_at ? Date.parse(row.started_at) : Number.NaN;
+      const ageMs = Number.isFinite(startedMs) ? nowMs - startedMs : Number.NaN;
+      const verdict = decideQueuedReap({
+        pid: row.pid,
+        journalExists: deps.journalExists(row.output_path),
+        ageMs,
+        graceMs: mode === 'boot' ? 0 : QUEUED_REAP_GRACE_MS,
+      });
+      if (!verdict.reap) continue;
+      deps.finishRun(row.id, {
+        state: 'failed',
+        exit_status: null,
+        duration_ms: null,
+        error: composeQueuedReapError(ageMs),
+      });
+      swept += 1;
+      continue;
+    }
+    if (!row.pid) {
+      // A non-queued row with no pid predates markRunning's contract. Boot
+      // still clears it; a periodic pass leaves it for the next boot.
       if (mode === 'boot') {
         deps.finishRun(row.id, {
           state: 'failed',

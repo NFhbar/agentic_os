@@ -17,6 +17,8 @@ import type { FastifyPluginAsync } from 'fastify';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { queryEvents } from '../../../../../scripts/events-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
+import { classifyRunEnvironmentFailure } from '../../../../../scripts/model-error-policy.mjs';
+// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { getRun } from '../../../../../scripts/runs-db.mjs';
 import { rewriteFrontmatter } from '../frontmatter-rewrite.js';
 import { parseFrontmatter } from '../frontmatter.js';
@@ -453,21 +455,34 @@ async function executeTick(
     // Stale tick — ignore (idempotency guard).
     return { ok: true, status: await buildStatusResponse(projectId, config) };
   }
-  // Gate 1: skill failure → pause if the gate is enabled.
+  // Gate 1: skill failure → pause if the gate is enabled. The gate is named
+  // for the skill, but it catches every non-zero exit — including the ones the
+  // environment caused. Split the two in the reason and the audit arg for the
+  // same reason the per-change loop does: park text is analytics substrate,
+  // and a session-limit death is not a verdict on the skill that was running.
   if (exit_status !== 0 && config.pause_on.includes('skill-failure')) {
+    const env = readRunEnvironmentFailure(body.run_id ?? null);
     const next: AutomationConfig = {
       ...config,
       state: {
         ...config.state,
         phase: 'paused',
-        paused_reason: `${skill} exited ${exit_status}`,
+        paused_reason: env
+          ? composeEnvFailureReason(skill, env, exit_status)
+          : `${skill} exited ${exit_status}`,
         last_transition: new Date().toISOString(),
       },
     };
     await writeAutomationConfig(found.path, next);
     recordAudit(
       'automation-pause',
-      { project: projectId, reason: `${skill}:exit-${exit_status}` },
+      {
+        project: projectId,
+        reason: env ? `env-failure:${env.signature}` : `${skill}:exit-${exit_status}`,
+        skill,
+        run_id: body.run_id ?? null,
+        env_failure: env?.signature ?? null,
+      },
       [relative(REPO_ROOT, found.path)],
     );
     return { ok: true, status: await buildStatusResponse(projectId, next) };
@@ -963,25 +978,32 @@ function buildChangeStepPrompt(step: ChangeAutomationStep, changeId: string): st
 // through the transitive graph (see tests/unit/automation/).
 export { decideNextChangeStep } from './automation-state-machine.js';
 import {
+  AUTO_UNPARK_PREFIXES,
   type ArtifactMovement,
   type ArtifactObservation,
+  type EnvironmentFailure,
   PROJECT_STEP_REQUIRED_COMPLETION,
   type ProjectStepArtifactContext,
   type ProjectStepArtifactVerdict,
   TREE_WRITING_STEPS,
   checkChangeAutomationEligibility,
   composeArtifactDetail,
+  composeBranchMismatchRefusal,
   composeDirtyTreeRefusal,
+  composeEnvFailureReason,
   decideNextChangeStep,
   decideParkReconciliation,
   deriveCompletedStepFromArtifacts,
   evaluateArtifactMovement,
+  evaluateDispatchBranch,
   verifyProjectStepArtifacts,
 } from './automation-state-machine.js';
 import { lookupLinkedReview } from './pr-review-lookup.js';
 import {
   readBranchHead,
+  readCurrentBranch,
   readWorkingTreeStatus,
+  resolveRepoEntity,
   resolveRepoLocalPath,
   walkMd,
 } from './repo-facts.js';
@@ -1045,6 +1067,27 @@ async function readRunSummaryLine(runId: string): Promise<string | null> {
   }
 }
 
+// Did the environment kill this run, rather than the skill failing on its own
+// merits? Reads the run row and defers to the shared classifier
+// (scripts/model-error-policy.mjs), which consults the row's `error` column
+// first — failed rows carry the availability verdict there — and falls back to
+// the journal/stderr tails for host conditions that column doesn't name.
+//
+// Best-effort by design: no row, an unreadable journal, a throwing db read all
+// return null, which parks the run as a plain skill-failure exactly as before.
+// A misfire in the OTHER direction is the expensive one — attributing an
+// infrastructure death to a skill — so every uncertainty resolves to null.
+function readRunEnvironmentFailure(runId: string | null): EnvironmentFailure | null {
+  if (!runId) return null;
+  try {
+    const row = getRun(runId) as { error?: string | null; output_path?: string | null } | null;
+    if (!row) return null;
+    return (classifyRunEnvironmentFailure(row) as EnvironmentFailure | null) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // Dispatch a step's skill run for a change. Returns the new run_id on
 // success. Bumps `state.last_run_id` + `state.current_step` + `phase: running`
 // + `iteration_count` (when entering address-comments) so the auto-tick
@@ -1069,14 +1112,18 @@ async function dispatchChangeStep(args: {
   // for "branch absent" and reading any later head as movement.
   const branch = typeof fm.branch === 'string' ? fm.branch : null;
   const prReviewPath = typeof fm.pr_review_path === 'string' ? fm.pr_review_path : null;
-  const localPath = await resolveRepoLocalPath(repo);
-  // Clean-tree gate: a tree-writing dispatch (execute / address-comments)
-  // against a dirty clone burns a full run to learn what `git status
-  // --porcelain` says in 10ms — dev-write-change aborts pre-branch anyway.
-  // localPath is already resolved here for the baseline (hoisted, no double
-  // walk). Degraded git read → proceed (fail-open; the skill's own abort is
-  // the precise backstop).
+  const repoEntity = await resolveRepoEntity(repo);
+  const localPath = repoEntity?.local_path ?? null;
+  const baselineHead = readBranchHead(localPath, branch);
+  // Pre-dispatch gates for a tree-writing step (execute / address-comments).
+  // Both exist for the same reason: dev-write-change checks these itself and
+  // aborts pre-branch, so a dispatch that ignores them burns a full run to
+  // learn what git answers in 10ms. localPath + baselineHead are already
+  // resolved here for the artifact baseline (hoisted, no double walk).
+  // Degraded git read → proceed (fail-open; the skill's own abort is the
+  // precise backstop).
   if (TREE_WRITING_STEPS.has(step)) {
+    // Gate A — clean tree.
     const tree = readWorkingTreeStatus(localPath);
     if (!tree.degraded && tree.dirty_files.length > 0) {
       return {
@@ -1084,8 +1131,28 @@ async function dispatchChangeStep(args: {
         error: composeDirtyTreeRefusal(step, localPath ?? '<unknown path>', tree.dirty_files),
       };
     }
+    // Gate B — right branch. baselineHead already answers whether the change's
+    // own branch exists, which is what decides between "resume on the feature
+    // branch" and "cut it from the default branch".
+    const current = readCurrentBranch(localPath);
+    const branchVerdict = evaluateDispatchBranch({
+      current_branch: current.branch,
+      change_branch: branch,
+      change_branch_exists: baselineHead.head !== null,
+      default_branch: repoEntity?.default_branch ?? null,
+    });
+    if (branchVerdict.refuse && current.branch) {
+      return {
+        ok: false,
+        error: composeBranchMismatchRefusal(
+          step,
+          localPath ?? '<unknown path>',
+          current.branch,
+          branchVerdict.expected,
+        ),
+      };
+    }
   }
-  const baselineHead = readBranchHead(localPath, branch);
   const dispatchBaseline: ChangeAutomationDispatchBaseline = {
     head_sha: baselineHead.head,
     head_degraded: baselineHead.head_error === 'degraded',
@@ -1364,6 +1431,9 @@ export async function onChangeAutomationStepComplete(
         );
       }
     }
+    // Only failures pay for the evidence read — a clean exit has no
+    // environment verdict to reach.
+    const env_failure = effectiveExit === 0 ? null : readRunEnvironmentFailure(runId);
     const decision = decideNextChangeStep({
       current_step: automation.state.current_step,
       iteration_count: automation.state.iteration_count,
@@ -1373,6 +1443,7 @@ export async function onChangeAutomationStepComplete(
       comments_to_address,
       artifact_moved,
       artifact_detail,
+      env_failure,
     });
     if (decision.action === 'park') {
       // For iteration-cap-reached parks, enrich the audit args with pr_url
@@ -1393,6 +1464,11 @@ export async function onChangeAutomationStepComplete(
       const isRefused =
         decision.reason.startsWith('skill-refused') ||
         decision.reason.startsWith('verification-unavailable');
+      // Environment parks carry the classified signature as its own arg. Park
+      // reasons drive per-skill quality rollups, and a rollup that has to
+      // string-parse the reason to exclude infrastructure deaths will
+      // eventually stop doing it — a discrete field cannot be missed.
+      const isEnvFailure = decision.reason.startsWith('env-failure');
       let extraArgs: Record<string, unknown> | undefined;
       if (isCap) {
         const fmRef = (refreshed ?? found).fm;
@@ -1418,6 +1494,13 @@ export async function onChangeAutomationStepComplete(
         };
       } else if (isRefused) {
         extraArgs = { run_id: runId, step: automation.state.current_step };
+      } else if (isEnvFailure) {
+        extraArgs = {
+          run_id: runId,
+          step: automation.state.current_step,
+          env_failure: env_failure?.signature ?? null,
+          env_failure_clears_at: env_failure?.reset_at ?? null,
+        };
       }
       await parkChangeAutomation({
         changeId,
@@ -1485,9 +1568,11 @@ async function reconcileChangeAutomationIfStale(found: {
   const change_status = typeof found.fm.status === 'string' ? found.fm.status : null;
   const isTerminalStatus = change_status === 'merged' || change_status === 'abandoned';
   const reason = automation.state.paused_reason ?? '';
+  // Same prefix list decideParkReconciliation gates on — imported rather than
+  // restated so the pre-filter can never quietly diverge from the decision it
+  // is filtering for.
   const reasonAutoUnparkable =
-    phase === 'paused' &&
-    (reason.startsWith('skill-failure') || reason.startsWith('skill-refused'));
+    phase === 'paused' && AUTO_UNPARK_PREFIXES.some((p) => reason.startsWith(p));
   const terminalCandidate =
     isTerminalStatus &&
     (phase === 'paused' || phase === 'running') &&
@@ -2313,6 +2398,9 @@ export const changeAutomationRoutes: FastifyPluginAsync = async (fastify) => {
         comments_to_address,
         artifact_moved,
         artifact_detail,
+        // Same classification the auto-tick reached, so a re-driven park
+        // reports the same cause rather than degrading to skill-failure.
+        env_failure: last_exit === 0 ? null : readRunEnvironmentFailure(current.state.last_run_id),
       });
     }
     if (decision.action === 'park') {
@@ -2353,10 +2441,12 @@ export const changeAutomationRoutes: FastifyPluginAsync = async (fastify) => {
       step: decision.step,
     });
     if (!dispatched.ok) {
-      // Guard refusals (dirty-tree, ⊘ debounce) are client-actionable → 409;
-      // infrastructure dispatch errors stay 500.
+      // Guard refusals (dirty-tree, wrong-branch, ⊘ debounce) are
+      // client-actionable → 409; infrastructure dispatch errors stay 500.
       const isGuard =
-        dispatched.error.startsWith('dirty-tree:') || dispatched.error.startsWith('⊘');
+        dispatched.error.startsWith('dirty-tree:') ||
+        dispatched.error.startsWith('wrong-branch:') ||
+        dispatched.error.startsWith('⊘');
       reply.code(isGuard ? 409 : 500);
       return {
         ok: false,

@@ -32,10 +32,18 @@ export async function walkMd(dir: string): Promise<string[]> {
   return out;
 }
 
-// Resolve the change's repo entity → local_path. Mirrors the inline walk in
-// changes.ts's replay endpoint (that version lives inside a route handler and
-// isn't exported; duplicating locally beats coupling route modules).
-export async function resolveRepoLocalPath(repoId: string | null): Promise<string | null> {
+// The repo-entity fields the dispatch gates need. Both come from the same
+// entry, so callers that want both pay for one wiki walk.
+export interface RepoEntityFacts {
+  local_path: string | null;
+  default_branch: string | null;
+}
+
+// Resolve the change's repo entity. Mirrors the inline walk in changes.ts's
+// replay endpoint (that version lives inside a route handler and isn't
+// exported; duplicating locally beats coupling route modules). Null when the
+// entity doesn't exist — callers treat that as "unknown", never as a fact.
+export async function resolveRepoEntity(repoId: string | null): Promise<RepoEntityFacts | null> {
   if (!repoId) return null;
   const wikiDir = join(REPO_ROOT, 'vault', 'wiki');
   const files = await walkMd(wikiDir);
@@ -44,12 +52,47 @@ export async function resolveRepoLocalPath(repoId: string | null): Promise<strin
       const { fm, parseError } = parseFrontmatter(await readFile(file, 'utf8'));
       if (parseError) continue;
       if (fm.type !== 'entity' || fm.kind !== 'repo' || fm.id !== repoId) continue;
-      return typeof fm.local_path === 'string' ? fm.local_path : null;
+      return {
+        local_path: typeof fm.local_path === 'string' ? fm.local_path : null,
+        default_branch: typeof fm.default_branch === 'string' ? fm.default_branch : null,
+      };
     } catch {
       /* skip */
     }
   }
   return null;
+}
+
+// Local-path-only convenience over resolveRepoEntity — the shape most callers
+// want, kept so they don't all have to destructure.
+export async function resolveRepoLocalPath(repoId: string | null): Promise<string | null> {
+  return (await resolveRepoEntity(repoId))?.local_path ?? null;
+}
+
+// The branch currently checked out in the clone.
+//   - branch set   — a named branch is checked out
+//   - 'degraded'   — no path / dir missing / git or spawn failure / detached
+//                    HEAD (`rev-parse --abbrev-ref` prints "HEAD" there, which
+//                    names no branch and must not be compared against one)
+// Same fail-open posture as readWorkingTreeStatus: an unknown branch is not
+// evidence of a wrong branch.
+export function readCurrentBranch(localPath: string | null): {
+  branch: string | null;
+  degraded: boolean;
+} {
+  if (!localPath) return { branch: null, degraded: true };
+  try {
+    if (!existsSync(localPath)) return { branch: null, degraded: true };
+    const res = spawnSync('git', ['-C', localPath, 'rev-parse', '--abbrev-ref', 'HEAD'], {
+      encoding: 'utf8',
+    });
+    if (res.error || res.status !== 0) return { branch: null, degraded: true };
+    const branch = (res.stdout ?? '').trim();
+    if (branch === '' || branch === 'HEAD') return { branch: null, degraded: true };
+    return { branch, degraded: false };
+  } catch {
+    return { branch: null, degraded: true };
+  }
 }
 
 // Read the change branch's head SHA, classifying the outcome for
