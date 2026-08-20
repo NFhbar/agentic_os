@@ -62,6 +62,7 @@ const APP_ICONS: Record<string, React.ReactElement> = {
   changes: <Icons.GitBranch size={15} />,
   'pr-review': <Icons.GitPullRequest size={15} />,
   research: <Icons.Search size={15} />,
+  ops: <Icons.Flag size={15} />,
   domains: <Icons.Database size={15} />,
   skills: <Icons.Zap size={15} />,
   commands: <Icons.Code size={15} />,

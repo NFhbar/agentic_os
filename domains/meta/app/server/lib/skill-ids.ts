@@ -53,6 +53,8 @@ export const SKILL = {
   META_SCAFFOLD_PROJECT_PLAN: 'meta-scaffold-project-plan',
   META_STATUS_REPORT: 'meta-status-report',
   META_VAULT_QUERY: 'meta-vault-query',
+  OPS_ADD_PROTOCOL: 'ops-add-protocol',
+  OPS_HEALTH_REVIEW: 'ops-health-review',
   OS: 'os',
   RESEARCH_REVIEW: 'research-review',
   RESEARCH_REVISE: 'research-revise',

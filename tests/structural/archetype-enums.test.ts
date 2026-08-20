@@ -81,6 +81,15 @@ const ENUMS: EnumMap = new Map([
       ['result', new Set(['approved', 'request-changes', 'rejected'])],
     ]),
   ],
+  [
+    'review-protocol',
+    new Map([
+      // Verdict stamped back onto the protocol by ops-health-review after each
+      // run — the same three values the dated report's frontmatter carries.
+      // archetype-review-protocol § Required frontmatter.
+      ['last_verdict', new Set(['healthy', 'watch', 'action-needed'])],
+    ]),
+  ],
 ]);
 
 const manifest = readManifest();

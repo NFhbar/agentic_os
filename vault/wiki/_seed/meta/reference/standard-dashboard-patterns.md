@@ -29,6 +29,19 @@ The set of reusable component + library patterns that the OS dashboard uses to d
 | `RenameModal`      | Text input + pattern validation + collision check against a `taken` list. Used by every "rename X" operation.                                                                         |
 | `ConfirmModal`     | Destructive confirmation with optional **type-to-confirm** (user must type the exact name). Used for delete.                                                                          |
 
+### `ScaffoldForm` presentation modes
+
+Same generated form, two chromes — pick by field count, not by taste:
+
+| mode            | when                                                                                                                                                                                                         |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| modal (default) | A handful of short inputs where the surrounding page is the context the user needs to keep in view.                                                                                                          |
+| `inline` (page) | Multi-field authoring: renders as page content inside a host screen with back-navigation instead of an overlay. The host owns a real URL (`/ops/new`), so the screen is deep-linkable and back/forward-safe. |
+
+Inline mode also takes `backLabel` (the back control's text) and `submitLabel` (both modes). It deliberately does not carry the modal's `.scaffold-form` class — that one caps the field list at 60vh, which is the constraint a dedicated page exists to shed.
+
+The rule of thumb: a form that needs a scrollbar of its own has outgrown the modal. Long forms in overlays lose focus on resize, fight the viewport on narrow screens, and can't be linked to — which is why multi-field flows go inline and the modal stays for short confirmations.
+
 ## Libraries (in `src/lib/`)
 
 | lib              | role                                                                                            |

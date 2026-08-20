@@ -1954,6 +1954,43 @@ button.skill-link:hover {
   }
 }
 
+/* ScaffoldForm — inline (page-hosted) presentation.
+   Same generated fields, no overlay: the host screen owns a URL, so the form
+   is deep-linkable and back/forward-safe. Deliberately does NOT reuse the
+   `.scaffold-form` class — that one caps `.form-fields` at 60vh for the modal,
+   which is exactly the constraint a dedicated page exists to shed. */
+.scaffold-form-inline {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.scaffold-form-inline-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.scaffold-form-inline section {
+  display: flex;
+  flex-direction: column;
+}
+.scaffold-form-inline section > label {
+  font-size: 0.75em;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.6;
+  margin-bottom: 4px;
+}
+.scaffold-form-inline .form-fields {
+  gap: 14px;
+  max-width: 720px;
+}
+.scaffold-form-inline-foot {
+  display: flex;
+  gap: 8px;
+  padding-top: 4px;
+}
+
 /* Schedules view ---------------------------------------------------------- */
 .view.schedules .empty-card {
   border: 1px dashed rgba(255, 255, 255, 0.18);

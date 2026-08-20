@@ -15,6 +15,16 @@ interface Props {
   // Bump to force the manifest pickers to refetch (e.g. after an ingest run
   // completes) so a freshly-ingested repo becomes selectable without a remount.
   manifestRefreshKey?: number;
+  // Render the form as page content inside a host screen instead of a modal
+  // overlay. The host owns the URL (e.g. `/ops/new`), so the form gets full
+  // real estate, deep-linkability, and back/forward navigation — the shape
+  // multi-field authoring flows want. `onCancel` becomes the back-navigation.
+  // Default (absent/false) is the modal overlay every existing call-site uses.
+  inline?: boolean;
+  // Inline mode only — label on the back control. Defaults to "Back".
+  backLabel?: string;
+  // Label on the submit button in both modes. Defaults to "Run".
+  submitLabel?: string;
 }
 
 // Strict-validated form generated from a skill's `inputs:` frontmatter schema.
@@ -28,6 +38,9 @@ export function ScaffoldForm({
   onCancel,
   onIngestRepo,
   manifestRefreshKey,
+  inline,
+  backLabel,
+  submitLabel,
 }: Props) {
   const fields = useMemo(() => Object.entries(skill.inputs), [skill.inputs]);
 
@@ -140,63 +153,79 @@ export function ScaffoldForm({
     );
   }
 
-  return (
-    <div className="modal-backdrop" onClick={onCancel}>
-      <div className="modal scaffold-form" onClick={(e) => e.stopPropagation()}>
-        <header>
-          <h3>{title ?? `Run ${skill.name}`}</h3>
-          <button className="close" onClick={onCancel}>
-            ×
-          </button>
-        </header>
+  const heading = title ?? `Run ${skill.name}`;
 
-        <section>
-          <label>Skill</label>
-          <p className="muted" style={{ margin: 0 }}>
-            <code>{skill.name}</code> — {skill.description ?? '(no description)'}
-          </p>
+  // The three body sections are identical in both presentations — only the
+  // surrounding chrome differs (modal overlay vs. page content). Extracted so
+  // the inline mode can never drift from the modal one.
+  const body = (
+    <>
+      <section>
+        <label>Skill</label>
+        <p className="muted" style={{ margin: 0 }}>
+          <code>{skill.name}</code> — {skill.description ?? '(no description)'}
+        </p>
+      </section>
+
+      {skill.parseError && (
+        <section className="banner-section">
+          <div className="banner warn">
+            <strong>Frontmatter parse error:</strong>
+            <pre style={{ margin: '4px 0 0', whiteSpace: 'pre-wrap', fontSize: '0.85em' }}>
+              {skill.parseError}
+            </pre>
+            <p style={{ margin: '6px 0 0' }} className="muted">
+              The skill's inputs schema couldn't be loaded. Fix the YAML frontmatter in{' '}
+              <code>.claude/skills/{skill.name}/SKILL.md</code> and reload.
+            </p>
+          </div>
         </section>
+      )}
 
-        {skill.parseError && (
-          <section className="banner-section">
-            <div className="banner warn">
-              <strong>Frontmatter parse error:</strong>
-              <pre style={{ margin: '4px 0 0', whiteSpace: 'pre-wrap', fontSize: '0.85em' }}>
-                {skill.parseError}
-              </pre>
-              <p style={{ margin: '6px 0 0' }} className="muted">
-                The skill's inputs schema couldn't be loaded. Fix the YAML frontmatter in{' '}
-                <code>.claude/skills/{skill.name}/SKILL.md</code> and reload.
-              </p>
-            </div>
-          </section>
+      <section className="form-fields">
+        {!skill.parseError && fields.length === 0 && (
+          <p className="muted">This skill takes no inputs.</p>
         )}
+        {fields.map(([name, def]) => {
+          const showErr = touched[name] && errors[name];
+          // Picker mode selection (in priority order):
+          //   - field has `enum` → strict select
+          //   - field is `repo` + manifest loaded → repo entity picker
+          //     with "+ Ingest new repo" hint when empty
+          //   - field is `project` + manifest loaded → project entity picker
+          //   - multiline-looking field → textarea
+          //   - else → text input
+          const isEnum = Array.isArray(def.enum) && def.enum.length > 0;
+          const isRepoPicker = name === 'repo' && repoOptions !== null;
+          const isProjectPicker = name === 'project' && projectOptions !== null;
+          return (
+            <div className="form-field" key={name}>
+              <label>
+                {name}
+                {def.required && <span className="required">*</span>}
+              </label>
+              {def.description && <p className="hint">{def.description}</p>}
 
-        <section className="form-fields">
-          {!skill.parseError && fields.length === 0 && (
-            <p className="muted">This skill takes no inputs.</p>
-          )}
-          {fields.map(([name, def]) => {
-            const showErr = touched[name] && errors[name];
-            // Picker mode selection (in priority order):
-            //   - field has `enum` → strict select
-            //   - field is `repo` + manifest loaded → repo entity picker
-            //     with "+ Ingest new repo" hint when empty
-            //   - field is `project` + manifest loaded → project entity picker
-            //   - multiline-looking field → textarea
-            //   - else → text input
-            const isEnum = Array.isArray(def.enum) && def.enum.length > 0;
-            const isRepoPicker = name === 'repo' && repoOptions !== null;
-            const isProjectPicker = name === 'project' && projectOptions !== null;
-            return (
-              <div className="form-field" key={name}>
-                <label>
-                  {name}
-                  {def.required && <span className="required">*</span>}
-                </label>
-                {def.description && <p className="hint">{def.description}</p>}
-
-                {isEnum ? (
+              {isEnum ? (
+                <select
+                  value={values[name] ?? ''}
+                  onChange={(e) => handleChange(name, e.target.value)}
+                  onBlur={() => handleBlur(name)}
+                >
+                  {!def.required && <option value="">(unset)</option>}
+                  {def.required && !values[name] && (
+                    <option value="" disabled>
+                      — choose —
+                    </option>
+                  )}
+                  {def.enum?.map((opt) => (
+                    <option key={opt} value={opt}>
+                      {opt}
+                    </option>
+                  ))}
+                </select>
+              ) : isRepoPicker ? (
+                <>
                   <select
                     value={values[name] ?? ''}
                     onChange={(e) => handleChange(name, e.target.value)}
@@ -205,102 +234,128 @@ export function ScaffoldForm({
                     {!def.required && <option value="">(unset)</option>}
                     {def.required && !values[name] && (
                       <option value="" disabled>
-                        — choose —
+                        — choose a repo —
                       </option>
                     )}
-                    {def.enum?.map((opt) => (
-                      <option key={opt} value={opt}>
-                        {opt}
-                      </option>
-                    ))}
-                  </select>
-                ) : isRepoPicker ? (
-                  <>
-                    <select
-                      value={values[name] ?? ''}
-                      onChange={(e) => handleChange(name, e.target.value)}
-                      onBlur={() => handleBlur(name)}
-                    >
-                      {!def.required && <option value="">(unset)</option>}
-                      {def.required && !values[name] && (
-                        <option value="" disabled>
-                          — choose a repo —
-                        </option>
-                      )}
-                      {repoOptions?.map((opt) => (
-                        <option key={opt.id} value={opt.id}>
-                          {opt.id}
-                          {opt.title !== opt.id ? ` — ${opt.title}` : ''}
-                        </option>
-                      ))}
-                    </select>
-                    {onIngestRepo && (
-                      <button
-                        type="button"
-                        className="link-button"
-                        style={{ padding: 0, marginTop: 6, textAlign: 'left' }}
-                        onClick={onIngestRepo}
-                      >
-                        Repo not listed? Ingest one →
-                      </button>
-                    )}
-                    {repoOptions?.length === 0 &&
-                      (onIngestRepo ? (
-                        <p className="hint muted" style={{ marginTop: 6 }}>
-                          Or via CLI: <code>/os ingest repo &lt;owner/repo&gt;</code>
-                        </p>
-                      ) : (
-                        <p className="hint" style={{ color: 'var(--warn-text)', marginTop: 6 }}>
-                          No repo entities found. Run{' '}
-                          <code>/os ingest repo &lt;owner/repo&gt;</code> via CLI to add one, or use
-                          the Overview app's Action Items panel after the action item surfaces.
-                        </p>
-                      ))}
-                  </>
-                ) : isProjectPicker ? (
-                  <select
-                    value={values[name] ?? ''}
-                    onChange={(e) => handleChange(name, e.target.value)}
-                    onBlur={() => handleBlur(name)}
-                  >
-                    {!def.required && <option value="">(none)</option>}
-                    {def.required && !values[name] && (
-                      <option value="" disabled>
-                        — choose a project —
-                      </option>
-                    )}
-                    {projectOptions?.map((opt) => (
+                    {repoOptions?.map((opt) => (
                       <option key={opt.id} value={opt.id}>
                         {opt.id}
                         {opt.title !== opt.id ? ` — ${opt.title}` : ''}
                       </option>
                     ))}
                   </select>
-                ) : isMultiline(def, name) ? (
-                  <textarea
-                    rows={5}
-                    value={values[name] ?? ''}
-                    onChange={(e) => handleChange(name, e.target.value)}
-                    onBlur={() => handleBlur(name)}
-                  />
-                ) : (
-                  <input
-                    type="text"
-                    value={values[name] ?? ''}
-                    onChange={(e) => handleChange(name, e.target.value)}
-                    onBlur={() => handleBlur(name)}
-                  />
-                )}
-                {showErr && <p className="err">{errors[name]}</p>}
-              </div>
-            );
-          })}
-        </section>
+                  {onIngestRepo && (
+                    <button
+                      type="button"
+                      className="link-button"
+                      style={{ padding: 0, marginTop: 6, textAlign: 'left' }}
+                      onClick={onIngestRepo}
+                    >
+                      Repo not listed? Ingest one →
+                    </button>
+                  )}
+                  {repoOptions?.length === 0 &&
+                    (onIngestRepo ? (
+                      <p className="hint muted" style={{ marginTop: 6 }}>
+                        Or via CLI: <code>/os ingest repo &lt;owner/repo&gt;</code>
+                      </p>
+                    ) : (
+                      <p className="hint" style={{ color: 'var(--warn-text)', marginTop: 6 }}>
+                        No repo entities found. Run <code>/os ingest repo &lt;owner/repo&gt;</code>{' '}
+                        via CLI to add one, or use the Overview app's Action Items panel after the
+                        action item surfaces.
+                      </p>
+                    ))}
+                </>
+              ) : isProjectPicker ? (
+                <select
+                  value={values[name] ?? ''}
+                  onChange={(e) => handleChange(name, e.target.value)}
+                  onBlur={() => handleBlur(name)}
+                >
+                  {!def.required && <option value="">(none)</option>}
+                  {def.required && !values[name] && (
+                    <option value="" disabled>
+                      — choose a project —
+                    </option>
+                  )}
+                  {projectOptions?.map((opt) => (
+                    <option key={opt.id} value={opt.id}>
+                      {opt.id}
+                      {opt.title !== opt.id ? ` — ${opt.title}` : ''}
+                    </option>
+                  ))}
+                </select>
+              ) : isMultiline(def, name) ? (
+                <textarea
+                  rows={5}
+                  value={values[name] ?? ''}
+                  onChange={(e) => handleChange(name, e.target.value)}
+                  onBlur={() => handleBlur(name)}
+                />
+              ) : (
+                <input
+                  type="text"
+                  value={values[name] ?? ''}
+                  onChange={(e) => handleChange(name, e.target.value)}
+                  onBlur={() => handleBlur(name)}
+                />
+              )}
+              {showErr && <p className="err">{errors[name]}</p>}
+            </div>
+          );
+        })}
+      </section>
+    </>
+  );
+
+  if (inline) {
+    return (
+      <div className="page scaffold-form-inline">
+        <header className="scaffold-form-inline-head">
+          <button type="button" className="btn btn-sm" onClick={onCancel}>
+            ← {backLabel ?? 'Back'}
+          </button>
+          <h1 className="h1" style={{ margin: 0 }}>
+            {heading}
+          </h1>
+        </header>
+
+        {body}
+
+        <footer className="scaffold-form-inline-foot">
+          <button type="button" className="btn" onClick={onCancel}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={!canSubmit}
+            onClick={handleSubmit}
+          >
+            {submitLabel ?? 'Run'}
+          </button>
+        </footer>
+      </div>
+    );
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal scaffold-form" onClick={(e) => e.stopPropagation()}>
+        <header>
+          <h3>{heading}</h3>
+          <button className="close" onClick={onCancel}>
+            ×
+          </button>
+        </header>
+
+        {body}
 
         <footer>
           <button onClick={onCancel}>Cancel</button>
           <button className="primary" disabled={!canSubmit} onClick={handleSubmit}>
-            Run
+            {submitLabel ?? 'Run'}
           </button>
         </footer>
       </div>

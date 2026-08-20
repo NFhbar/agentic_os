@@ -40,8 +40,9 @@ Tests that validate the OS _as a system_. Run against the live vault, skills tre
   - `tests/structural/events.test.ts` — notification templates + rules reference event_types that exist in event-catalog.md
   - `tests/structural/standards-coverage.test.ts` — audit checks documented in standard-os-audit.md ↔ implemented in scripts/audit.mjs
   - `tests/structural/cross-refs.test.ts` — `change.project`, `change.repo`, `change.parent_change`, `change.derived_from_report`, `plan_path`, `pr_review_path` all resolve
+  - `tests/structural/trigger-clusters.test.ts` — the trigger-collision fixture stays honest: every clustered skill exists on disk, every expected winner belongs to its own cluster, no prompt repeats, every member wins at least one phrasing
 - **Run:** every code change + every wiki edit. Pre-commit hook.
-- **Status today:** five starter tests shipped. Coverage expands as new structural categories surface.
+- **Status today:** starter coverage shipped; the list above names the load-bearing suites. Coverage expands as new structural categories surface.
 
 ### Tier 3 — Integration tests
 
