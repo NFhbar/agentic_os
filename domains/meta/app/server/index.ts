@@ -6,7 +6,7 @@ import { setAfterInsertHook } from '../../../../scripts/events-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { getEventsAfterId, getMaxEventId } from '../../../../scripts/events-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
-import { sweepDeadRuns } from '../../../../scripts/runs-supervisor.mjs';
+import { stampSupervisionHeartbeat, sweepDeadRuns } from '../../../../scripts/runs-supervisor.mjs';
 import { loadAppEnv } from './load-env.js';
 
 // Load app .env BEFORE importing routes — some route modules read process.env
@@ -125,6 +125,11 @@ await fastify.register(usageRoutes, { prefix: '/api/usage' });
 try {
   const swept = await sweepDeadRuns('server restart: PID not alive', 'periodic');
   if (swept > 0) console.log(`runs: finalized ${swept} dead run(s) from prior process`);
+  // Supervision heartbeat — this server is one of the two supervision hosts
+  // (the scheduler tick is the other). audit.mjs's supervision-stale check
+  // reads .claude/state/supervision-heartbeat.json to notice when a host
+  // stops sweeping. Stamped after the pass, at boot and on every tick below.
+  stampSupervisionHeartbeat('api-server');
 } catch (e) {
   console.error('runs dead-run sweep failed', e);
 }
@@ -138,6 +143,7 @@ const orphanSweepTimer = setInterval(() => {
   void sweepDeadRuns('orphan-sweep: PID not alive', 'periodic')
     .then((swept: number) => {
       if (swept > 0) console.log(`runs: finalized ${swept} dead run(s) (periodic sweep)`);
+      stampSupervisionHeartbeat('api-server');
     })
     .catch((e: unknown) => console.error('periodic dead-run sweep failed', e));
 }, ORPHAN_SWEEP_INTERVAL_MS);

@@ -29,7 +29,7 @@ import { spawnClaude } from './dispatch-claude.mjs';
 import { recordEvent } from './events-db.mjs';
 import { extractSkill } from './extract-event-attribution.mjs';
 import { appendHeadlessGuard } from './headless-guard.mjs';
-import { superviseRuns } from './runs-supervisor.mjs';
+import { stampSupervisionHeartbeat, superviseRuns } from './runs-supervisor.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
@@ -507,6 +507,9 @@ async function main() {
         `supervisor: reaped=${sup.reaped} wall-cap-terminated=${sup.terminated} escalated=${sup.escalated}`,
       );
     }
+    // Stamped only after a completed pass — a supervisor that throws every
+    // tick SHOULD read as stale to the audit's supervision-stale check.
+    stampSupervisionHeartbeat('scheduler-tick');
   } catch (e) {
     console.error(`supervisor error: ${e.message}`);
   }
