@@ -93,6 +93,7 @@ Direct invocation (`/dev-pr-review`, `/meta-dashboard`) is a power-user escape h
 | `revise project plan`, `apply project review findings`, `fold review into project plan`    | `meta-revise-project-plan`          |
 | `scaffold project plan`, `create project changes`, `materialize project plan`              | `meta-scaffold-project-plan`        |
 | `review pr`, `pr review`, `check pr`                                                       | `dev-pr-review`                     |
+| `draft response`, `answer pr comments`, `respond to reviewer`, `reply to pr comments`      | `dev-pr-review` (`mode: response`)  |
 | `ingest repo`, `add repo`, `ingest <url>`                                                  | `dev-ingest-repo`                   |
 | `add change`, `new change`, `change this`                                                  | `dev-add-change`                    |
 | `write change`, `execute change`, `implement change`                                       | `dev-write-change`                  |

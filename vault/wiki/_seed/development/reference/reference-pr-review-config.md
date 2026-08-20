@@ -12,6 +12,7 @@ url: internal://config/pr-review
 kind: config
 last_verified: 2026-06-09
 comment_style: concise
+comment_tone: ''
 focus_areas: [logic, security, performance, style, tests, docs]
 context_strategy: full-diff
 custom_instructions: ''
@@ -51,6 +52,14 @@ How verbose the comments should be.
 | `terse`    | One-line observations. No explanation, no suggestions unless trivial                                                       |
 | `concise`  | Two-to-three sentences. Brief reasoning + suggestion where applicable. **Default**                                         |
 | `detailed` | Full reasoning, suggestion code blocks, links to related context. Use when reviewing PRs you want a deep teaching trace on |
+
+### `comment_tone`
+
+How the comments should **sound**, as opposed to how long they should be. Applies to every comment body [[dev-pr-review]] writes — findings in a review pass and replies in a response pass alike — layered on top of `comment_style`. The two stack: style decides depth, tone decides voice.
+
+Defaults to empty, which means "use the skill's built-in tone block" — friendly, conversational, collaborative phrasing, 2–5 sentences per comment, impact plus a suggested fix. The exact wording lives in [[dev-pr-review]] step 7 so there is one copy of it.
+
+Set this field to replace that default with your own wording. Anything you write here is passed to the model verbatim, so write it as instructions to a reviewer ("Write comments that…"), not as a label. Useful when a team wants blunter comments, comments in another language, or a house voice that differs from the default.
 
 ### `focus_areas`
 

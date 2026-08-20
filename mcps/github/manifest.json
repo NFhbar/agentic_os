@@ -1,7 +1,7 @@
 {
   "id": "github",
   "domain": "development",
-  "description": "GitHub integration via PAT — create PRs, read PR state, list PRs by head branch, snapshot PR check status, list + submit PR reviews, list inline review comments. Tight tool surface focused on what dev-open-pr + dev-pr-review + dev-pr-review-publish + future dev-pull-pr-comments need.",
+  "description": "GitHub integration via PAT — create PRs, read PR state, list PRs by head branch, snapshot PR check status, list + submit PR reviews, list inline review comments, reply inside a comment thread. Tight tool surface focused on what dev-open-pr + dev-pr-review + dev-pr-review-publish + dev-pull-pr-comments need.",
   "transport": "stdio",
   "command": "node",
   "args": ["mcps/github/server.mjs"],
@@ -33,7 +33,11 @@
     },
     {
       "name": "create_pull_request_review",
-      "summary": "Submit a batched PR review with inline comments + verdict (APPROVE / REQUEST_CHANGES / COMMENT). Comments may carry start_line/start_side for true multi-line range anchors (forwarded only when start_line < line). Used by dev-pr-review-publish to ship the OS-side review back to GitHub. Returns { id, html_url, state, submitted_at, comments: [{ id, path, line, html_url }] }."
+      "summary": "Submit a batched PR review with inline comments + verdict (APPROVE / REQUEST_CHANGES / COMMENT). Comments may carry start_line/start_side for true multi-line range anchors (forwarded only when start_line < line). A 422 on a payload that carried ranges is retried once with every range collapsed to its end line — reported back as range_fallback: true. Used by dev-pr-review-publish to ship the OS-side review back to GitHub. Returns { id, html_url, state, submitted_at, range_fallback, comments: [{ id, path, line, html_url }] }."
+    },
+    {
+      "name": "reply_to_pull_request_comment",
+      "summary": "Reply to an existing inline review comment so the response lands inside that thread rather than as a fresh top-level comment. Posts no review event and no verdict. Used by dev-pr-review-publish for the reply half of a publish. Returns { id, in_reply_to_id, path, line, author, created_at, html_url }."
     }
   ]
 }

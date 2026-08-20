@@ -21,6 +21,13 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { Octokit } from '@octokit/rest';
 
+import {
+  hasRangeAnchors,
+  isUnprocessableEntity,
+  normalizeReviewComments,
+  stripRangeAnchors,
+} from './review-payload.mjs';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Minimal dotenv — avoids pulling a dep. Reads mcps/github/.env and injects
@@ -162,7 +169,7 @@ const TOOLS = [
   {
     name: 'create_pull_request_review',
     description:
-      'Submit a pull request review with optional inline comments. Used by dev-pr-review-publish to ship the OS-side review back to GitHub as a single batched event. Maps the entry\'s `result` field to GitHub\'s review event (APPROVE / REQUEST_CHANGES / COMMENT). Returns { id, html_url, state, submitted_at, comments: [{ id, path, line, html_url }, ...] }.',
+      'Submit a pull request review with optional inline comments. Used by dev-pr-review-publish to ship the OS-side review back to GitHub as a single batched event. Maps the entry\'s `result` field to GitHub\'s review event (APPROVE / REQUEST_CHANGES / COMMENT). When GitHub rejects the submission with a 422 and the payload carried multi-line ranges, the review is retried once with every range collapsed to its end line, so a range GitHub won\'t take degrades to single-line anchors instead of losing the whole review. Returns { id, html_url, state, submitted_at, range_fallback, comments: [{ id, path, line, html_url }, ...] }.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -221,6 +228,26 @@ const TOOLS = [
         },
       },
       required: ['owner', 'repo', 'pull_number', 'commit_id', 'event'],
+    },
+  },
+  {
+    name: 'reply_to_pull_request_comment',
+    description:
+      'Reply to an existing inline review comment, landing the response inside that comment\'s thread instead of as a fresh top-level comment. Used by dev-pr-review-publish to answer a reviewer or the PR author where they asked. `comment_id` is the id of ANY comment in the target thread (GitHub threads the reply under the thread root). Posts no review event and no verdict. Returns { id, in_reply_to_id, path, line, author, created_at, html_url }.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        owner: { type: 'string' },
+        repo: { type: 'string' },
+        pull_number: { type: 'number' },
+        comment_id: {
+          type: 'number',
+          description:
+            'Numeric id of the review comment being replied to (the `github_comment_id` recorded when the OS published a comment, or the `id` returned by list_pull_request_review_comments for a comment written on GitHub).',
+        },
+        body: { type: 'string', description: 'Reply body (markdown).' },
+      },
+      required: ['owner', 'repo', 'pull_number', 'comment_id', 'body'],
     },
   },
 ];
@@ -380,37 +407,35 @@ async function handleListPullRequestReviewComments(args) {
 
 async function handleCreatePullRequestReview(args) {
   const { owner, repo, pull_number, commit_id, event, body = '', comments = [] } = args;
-  // Normalize each comment to GitHub's accepted shape. Default side=RIGHT
-  // (post-change view) since that's what reviewers expect when anchoring to
-  // the diff. Comments missing `line` are pushed body-only (PR-level).
-  const normalized = comments
-    .filter((c) => c && c.path && c.body)
-    .map((c) => {
-      const out = { path: c.path, body: c.body };
-      if (typeof c.line === 'number') {
-        out.line = c.line;
-        out.side = c.side === 'LEFT' ? 'LEFT' : 'RIGHT';
-        // Multi-line range: forward start_line/start_side only when the range
-        // is well-formed (start strictly before end). A malformed range
-        // degrades silently to the single-line form rather than 422-ing the
-        // whole review — the caller's validator is the primary guard; this is
-        // a last-resort safety net. start_side defaults to the resolved side.
-        if (typeof c.start_line === 'number' && c.start_line < c.line) {
-          out.start_line = c.start_line;
-          out.start_side = c.start_side === 'LEFT' ? 'LEFT' : c.start_side === 'RIGHT' ? 'RIGHT' : out.side;
-        }
-      }
-      return out;
+  // Shape the comments to GitHub's accepted form (see review-payload.mjs for
+  // the range rules). Malformed ranges are already gone by this point.
+  const normalized = normalizeReviewComments(comments);
+  const submit = (payload) =>
+    octokit.pulls.createReview({
+      owner,
+      repo,
+      pull_number,
+      commit_id,
+      event,
+      body,
+      comments: payload,
     });
-  const { data: review } = await octokit.pulls.createReview({
-    owner,
-    repo,
-    pull_number,
-    commit_id,
-    event,
-    body,
-    comments: normalized,
-  });
+  let review;
+  // range_fallback tells the caller the review landed with single-line
+  // anchors it did not author, so the degradation shows up in the report
+  // instead of quietly changing where comments sit on the PR.
+  let range_fallback = false;
+  try {
+    ({ data: review } = await submit(normalized));
+  } catch (err) {
+    // A 422 on a payload that carried ranges is the one failure worth a
+    // second attempt: strip every range and let the review land single-line.
+    // Any other status, or a payload with no ranges to strip, surfaces as-is.
+    if (!isUnprocessableEntity(err) || !hasRangeAnchors(normalized)) throw err;
+    const { comments: flattened } = stripRangeAnchors(normalized);
+    ({ data: review } = await submit(flattened));
+    range_fallback = true;
+  }
   // After the review is submitted, fetch the resulting inline comments so the
   // caller can stamp `github_comment_id` per comment back onto the entry.
   // The list endpoint returns ALL comments on the PR; filter to this review
@@ -441,7 +466,33 @@ async function handleCreatePullRequestReview(args) {
     state: review.state, // APPROVED / CHANGES_REQUESTED / COMMENTED
     submitted_at: review.submitted_at,
     commit_id: review.commit_id,
+    range_fallback,
     comments: postedComments,
+  };
+}
+
+async function handleReplyToPullRequestComment(args) {
+  const { owner, repo, pull_number, comment_id, body } = args;
+  // GitHub resolves the thread from the comment id, so the reply lands under
+  // the thread root even when comment_id points at a mid-thread comment.
+  const { data } = await octokit.pulls.createReplyForReviewComment({
+    owner,
+    repo,
+    pull_number,
+    comment_id,
+    body,
+  });
+  return {
+    id: data.id,
+    // Echoed so the caller can record which thread the reply joined without a
+    // second read; GitHub sets it to the thread root, not necessarily the id
+    // that was passed in.
+    in_reply_to_id: data.in_reply_to_id ?? comment_id,
+    path: data.path ?? null,
+    line: data.line ?? data.original_line ?? null,
+    author: data.user?.login ?? null,
+    created_at: data.created_at,
+    html_url: data.html_url,
   };
 }
 
@@ -453,10 +504,11 @@ const HANDLERS = {
   list_pull_request_reviews: handleListPullRequestReviews,
   list_pull_request_review_comments: handleListPullRequestReviewComments,
   create_pull_request_review: handleCreatePullRequestReview,
+  reply_to_pull_request_comment: handleReplyToPullRequestComment,
 };
 
 const server = new Server(
-  { name: 'agentic-os-github', version: '0.3.0' },
+  { name: 'agentic-os-github', version: '0.4.0' },
   { capabilities: { tools: {} } },
 );
 
