@@ -40,6 +40,8 @@ When work spans multiple repos, the right shape is a **project** owning **multip
 | `project`       | string | Owning project id — when this change is part of a larger initiative        |
 | `parent_change` | string | Previous change id this supersedes/extends (cross-change dependency)       |
 
+A change that mirrors an item in an external work tracker may additionally carry the optional tracker-linkage fields (`tracker`, `tracker_issue_id`, `tracker_issue_url`, `tracker_synced_at`, `tracker_sync_direction`). Core ships no tracker code and reads none of them — they exist so that independently built, per-install integrations write the same portable fields. See [[standard-tracker-intake]].
+
 ## Review-gate fields (managed by dev-write-change / dev-review-change)
 
 A change carries a **review gate** that `dev-write-change` consults as a state machine. The gate fields are written by the writer and reviewer skills — you don't typically hand-edit them, but the audit ensures they stay consistent.
@@ -253,3 +255,4 @@ Wrap the input's onChange with useDebouncedCallback from lib/hooks. Update snaps
 - [[archetype-project]] — projects coordinate multiple changes
 - [[archetype-entity]] — repos that changes operate on (`kind: repo`)
 - [[archetype-decision]] — capture significant choices made during a change
+- [[standard-tracker-intake]] — optional linkage fields when a change mirrors an external tracker item

@@ -49,6 +49,8 @@ documented in `standard-project-workflow.md`.
 
 With the research domain landing, **research-reports become the source of `recommended_changes`**: each approved `research-report` (`type: research-report`) under a project carries a `recommended_changes` array, and phase B's `meta-scaffold-project-plan` extension reads those arrays in addition to the project plan when materializing the project's owned changes. `research_paths` is the optional explicit list — the manifest's backlinks already make `report.project: <project-id>` → owning-project queries cheap, so `research_paths` is mostly documentation (skills derive it from backlinks at scaffold time).
 
+A project that maps to a container in an external work tracker (project, epic, board, milestone) may additionally carry `tracker` + `tracker_project_id`. Core ships no tracker code and reads neither field — they exist so per-install integrations stay portable. See [[standard-tracker-intake]].
+
 Branch tracking lives on each **repo entity** (`current_branch` field set by `dev-ingest-repo`), not on the project. The project knows which repos it touches; each repo knows which branch the OS is operating on. v1 supports one project per repo at a time; cross-repo branch coordination is the agent's responsibility.
 
 ## Plan-tracking fields (managed by `research-write` / `meta-review-project-plan` / `meta-revise-project-plan` / `meta-scaffold-project-plan`)
@@ -181,4 +183,4 @@ Active — currently in scaffolding phase (Layer 6 of 11).
 
 ## Related
 
-[[archetype-decision]] (decisions emerge from projects), [[archetype-entity]] (for ongoing areas)
+[[archetype-decision]] (decisions emerge from projects), [[archetype-entity]] (for ongoing areas), [[standard-tracker-intake]] (optional linkage to an external work tracker)
