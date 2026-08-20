@@ -196,6 +196,124 @@ export function deriveCompletedStepFromArtifacts(args: {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Project-level artifact gate
+//
+// The PROJECT orchestrator (executeTick in automation.ts) advances its step
+// pointer write → open-pr → review → merge on any exit-0 run. A clean REFUSAL
+// (draft-gate decline, no-op) therefore "completed" a step having done
+// nothing, and the ghost propagated down the whole chain — the same
+// refusal-ghost class the per-change loop closed with evaluateArtifactMovement.
+//
+// The project loop has no dispatch baseline to compare against (its state
+// block carries no snapshot), so the postcondition is EXISTENCE rather than
+// movement: reuse deriveCompletedStepFromArtifacts — the change loop's own
+// artifact classifier — and require the completed class to rank at or above
+// the class the project step maps to. No parallel classifier.
+// ---------------------------------------------------------------------------
+
+// Project orchestrator step → the change-lifecycle completion class whose
+// artifacts prove the step actually did something. Frozen. `merge` is
+// deliberately ABSENT: it dispatches no skill (the human merges on GitHub),
+// so there is no artifact to demand and the gate stays inert there — as it
+// does for any step outside this map.
+export const PROJECT_STEP_REQUIRED_COMPLETION: Readonly<Record<string, ChangeAutomationStep>> =
+  Object.freeze({
+    write: 'execute',
+    'open-pr': 'open-pr',
+    review: 'pr-review',
+  });
+
+// Caller-gathered facts for the project-level check. `observed` +
+// change_status + latest_pass_acted are exactly deriveCompletedStepFromArtifacts'
+// inputs (gathered by gatherArtifactObservation / lookupLinkedReview in
+// automation.ts); branch + run_summary only decorate the park reason.
+export interface ProjectStepArtifactContext {
+  change_status: string | null;
+  observed: ArtifactObservation;
+  latest_pass_acted: boolean;
+  branch: string | null;
+  run_summary: string | null;
+}
+
+// `inert` is not a failure mode — it IS the contract: the gate is inert on
+// uncertainty (unknown step, merge step, unreadable facts all ADVANCE).
+// False-parking a healthy project is the rejected failure mode, so only a
+// proven-missing artifact returns `missing`.
+export type ProjectStepArtifactVerdict =
+  | { verdict: 'verified'; completed: ChangeAutomationStep }
+  | { verdict: 'inert'; why: string }
+  | { verdict: 'missing'; required: ChangeAutomationStep; detail: string };
+
+export function verifyProjectStepArtifacts(
+  step: string | null,
+  ctx: ProjectStepArtifactContext,
+): ProjectStepArtifactVerdict {
+  const required = step === null ? undefined : PROJECT_STEP_REQUIRED_COMPLETION[step];
+  if (!required) {
+    return {
+      verdict: 'inert',
+      why: `step '${step ?? '<null>'}' has no artifact postcondition`,
+    };
+  }
+  try {
+    const completed = deriveCompletedStepFromArtifacts({
+      change_status: ctx.change_status,
+      observed: ctx.observed,
+      latest_pass_acted: ctx.latest_pass_acted,
+    });
+    // Equal-or-higher rank satisfies the postcondition — the same bar the park
+    // reconciliation uses. A project mid-flight whose change already reached a
+    // later class is grandfathered by construction.
+    if (completed !== null && STEP_RANK[completed] >= STEP_RANK[required]) {
+      return { verdict: 'verified', completed };
+    }
+    // The commit-bearing class turns on a git read; a degraded one (repo
+    // entity missing, dir gone, no branch configured, git unavailable) means
+    // UNKNOWN, not absent — same posture evaluateArtifactMovement takes above.
+    // pr_url and the review pass are frontmatter facts, so a degraded git read
+    // says nothing about them and must not soften those verdicts.
+    if (required === 'execute' && ctx.observed.head_error === 'degraded') {
+      return { verdict: 'inert', why: `git read degraded for '${step}' — artifacts unverifiable` };
+    }
+    return { verdict: 'missing', required, detail: composeProjectStepDetail(required, ctx) };
+  } catch (e) {
+    // The classifier itself failing is uncertainty, not evidence of a refusal.
+    // Advance (the caller only parks on `missing`).
+    return {
+      verdict: 'inert',
+      why: `artifact classifier threw for '${step}': ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+}
+
+// One-line missing-artifact fact for the park reason (park reasons serialize
+// into single-line YAML flow via rewriteFrontmatter, so this must never wrap).
+// Mirrors composeArtifactDetail's wording, phrased for existence rather than
+// movement.
+function composeProjectStepDetail(
+  required: ChangeAutomationStep,
+  ctx: ProjectStepArtifactContext,
+): string {
+  const { observed, branch, change_status, run_summary } = ctx;
+  let detail: string;
+  if (required === 'execute') {
+    detail =
+      observed.head === null
+        ? `no commits on ${branch ?? '<unknown branch>'}${observed.head_error === 'ref-not-found' ? ' (ref not found)' : ''}`
+        : `change status still '${change_status ?? 'unknown'}' at head ${observed.head.slice(0, 7)} — the EXECUTE writeback never landed`;
+  } else if (required === 'open-pr') {
+    detail = 'pr_url not set on the change entry';
+  } else if (required === 'pr-review') {
+    detail = observed.pr_review_path_set
+      ? `no review pass on the linked pr-review entry (pass_count ${observed.pass_count ?? 0})`
+      : 'no pr-review entry linked';
+  } else {
+    detail = `${required} artifacts not found`;
+  }
+  return run_summary ? `${detail}; run summary: "${run_summary}"` : detail;
+}
+
 // Decide the next gesture given the change's current state + the outcome of
 // the most recent run. Pure function — no side effects, no I/O.
 export function decideNextChangeStep(args: {

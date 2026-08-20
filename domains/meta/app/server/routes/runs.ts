@@ -744,7 +744,13 @@ function finishAndRecord(session: RunSession) {
   // tick the state machine forward (advance or pause per the gate rules).
   // Fire-and-forget — auto-tick is best-effort and must not block the
   // close handler's cleanup. Internal failures log to console only.
-  void onAutomationStepComplete(session.project, session.change_id, session.skill, effectiveExit);
+  void onAutomationStepComplete(
+    session.project,
+    session.change_id,
+    session.skill,
+    effectiveExit,
+    session.id,
+  );
   // Phase 2: per-change automation hook. Runs alongside the project hook
   // above — they read from different frontmatter (project vs change), so
   // there's no conflict. The change hook only acts when the change's
@@ -877,7 +883,7 @@ export async function processUnhookedRuns(): Promise<number> {
       // died-after-writeback advances automation as a success (the linked
       // entity was verifiably updated) — the warning lives on the run row.
       const effectiveExit = ok ? (row.exit_status ?? 0) : (row.exit_status ?? 1);
-      void onAutomationStepComplete(row.project, row.change_id, row.skill, effectiveExit);
+      void onAutomationStepComplete(row.project, row.change_id, row.skill, effectiveExit, row.id);
       void onChangeAutomationStepComplete(row.change_id, row.skill, effectiveExit, row.id);
     } catch (e) {
       console.error(`runs: unhooked-run processing failed for ${row.id}`, e);

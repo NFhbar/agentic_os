@@ -97,6 +97,11 @@ export interface AutomationTickBody {
   // Optional review outcome — only present for dev-pr-review ticks.
   // Drives the review-not-approved gate.
   review_result?: 'approve' | 'changes' | 'block' | null;
+  // Optional id of the run that just terminated. Decoration only: the
+  // artifact gate quotes that run's own report line in the park reason so a
+  // refusal names itself. Absent → the park reason carries the artifact fact
+  // alone; no gate decision depends on it.
+  run_id?: string | null;
 }
 
 // ─── Phase 2 — Per-change automation ──────────────────────────────────────────
