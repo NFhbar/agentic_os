@@ -11,6 +11,7 @@ export const SKILL = {
   DEV_ANALYZE_REPO_FOR_REVIEW: 'dev-analyze-repo-for-review',
   DEV_CACHE_PR_REVIEW_REPO: 'dev-cache-pr-review-repo',
   DEV_CLOSE_CHANGE: 'dev-close-change',
+  DEV_DRIVE_PROJECT: 'dev-drive-project',
   DEV_INGEST_REPO: 'dev-ingest-repo',
   DEV_MARK_PR_READY: 'dev-mark-pr-ready',
   DEV_OPEN_PR: 'dev-open-pr',
