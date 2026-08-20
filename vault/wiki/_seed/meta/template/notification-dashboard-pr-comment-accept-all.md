@@ -15,7 +15,7 @@ last_verified: 2026-06-02
 
 # Notification template — pr-review comments bulk-accepted
 
-Renders when `dashboard.pr-comment-accept-all` fires (a user clicked "Accept all" on a PR-review pass's inline comments, queueing them for the next `dev-write-change` address-comments run). Marks the human's intent to fold the reviewer's findings into code. Args carry `change`, `accepted_count`.
+Renders when `dashboard.pr-comment-accept-all` fires (a user clicked "Accept all" on a PR-review pass's inline comments, queueing them for the next `dev-write-change` address-comments run). Marks the human's intent to fold the reviewer's findings into code. Args carry `review`, `pass`, `accepted_count`; `{{change_id}}` comes from the event's own attribution field, not from args.
 
 ## title
 

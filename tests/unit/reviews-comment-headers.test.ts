@@ -16,6 +16,7 @@ import { describe, expect, it } from 'vitest';
 import {
   extractComments,
   extractPassConfig,
+  extractStats,
   mutateCommentInContent,
   parseCommentHeaderLine,
 } from '../../domains/meta/app/server/routes/reviews.js';
@@ -130,6 +131,52 @@ describe('extractPassConfig — agent kind', () => {
   it('is null when the pass declares no agent', () => {
     const plain = ['', '### Pass config', '- model: m', '- style: concise', ''].join('\n');
     expect(extractPassConfig(plain).agent).toBeNull();
+  });
+});
+
+describe('extractStats — multi-line section', () => {
+  // One metric per line is the archetype's Stats shape, so a section parser
+  // that stops at the first line ending reads `- files:` and nothing else.
+  const STATS_PASS = [
+    '',
+    '### Pass config',
+    '- model: some-model',
+    '',
+    '### Stats',
+    '- files: 9',
+    '- +140 / -37',
+    '- commits: 4',
+    '',
+  ].join('\n');
+
+  it('reads every metric, not just the first line', () => {
+    expect(extractStats(STATS_PASS)).toEqual({
+      files: 9,
+      additions: 140,
+      deletions: 37,
+      commits: 4,
+    });
+  });
+
+  it('stops at the next heading rather than swallowing it', () => {
+    const withTrailingSection = [
+      STATS_PASS,
+      '### Comments',
+      '',
+      '#### Comment 1: logic · bug',
+      '- files: 999',
+      '',
+    ].join('\n');
+    expect(extractStats(withTrailingSection).files).toBe(9);
+  });
+
+  it('returns zeros when the pass declares no stats', () => {
+    expect(extractStats('\n### Pass config\n- model: m\n')).toEqual({
+      files: 0,
+      additions: 0,
+      deletions: 0,
+      commits: 0,
+    });
   });
 });
 

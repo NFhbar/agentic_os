@@ -15,7 +15,7 @@ inputs:
   trigger_source:
     type: string
     required: false
-    description: 'Optional enum: `manual` | `materials` | `milestone` | `change-merged`. Surfaced in the audit event and the `## Update N` block''s `### Why this update` sub-section so the audit trail records what kicked the update. Defaults to `manual` when unset.'
+    description: 'Optional enum: `manual` | `materials` | `milestone` | `change-merged`. Dashboard trigger ids (`new-materials-ingested`, `recommended-change-merged:<change-id>`, …) are folded into these four by the update endpoint — see § Trigger sources for the mapping. Surfaced in the audit event and the `## Update N` block''s `### Why this update` sub-section so the audit trail records what kicked the update. Defaults to `manual` when unset.'
   notes:
     type: string
     required: false
@@ -39,13 +39,26 @@ effort: max
 
 Refresh an existing research-report against current reality: re-ingest the materials directory, rewrite the report body to reflect what's known now, and append a `## Update N` block that captures the delta. This is the most novel of the four research-domain skills — the one that closes the loop when reality moves under a previously-approved report.
 
-Three triggers motivate an update (the dashboard surfaces these as banners per [[archetype-research-report]] § Update triggers):
+### Trigger sources
+
+`inputs.trigger_source` records the category that motivated the update. Four values, no others:
 
 1. **`materials`** — new files have landed under `materials_path` since `last_data_ingest`
 2. **`milestone`** — the owning project hit a milestone that warrants a refresh
 3. **`change-merged`** — one of `recommended_changes[].status` flipped to `merged`; the rest of the recommendations may reshape
+4. **`manual`** — a refresh with no more specific category, including the time- and note-based dashboard banners below. The default when `trigger_source` is unset.
 
-Also callable as `manual` when the user just wants a refresh without a specific trigger.
+The dashboard raises update banners in a _different_ vocabulary — the archetype's trigger ids ([[archetype-research-report]] § Update triggers), which are per-item and separately dismissable. `POST /api/research/:id/update` folds them into the four values above before dispatch, so a caller may send either spelling:
+
+| dashboard trigger id                         | `trigger_source` |
+| -------------------------------------------- | ---------------- |
+| `new-materials-ingested`                     | `materials`      |
+| `recommended-change-merged:<change-id>`      | `change-merged`  |
+| `staleness-threshold-passed`                 | `manual`         |
+| `unconsidered-note:<n>`                      | `manual`         |
+| _(no banner — external / scheduled callers)_ | `milestone`      |
+
+The fold is lossy on purpose: the banner id itself is appended to the report's `dismissed_triggers`, so the precise trigger stays on the record even where `trigger_source` says `manual`.
 
 **Updates produce proposals, never scaffolding.** This skill MUST NOT auto-dispatch [[research-scaffold-recommendations]] (or [[dev-add-change]], which it spawns per item). New recommendations are surfaced for human triage; scaffolding remains an explicit user action.
 
@@ -58,7 +71,7 @@ The update may **reset `review_status: pending`** when the rewrite is substantiv
 1. Validate `inputs.report_id` matches `^[a-z0-9][a-z0-9-]*$`. Reject if not.
 2. Locate the report entry at `vault/wiki/research/research-report/<report_id>.md`. Reject with `report "<id>" not found` if missing or `type != research-report`.
 3. Extract: `title`, `project`, `status`, `materials_path`, `last_data_ingest`, `update_count` (default `0`), `report_revision`, `review_status`, `review_path`, `reviewed_at`, `recommended_changes` (default empty array), `dismissed_triggers`.
-4. Validate `inputs.trigger_source` if set is one of `manual`, `materials`, `milestone`, `change-merged`. Default to `manual` when unset.
+4. Validate `inputs.trigger_source` if set is one of `manual`, `materials`, `milestone`, `change-merged`. A dashboard trigger id arriving here instead means the caller bypassed the update endpoint — fold it per § Trigger sources rather than rejecting. Default to `manual` when unset.
 5. Locate the owning project at `vault/wiki/*/project/<project>.md`. Read its body for context. Warn but don't reject if missing (a project rename may have orphaned the report; update can still proceed against the materials).
 
 ### Step 2: Read the report
@@ -208,7 +221,7 @@ The `next:` line surfaces the review re-run as a recommendation when the reset f
 
 - `inputs.report_id` slug invalid → reject with the regex
 - Report not found / not `type: research-report` → reject with id
-- `trigger_source` set to a value not in the allowed enum → reject with the bad value + the allowed set
+- `trigger_source` set to a value that is neither one of the four sources nor a dashboard trigger id that folds into one → reject with the bad value + the allowed set
 - `materials_path` set but unreadable → reject (filesystem error — user must resolve before update can proceed)
 - New-materials walk finds zero new files AND no other trigger context (manual run with no `notes`, no merged changes, no milestone signal) → soft-warn but proceed: an update can still rewrite Findings prose against existing materials. Don't refuse; the user knows what they invoked.
 

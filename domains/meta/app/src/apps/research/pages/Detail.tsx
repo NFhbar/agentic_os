@@ -58,7 +58,7 @@ export interface DetailPageProps {
   onMarkApproved: (r: ResearchReportSummary) => void;
   onScaffoldAll: (r: ResearchReportSummary) => void;
   onScaffoldOne: (r: ResearchReportSummary, index: number) => void;
-  onRunUpdate: (r: ResearchReportSummary, notes: string) => void;
+  onRunUpdate: (r: ResearchReportSummary, notes: string, triggerSource: string) => void;
   onRefetchDetail: () => void;
   toast: (msg: string) => void;
 }
@@ -352,7 +352,9 @@ export const DetailPage: React.FC<DetailPageProps> = ({
           onCancel={() => setUpdateModalOpen(false)}
           onConfirm={({ notes }) => {
             setUpdateModalOpen(false);
-            onRunUpdate(report, notes);
+            // Dispatch the same trigger the modal shows the user, rather than
+            // reporting every update as `manual`.
+            onRunUpdate(report, notes, triggers[0]?.kind ?? 'manual');
             setTriggerDismissed(true);
           }}
         />

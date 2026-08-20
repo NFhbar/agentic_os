@@ -2753,6 +2753,68 @@ function checkReportAttribution() {
 }
 
 // ---------------------------------------------------------------------------
+// App-architecture checks (standard-app-architecture § 9)
+// ---------------------------------------------------------------------------
+
+// The dashboard shell. It is the standalone every module mounts into, and its
+// justification is standard-app-architecture § 1 itself ("the canonical
+// standalone — it IS the shell modules mount into"); making it restate that in
+// its own STANDALONE.md would be circular.
+const SHELL_APP_REL = 'domains/meta/app';
+
+// Every standalone app is a directory under domains/ that owns a package.json.
+// Module-shape apps are folders inside the shell's src/apps/ and never carry
+// one, so "owns a package.json" is exactly the module/standalone split the
+// standard draws ("anything not in apps/").
+function discoverStandaloneApps() {
+  const out = [];
+  const walk = (dir) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    if (entries.some((e) => e.isFile() && e.name === 'package.json')) {
+      // Stop descending: anything below belongs to THIS app, not to a nested one.
+      out.push(relative(REPO_ROOT, dir));
+      return;
+    }
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      if (e.name === 'node_modules' || e.name.startsWith('.')) continue;
+      walk(join(dir, e.name));
+    }
+  };
+  walk(join(REPO_ROOT, 'domains'));
+  return out;
+}
+
+// Pure half — given discovered apps as `[{ rel, hasJustification }]`, returns
+// the paths that still owe a written reason for not being a module.
+function unjustifiedStandaloneApps(apps) {
+  return apps.filter((a) => a.rel !== SHELL_APP_REL && !a.hasJustification).map((a) => a.rel);
+}
+
+function checkStandaloneJustified() {
+  const findings = [];
+  const apps = discoverStandaloneApps().map((rel) => ({
+    rel,
+    hasJustification: existsSync(join(REPO_ROOT, rel, 'STANDALONE.md')),
+  }));
+  for (const rel of unjustifiedStandaloneApps(apps)) {
+    findings.push({
+      id: 'standalone-justified',
+      severity: 'info',
+      path: rel,
+      message: 'Standalone app has no STANDALONE.md recording why a module was not suitable',
+      hint: 'Add STANDALONE.md next to package.json with the reason (different auth boundary, GPU-bound runtime, cross-machine bridge, mobile-first PWA, or a free-form explanation), or move the app to a module under domains/meta/app/src/apps/ per standard-app-architecture § 1.',
+    });
+  }
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
 // App-design checks (regex-based heuristics on apps/<id>/ .tsx files)
 // ---------------------------------------------------------------------------
 
@@ -3895,6 +3957,9 @@ function main() {
   findings.push(...checkResearchRecommendedChangesScaffoldedNotMerged());
   findings.push(...checkResearchRecommendedChangesStatusDrift());
   findings.push(...checkReportAttribution());
+  // App architecture: standalone apps owe a written reason for not being a
+  // module (standard-app-architecture § 9).
+  findings.push(...checkStandaloneJustified());
   // App-design heuristics (regex-based; warn-severity ones tightened to avoid
   // canonical-app false positives — see standard-app-design.md §11).
   findings.push(...checkAppDesignBannerReducer());

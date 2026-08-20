@@ -254,12 +254,15 @@ export default function Research() {
       .catch(() => toast('Scaffold dispatch failed — network error'));
   }
 
-  function runUpdate(d: ResearchReportSummary, notes: string) {
+  // `triggerSource` is the id of the banner the user acted on, or `manual`
+  // when they ran an update with no trigger pending. The endpoint folds the
+  // banner ids into the skill's category enum.
+  function runUpdate(d: ResearchReportSummary, notes: string, triggerSource = 'manual') {
     fetch(`/api/research/${encodeURIComponent(d.id)}/update`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        trigger_source: 'manual',
+        trigger_source: triggerSource,
         notes,
       }),
     })

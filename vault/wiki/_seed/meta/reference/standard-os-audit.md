@@ -250,6 +250,12 @@ The skill-coverage checks deliberately stop at "Planned" sub-headings or subsequ
 | `research-recommended-changes-status-drift`          | warn     | A `research-report.recommended_changes[].status` disagrees with the linked change's actual `status` (e.g. report says `scaffolded` but the change is `merged`, or the change has been deleted entirely). Audit-trail rot — re-run `research-update`.                                       | `archetype-research-report` |
 | `events-report-attribution-missing`                  | warn     | Events whose `skill` is one of the report-scoped skills (`research-write`, `research-review`, `research-revise`, `research-update`, `research-scaffold-recommendations`) MUST have `report_id` set. Mirrors `events-project-attribution-missing` for the report axis, exclusions included. | `standard-event-store`      |
 
+### App architecture
+
+| id                     | severity | what it enforces                                                                                                                                                                                                                                                                                                                 | source standard                |
+| ---------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| `standalone-justified` | info     | A standalone app — a directory under `domains/` that owns a `package.json`, i.e. anything that isn't a module inside the shell's `src/apps/` — has a `STANDALONE.md` next to that `package.json` recording why a module wasn't suitable. The dashboard shell itself is exempt: it is the standalone modules mount into, per § 1. | `standard-app-architecture` §9 |
+
 ### App design
 
 | id                          | severity | what it enforces                                                                                                                                                                                                                                                                     | source standard             |

@@ -204,11 +204,19 @@ export function extractPassConfig(passContent: string): {
   return { model, focusAreas, style, agent };
 }
 
-function extractStats(passContent: string): RawPass['stats'] {
-  const block = passContent.match(/^### Stats\n([\s\S]*?)(?=\n## |\n### |\n$|$)/m);
+export function extractStats(passContent: string): RawPass['stats'] {
+  // Same indexOf-slicing shape as extractPassConfig above, and for the same
+  // reason: `$` under the `m` flag matches every line ending, so a lookahead
+  // built from it stops the section at its FIRST line. Stats writes one metric
+  // per line, so the regex form only ever saw `- files:` and reported zero
+  // additions/deletions/commits.
   const stats = { files: 0, additions: 0, deletions: 0, commits: 0 };
-  if (!block) return stats;
-  for (const line of block[1].split('\n')) {
+  const startIdx = passContent.indexOf('### Stats');
+  if (startIdx < 0) return stats;
+  const afterHeader = passContent.slice(startIdx + '### Stats'.length);
+  const endIdx = afterHeader.search(/\n(?:### |## )/);
+  const section = endIdx >= 0 ? afterHeader.slice(0, endIdx) : afterHeader;
+  for (const line of section.split('\n')) {
     const t = line.trim();
     const filesM = t.match(/^- files:\s*(\d+)/);
     if (filesM) stats.files = Number(filesM[1]);
@@ -1762,7 +1770,11 @@ export const reviewsRoutes: FastifyPluginAsync = async (fastify) => {
           '--action',
           'pr-comment-accept-all',
           '--args',
-          JSON.stringify({ review: id, pass: passN, accepted: acceptedCount }),
+          // `accepted_count`, not `accepted` — the notification template
+          // interpolates `{{accepted_count}}`, and every other batch action
+          // names its tally `<verb>_count` (published_count, skipped_count,
+          // ingested_count).
+          JSON.stringify({ review: id, pass: passN, accepted_count: acceptedCount }),
           '--files-touched',
           JSON.stringify([relative(REPO_ROOT, targetFile)]),
           '--exit-status',
