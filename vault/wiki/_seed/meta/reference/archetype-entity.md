@@ -50,6 +50,24 @@ the following repo-specific fields. The full pattern is documented in
 These fields enable downstream skills (`dev-pr-review`, future
 `dev-write-feature-pr`) to operate on the repo without re-discovering metadata.
 
+### Fork-mode sync
+
+Two further optional fields declare that a clone **permanently diverges** from
+its origin — never pushed, never merged (e.g. a vendored copy whose upstream
+work is re-implemented locally by hand). They are operator-set, not derived by
+ingestion, and re-ingestion preserves them.
+
+| field                   | type   | notes                                                                                                           |
+| ----------------------- | ------ | --------------------------------------------------------------------------------------------------------------- |
+| `sync_policy`           | enum   | `fork` — the divergence is intentional. Absent (or any other value) means the clone tracks origin normally      |
+| `upstream_reviewed_sha` | string | short sha (`<sha12>`) of the last `origin/<default_branch>` commit a human reviewed for local re-implementation |
+
+The audit branches on these: a fork entity is never told to pull. Instead
+`git-upstream-unreviewed` fires when `origin/<default_branch>` moves past the
+stamp, and the hint is fetch → `git log <upstream_reviewed_sha>..origin/<branch>`
+→ re-implement what fits locally → re-stamp `upstream_reviewed_sha`. Local
+commits ahead of origin never fire a finding — that is the point of the fork.
+
 ## When to use
 
 Use `entity` when the thing has continuing existence and other entries will refer back to it. If something is one-off (a decision made once, a note), use those archetypes instead.

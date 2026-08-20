@@ -45,6 +45,13 @@ ingestion_source: github     # or local
 
 Field-by-field documentation: `archetype-entity.md` (optional frontmatter section).
 
+Two optional fields are **operator-set, never derived by ingestion**:
+`sync_policy: fork` + `upstream_reviewed_sha: <sha12>` mark a clone that
+permanently diverges from origin (never pushed, never merged — upstream work is
+re-implemented locally). Re-ingestion preserves both, and the audit swaps its
+pull hint for a review-and-stamp one on those entities. See
+`archetype-entity.md` § Fork-mode sync.
+
 ## Storage layout
 
 | asset        | location                                                            | committed?          |
