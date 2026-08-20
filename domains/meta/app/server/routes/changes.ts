@@ -4,9 +4,9 @@ import type { Dirent } from 'node:fs';
 import { readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { Octokit } from '@octokit/rest';
 import type { FastifyPluginAsync } from 'fastify';
 import { parseFrontmatter } from '../frontmatter.js';
+import { getOctokit, parsePrUrl, updateFrontmatterFields } from '../lib/github-pr.js';
 import { type EventRow, computeLifecycle } from '../lib/lifecycle-state.js';
 import { REPO_ROOT, safePath } from '../repo.js';
 import type {
@@ -40,60 +40,12 @@ const EVENTS_DB_PATH = join(REPO_ROOT, '.claude', 'state', 'events.db');
 
 // ---------------------------------------------------------------------------
 // PR endpoint helpers — live PR + CI fetch via octokit
+//
+// The token cache, Octokit client, PR-url grammar, and frontmatter writeback
+// live in ../lib/github-pr.js so the reviews route's batch PR-state refresh
+// shares one client and one set of semantics with the per-change endpoints
+// below (routes never import each other).
 // ---------------------------------------------------------------------------
-
-// Lazy-load + cache the GitHub PAT from mcps/github/.env. Read at first
-// request, cached for the dashboard process lifetime. Rotate by editing the
-// file + restarting the dashboard (matches the MCP server's contract).
-let _githubToken: string | null | undefined;
-function getGithubToken(): string | null {
-  if (_githubToken !== undefined) return _githubToken;
-  const envPath = join(REPO_ROOT, 'mcps', 'github', '.env');
-  if (!existsSync(envPath)) {
-    _githubToken = null;
-    return null;
-  }
-  try {
-    const raw = readFileSync(envPath, 'utf8');
-    for (const line of raw.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const eq = trimmed.indexOf('=');
-      if (eq === -1) continue;
-      const key = trimmed.slice(0, eq).trim();
-      const val = trimmed
-        .slice(eq + 1)
-        .trim()
-        .replace(/^['"]|['"]$/g, '');
-      if (key === 'GITHUB_TOKEN' && val.length > 0) {
-        _githubToken = val;
-        return _githubToken;
-      }
-    }
-  } catch {
-    /* fall through */
-  }
-  _githubToken = null;
-  return null;
-}
-
-// Lazy-construct an Octokit instance, reusing the token cache.
-let _octokit: Octokit | null = null;
-function getOctokit(): Octokit | null {
-  if (_octokit) return _octokit;
-  const token = getGithubToken();
-  if (!token) return null;
-  _octokit = new Octokit({ auth: token });
-  return _octokit;
-}
-
-// Parse `owner/repo` and `pull_number` from a PR URL. Returns null when
-// the URL doesn't match the canonical github.com/<owner>/<repo>/pull/<n> shape.
-function parsePrUrl(prUrl: string): { owner: string; repo: string; pull_number: number } | null {
-  const m = prUrl.match(/github\.com[/:]([\w-]+)\/([\w.-]+?)(?:\.git)?\/pull\/(\d+)/i);
-  if (!m) return null;
-  return { owner: m[1], repo: m[2], pull_number: Number(m[3]) };
-}
 
 interface PrCheckRun {
   name: string;
@@ -143,38 +95,6 @@ interface PrErrorResponse {
   error: string;
   reason: 'no-pr-url' | 'no-token' | 'parse-failed' | 'github-error' | 'not-found';
   hint?: string;
-}
-
-// Surgical frontmatter field update — preserves comments, ordering, and the
-// rest of the .md body. For each key in `updates`, replaces the value if the
-// field already exists in the frontmatter, or appends to the end of the
-// frontmatter block if it's new. Used by the PR-sync endpoint to write back
-// ci_state / ci_completed_at / merged_at / status / updated when GitHub
-// state diverges from the change entry.
-function updateFrontmatterFields(content: string, updates: Record<string, string>): string {
-  const m = content.match(/^---\n([\s\S]*?)\n---\n?/);
-  if (!m) return content;
-  const fmText = m[1];
-  const restStart = m[0].length;
-  const body = content.slice(restStart);
-  const lines = fmText.split('\n');
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const line of lines) {
-    const km = line.match(/^([a-z_][a-z0-9_]*):/i);
-    if (km && updates[km[1]] !== undefined && !seen.has(km[1])) {
-      out.push(`${km[1]}: ${updates[km[1]]}`);
-      seen.add(km[1]);
-    } else {
-      out.push(line);
-    }
-  }
-  for (const key of Object.keys(updates)) {
-    if (!seen.has(key)) {
-      out.push(`${key}: ${updates[key]}`);
-    }
-  }
-  return `---\n${out.join('\n')}\n---\n${body}`;
 }
 
 // ChangeSummary, FileRef — moved to ./changes.types.ts (shared with client).

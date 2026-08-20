@@ -405,7 +405,18 @@ export const Icons: Record<string, IconComponent> = {
 // ── Severity helpers ─────────────────────────────────────────────────────────
 
 export type Severity = 'bug' | 'nit' | 'suggestion' | 'info';
-export type SkillAgent = 'security' | 'style' | 'logic' | 'performance' | 'tests' | 'docs';
+// The six analysis aspects a review model assigns per comment, plus
+// `external` — not an aspect at all but an origin, worn by comments ingested
+// from other reviewers so a glance separates "we found this" from "someone
+// else said this".
+export type SkillAgent =
+  | 'security'
+  | 'style'
+  | 'logic'
+  | 'performance'
+  | 'tests'
+  | 'docs'
+  | 'external';
 
 export const sevClass = (s: Severity): string => `badge severity-${s}`;
 
@@ -423,9 +434,17 @@ export const sevLabel = (s: Severity): string =>
 
 export const AgentChip: React.FC<{ agent: SkillAgent }> = ({ agent }) => {
   const letter =
-    ({ security: 'S', style: 'St', logic: 'L', performance: 'P', tests: 'T', docs: 'D' } as const)[
-      agent
-    ] || '?';
+    (
+      {
+        security: 'S',
+        style: 'St',
+        logic: 'L',
+        performance: 'P',
+        tests: 'T',
+        docs: 'D',
+        external: '@',
+      } as const
+    )[agent] || '?';
   const label =
     (
       {
@@ -435,15 +454,28 @@ export const AgentChip: React.FC<{ agent: SkillAgent }> = ({ agent }) => {
         performance: 'Performance',
         tests: 'Tests',
         docs: 'Docs',
+        external: 'External',
       } as const
     )[agent] || agent;
+  const title =
+    agent === 'external'
+      ? 'Ingested from another reviewer on the PR rather than generated here'
+      : undefined;
   return (
-    <span className="agent-chip">
+    <span className="agent-chip" title={title}>
       <span className={`agent-icon ${agent}`}>{letter}</span>
       {label}
     </span>
   );
 };
+
+// Names the person behind an ingested comment. Sits next to the External
+// agent chip, which says where a comment came from without saying who from.
+export const AuthorChip: React.FC<{ author: string }> = ({ author }) => (
+  <span className="agent-chip author-chip" title={`Written by @${author} on the pull request`}>
+    @{author}
+  </span>
+);
 
 // ── Badges ───────────────────────────────────────────────────────────────────
 

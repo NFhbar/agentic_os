@@ -26,7 +26,7 @@ const SECTIONS: Array<{ id: SectionId; label: string; icon: React.ReactNode }> =
 // resolver's verdict.
 type EditableConfig = Pick<
   PrReviewConfig,
-  'comment_style' | 'focus_areas' | 'context_strategy' | 'custom_instructions'
+  'comment_style' | 'comment_tone' | 'focus_areas' | 'context_strategy' | 'custom_instructions'
 >;
 
 // All known focus areas — the six built-in categories plus any custom labels
@@ -45,6 +45,7 @@ const COMMENT_STYLES: PrReviewConfig['comment_style'][] = ['terse', 'concise', '
 function pickEditable(c: PrReviewConfig): EditableConfig {
   return {
     comment_style: c.comment_style,
+    comment_tone: c.comment_tone,
     focus_areas: c.focus_areas,
     context_strategy: c.context_strategy,
     custom_instructions: c.custom_instructions,
@@ -600,6 +601,30 @@ function SectionReview({
               'Full reasoning, suggestion code blocks, links to related context'}
           </span>
         </KvRow>
+      </SettingsCard>
+
+      <SettingsCard
+        title="Comment tone"
+        desc="The voice every comment body is written in — separate from how long it is"
+      >
+        <textarea
+          className="input"
+          value={editing.comment_tone}
+          onChange={(e) => update('comment_tone', e.target.value)}
+          placeholder="e.g. 'Write in friendly, conversational language. Explain the why, not just the what. Avoid jargon and blame.'"
+          rows={3}
+          style={{
+            width: '100%',
+            fontSize: 12.5,
+            padding: 10,
+            lineHeight: 1.4,
+            resize: 'vertical',
+          }}
+        />
+        <div className="tiny" style={{ marginTop: 8, color: 'var(--muted)' }}>
+          Applied on top of the style above: style sets the length, tone sets the register. Leave
+          empty for no tone guidance.
+        </div>
       </SettingsCard>
 
       <SettingsCard

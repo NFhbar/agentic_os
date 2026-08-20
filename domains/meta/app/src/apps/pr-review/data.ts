@@ -7,6 +7,7 @@
 // any component after the real backend wiring landed.
 
 export type {
+  CommentAgent,
   CommentState,
   LinkedChange,
   PassStats,
@@ -17,6 +18,7 @@ export type {
   ReviewPass,
   ReviewRow,
   Severity,
+  SnippetSource,
 } from '../../../server/routes/reviews.types';
 
 export type { Repo, ReposListResponse } from '../../../server/routes/repos.types';
