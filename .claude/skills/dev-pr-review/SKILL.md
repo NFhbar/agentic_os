@@ -1,9 +1,9 @@
 ---
 name: dev-pr-review
-description: 'Review a pull request — read the diff, produce categorized comments, write a structured pr-review archetype entry to the vault. Supports multi-pass review: re-running on the same PR appends a new pass.'
+description: 'Review a pull request — read the diff, produce categorized comments, write a structured pr-review archetype entry to the vault. Supports multi-pass review: re-running on the same PR appends a new pass. Also runs in response mode, drafting answers to external comments nobody has answered yet.'
 user-invocable: true
 recommended_effort: max
-version: 4
+version: 5
 domain: development
 tags: [review, pr, github, mcp, archetype, lifecycle]
 inputs:
@@ -21,6 +21,12 @@ inputs:
     required: false
     default: auto
     description: '"new" (force new entry, error if one exists), "continuation" (force new pass on existing entry), or "auto" (detect by file existence — recommended)'
+  mode:
+    type: string
+    required: false
+    default: review
+    enum: [review, response]
+    description: '`review` (default) runs the find-new-issues analysis over the diff. `response` pivots to answering: it reads the external comments that nobody has answered yet and drafts one reply per comment, each carrying an `in_reply_to` header so [[dev-pr-review-publish]] can send it into the right GitHub thread. Response mode never opens new findings, skips the head_sha debounce (the head has not moved — the conversation has), and produces a pass with no verdict.'
   focus_notes:
     type: string
     required: false
@@ -55,6 +61,7 @@ The review is a **single-model, single-call** review: one prompt that asks the m
 - Right after [[dev-open-pr]] opens a PR for an OS-tracked change (the natural follow-up)
 - When you want a review of an external PR (paste a URL into the dashboard's PR Review app)
 - When the PR you reviewed has new commits and you want a fresh pass
+- With `mode: response`, when [[dev-pull-pr-comments]] has ingested comments or author replies that ask something and nobody has answered them yet
 
 ## When NOT to use
 
@@ -102,6 +109,8 @@ The review is a **single-model, single-call** review: one prompt that asks the m
    - File missing + `inputs.pass_kind == continuation` → reject with: `No prior pr-review entry exists for <pr_url>. Run with pass_kind=new (or auto) for the first pass.`
    - File exists + `inputs.pass_kind == new` → reject with: `pr-review entry already exists at <path>. Use pass_kind=continuation (or auto) to append a pass, or delete the entry first.`
 
+   **Response mode is always a continuation.** When `inputs.mode == response`, the entry must already exist — its comments are the thing being answered. File missing → reject with: `No pr-review entry exists for <pr_url> — nothing to answer. Run a review pass first, then pull comments.`
+
 5. **Resolve `change_id` link** (sets the `change_id:` frontmatter field):
    - If `inputs.change` is set, use it directly (do NOT verify — surface as-is).
    - Else, search `vault/wiki/*/change/*.md` for an entry with `pr_url == <canonical pr_url from step 2>`. If exactly one matches, capture its `id`. If zero matches, leave `change_id` unset (external PR). If more than one matches, log a warning to the report ("multiple changes claim this PR"), pick the most recently `updated`, and continue.
@@ -113,9 +122,16 @@ The review is a **single-model, single-call** review: one prompt that asks the m
 
 7. **Load config** from `vault/wiki/development/reference/reference-pr-review-config.md` if present, else fall back to `vault/wiki/_seed/development/reference/reference-pr-review-config.md` (the shipped default — same live-first precedence as `pr-review-config.ts`). If neither exists, stop with: `pr-review config missing — restore vault/wiki/_seed/development/reference/reference-pr-review-config.md from upstream`. Parse frontmatter; capture:
    - `comment_style`
+   - `comment_tone` (string; may be empty or absent — see the tone block below)
    - `focus_areas` (list)
    - `context_strategy` (v1: must be `full-diff`; reject anything else with a "not yet supported in v1" message)
    - `custom_instructions` (string; may be empty)
+
+   **Comment tone.** The tone block applies to **every** comment body this skill writes, in both modes, on top of whatever `comment_style` asks for. Style sets length and depth; tone sets how it sounds — they stack, they don't compete. When `comment_tone` is set in config, use it verbatim. When it is empty or absent, use this default, verbatim:
+
+   > Write PR review comments in friendly, conversational language, like one engineer talking to another. Use collaborative phrases such as: "Maybe we should…", "Could we…", "Should we…", "Do you think it would make sense to…", "I think this might…", "Would it be safer to…?". State confirmed behavior clearly, but phrase recommendations collaboratively. Explain the practical impact, suggest a fix, and mention a regression test when useful. Keep each comment to 2–5 sentences and avoid sounding formal, robotic, or accusatory.
+
+   Capture the resolved text as `<comment_tone>` for step 11's prompt.
 
    **Note**: `primary_model` is NOT read from config. The model running this skill is whichever model the dispatcher resolved from Settings → Model (project default + per-skill override). Capture it from your own runtime context — your system prompt declares "The exact model ID is `<id>`" — and write that into the entry's `config.primary_model` field at step 12. Same convention as `dev-analyze-repo-for-review`'s `analyzer_model`. Don't infer the model id from the config file — it's not authoritative there.
 
@@ -146,7 +162,7 @@ The review is a **single-model, single-call** review: one prompt that asks the m
 
 8a. **Pre-flight: head_sha debounce (continuations only).** Mirrors the `meta-overseer-review` 24h-debounce pattern — same shape, content-based instead of time-based. Wasteful re-reviews against an unchanged commit are the dominant cost pattern in PR-review audits (`pr-review-re-runs-against-unchanged-head-sha` tag); this gate stops them before any LLM token is spent.
 
-    Run this gate only when `pass_kind == continuation` (from step 4). Skip entirely on Pass 1 (no prior pass to compare).
+    Run this gate only when `pass_kind == continuation` (from step 4) AND `inputs.mode == review`. Skip entirely on Pass 1 (no prior pass to compare) and in response mode — a response pass answers comments, and an unchanged head is the normal case there, not a reason to skip. Blocking it would make questions unanswerable until someone happened to push a commit.
 
     - Read the existing entry's frontmatter `last_head_sha` field (written by step 12 on the prior pass — falls back to scanning the body for the last `## Pass N` block's recorded head SHA if the field is absent for entries created before this gate landed).
     - Compare against the current `head_sha` from step 8's PR metadata.
@@ -219,7 +235,9 @@ The review is a **single-model, single-call** review: one prompt that asks the m
 
     Absence is **not an error** — graph extraction may have failed at cache time (unsupported language, etc.), or the cache may predate the import-graph feature. The review degrades gracefully to filename-only reasoning.
 
-11. **Run the review.** Compose a prompt to yourself (the model running this skill) with this structure. **The skeleton below is the contract; the knobs come from config.**
+11. **Run the analysis.** Two modes, selected by `inputs.mode`. Mode A (`review`, the default) is below; Mode B (`response`) is step 11r and replaces this step entirely — a response pass never runs the find-new-issues prompt.
+
+    **Mode A — review.** Compose a prompt to yourself (the model running this skill) with this structure. **The skeleton below is the contract; the knobs come from config.**
 
     ```
     You are reviewing the pull request below. Produce a list of review comments.
@@ -265,6 +283,8 @@ The review is a **single-model, single-call** review: one prompt that asks the m
 
     FOCUS AREAS: <comma-joined focus_areas from config>
     COMMENT STYLE: <comment_style from config>
+    COMMENT TONE (applies to every comment body, on top of COMMENT STYLE):
+    <comment_tone from step 7, verbatim>
     CUSTOM INSTRUCTIONS:
     <custom_instructions from config — included verbatim if non-empty, else "(none)">
     <if inputs.focus_notes is set: append a second line block:
@@ -280,7 +300,7 @@ The review is a **single-model, single-call** review: one prompt that asks the m
        - file: the path relative to the repo root (or null for PR-level comments)
        - line: the anchor line, READ off the annotated diff's R column (new file) — or the L column when the comment is about deleted code (then also set side: LEFT). For a finding that spans multiple lines, set line to the END line and start_line to the START line — both read off the columns, SAME side, SAME hunk, start_line < line. Use null for file-level / PR-level comments. Do NOT author range strings like "42-58"; emit line + start_line instead.
        - side / start_side: omit for the common RIGHT-side case; set side: LEFT only when anchoring to deleted (old-file) lines. start_side is only needed on the rare cross-side range and otherwise defaults to side.
-       - body: the comment text. Respect the COMMENT STYLE knob.
+       - body: the comment text. Respect the COMMENT STYLE knob and the COMMENT TONE block.
     3. Suggest a `result` for the review overall: one of approved | request-changes | comment | none
        - approved: no blockers, optional suggestions only
        - request-changes: at least one blocker or bug-severity comment
@@ -290,7 +310,67 @@ The review is a **single-model, single-call** review: one prompt that asks the m
 
     Do the analysis. Produce comments matching the requirements.
 
-11a. **Validate + snap every anchor (layer 1 — write time).** Before formatting the entry, run the composed comments' anchors through the annotator's validator against the SAME raw diff bytes from step 9 (`$TMPDIFF`). Build a JSON array — one object per comment that has a `file` + non-null `line` — and validate:
+11r. **Mode B — response.** Runs INSTEAD of step 11 when `inputs.mode == response`. The question is no longer "what is wrong with this PR" but "what did these people ask, and what is the honest answer". Hunting for fresh findings here is a failure: someone asked something and got a lecture instead of an answer.
+
+     **Build the unanswered set.** Walk every pass in the entry (parsed in step 4's continuation branch — read the file if you haven't). A comment is a candidate when ALL of:
+     - it lives in a pass whose config carries `- agent: external`, or it carries an `- author:` header (both mark text a person wrote, not the model);
+     - its `status` is not terminal (`dismissed`, `resolved`, `wontfix`, and `acted-on` are already dealt with — leave them alone);
+     - no comment anywhere in the entry carries `- in_reply_to:` pointing at it. That is the "already answered" test: the OS's own answer, published or still a draft, means the question is handled.
+
+     If the unanswered set is empty, stop without writing a pass:
+
+     ```
+     ⊘ Nothing to answer — no unanswered external comments on <id>
+       run dev-pull-pr-comments first if new comments landed on the PR
+     ```
+
+     Record the event (step 15) with `action_label = "no-op-nothing-to-answer"` and `status = "success"`, then confirm. This is a successful no-op, not a failure.
+
+     **Compose the prompt.** Same CODE CONTEXT / IMPORT GRAPH / diff blocks as Mode A — answering well needs the same context reviewing does — with the analysis instruction replaced:
+
+     ```
+     People have commented on this pull request and are waiting for an answer.
+     For each comment below, answer what was actually asked.
+
+     UNANSWERED COMMENTS:
+     <for each candidate, render one block:>
+         ref:    pass-<N>-comment-<M>
+         author: <author header, or "(unknown)">
+         file:   <file>:<line-or-"file-level">
+         asked:  <comment body verbatim>
+         <when the comment is itself a reply, also render the parent it answers:>
+         re:     pass-<N>-comment-<M> — <parent body verbatim>
+
+     COMMENT TONE (applies to every reply body):
+     <comment_tone from step 7, verbatim>
+
+     CUSTOM INSTRUCTIONS:
+     <custom_instructions from config — verbatim if non-empty, else "(none)">
+     <if inputs.focus_notes is set: append "Focus for this response pass: <inputs.focus_notes>">
+
+     Output requirements:
+     1. Produce exactly one reply per comment you can answer, and none for the
+        ones you cannot. Fewer honest answers beat one answer per comment.
+     2. Each reply carries:
+        - in_reply_to: the `ref` of the comment it answers — copied exactly.
+        - file / line: mirrored from the comment being answered, so the entry
+          renders the reply next to the code under discussion. The reply is
+          routed by in_reply_to, never by the anchor.
+        - body: the answer. Address what was asked; say plainly when the
+          answer is "you're right, that's a bug" or "I was wrong about this".
+     3. Answer from the code, not from the diff alone — read the files under
+        CODE CONTEXT when the question is about behavior beyond the changed
+        lines.
+     4. When a comment asks for a change rather than an answer, say what will
+        change and who will do it; do not edit code here.
+     5. Produce NO new findings. A concern this pass surfaces that nobody asked
+        about belongs in a review pass, not in someone's thread.
+     6. Suggest NO overall result. A response pass has no verdict.
+     ```
+
+     Do the analysis. Produce replies matching the requirements.
+
+11a. **Validate + snap every anchor (layer 1 — write time).** Skip in response mode — a reply's anchor is mirrored from the comment it answers and is display-only; `in_reply_to` is what routes it. Running the validator would snap replies onto lines nobody was talking about. Before formatting the entry, run the composed comments' anchors through the annotator's validator against the SAME raw diff bytes from step 9 (`$TMPDIFF`). Build a JSON array — one object per comment that has a `file` + non-null `line` — and validate:
 
     ```bash
     node scripts/annotate-diff-lines.mjs --validate \
@@ -407,6 +487,24 @@ The review is a **single-model, single-call** review: one prompt that asks the m
     4. Update the Summary (rewrite as: "Pass <N>: <new assessment>. <delta vs prior: e.g. '2 prior comments resolved, 1 new'>".)
     5. Append a new `## Pass <N>` section mirroring Case A's Pass 1 structure, with one addition: any new comment whose body matches an old comment's location gets `- prior: <old-comment-section-anchor>` (e.g. `- prior: pass-1-comment-3`).
 
+    **Case C — Response pass (`inputs.mode == response`)**: Case B's mechanics with three differences, all of them about not pretending an answer is a judgment.
+    1. **The verdict is suppressed.** Leave `result` in frontmatter exactly as the last review pass set it. Do not compute one, do not overwrite it, do not blank it. A pass that answers questions has said nothing about whether the PR should merge, and the last real verdict is still the truth. Record the suppression in the pass config so the entry is self-explanatory:
+
+       ```markdown
+       ### Pass config
+       - model: <model>
+       - mode: response
+       - result: suppressed — response pass carries no verdict
+       - style: <style>
+       - code context: <code_context from step 10a>
+       ```
+
+    2. **Every comment is a reply.** Each is headed `#### Comment <n>: response · suggestion` (a reply is not a finding, so it takes neither a focus-area category nor a blocking severity) and carries `- in_reply_to: pass-<N>-comment-<M>` (the `ref` copied from step 11r's prompt, unchanged) plus the mirrored `file` / `line`, and `- status: new` like any other draft comment — a human still triages before it goes out. Emit no `start_line` / `side` / `start_side`; a reply has no range of its own. Emit no `prior:` — that field links re-raised findings across passes, and a reply re-raises nothing.
+
+    3. **The Summary records the exchange, not an assessment.** Rewrite it as: `Pass <N> (response): answered <n> of <m> unanswered comment(s) from <comma-joined authors>.` Leave the prior pass's assessment prose intact below it if the Summary carries any — a response pass adds to the record instead of overwriting the review's conclusion.
+
+    Everything else follows Case B: `pass_count`, `updated`, `completed`, `last_head_sha`, and the stats refresh all behave the same way.
+
 13. **Write the file** via Write tool (new) or Edit tool (continuation). The directory `vault/wiki/development/pr-review/` may not exist on a fresh clone — `mkdir -p` first via Bash if writing new.
 
 14. **Write back PR review summary onto the change entry — only when `change_id` is set** (the OS-authored PR flow). The pr-review entry holds the authoritative content; these four fields on the change are a roll-up so the change's PR tab + Lifecycle stepper can render review state without a second fetch. See [[archetype-change]] § "PR review fields".
@@ -421,6 +519,8 @@ The review is a **single-model, single-call** review: one prompt that asks the m
     | `pr_reviewed_at`   | now (ISO 8601 UTC)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
     | `updated`          | now (bump the change's own `updated` so freshness audits don't fire)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
+    **In response mode**: write `pr_review_path`, `pr_review_passes`, and `updated` as usual, but leave `pr_review_status` and `pr_reviewed_at` untouched. Those two describe the standing verdict, and a response pass produced none — moving them would make an answer look like a fresh review of the code.
+
     **When `change_id` is null** (external PR — no change entry): skip this step entirely. The pr-review entry is the sole source of truth.
 
     **On failure** (change entry missing, permission error, etc.): log a warning in the final report and continue to step 15. The pr-review entry already exists and is the canonical record; missing the change writeback is a UX regression, not data loss.
@@ -431,12 +531,14 @@ The review is a **single-model, single-call** review: one prompt that asks the m
     node scripts/record-dashboard-action.mjs \
       --action pr-review \
       --skill dev-pr-review \
-      --args '{"pr":"<canonical_url>","change":"<change_id_or_null>","pass":<pass_n>,"result":"<suggested_result>","comment_count":<n>,"severity_breakdown":{"bug":<n>,"nit":<n>,"suggestion":<n>,"blocker":<n>},"category_breakdown":{"logic":<n>,"security":<n>,"performance":<n>,"style":<n>,"tests":<n>,"docs":<n>}}' \
+      --args '{"pr":"<canonical_url>","change":"<change_id_or_null>","pass":<pass_n>,"mode":"<review_or_response>","result":<"<suggested_result>" in review mode, null in response mode>,"comment_count":<n>,"answered_count":<a in response mode, else omit>,"severity_breakdown":{"bug":<n>,"nit":<n>,"suggestion":<n>,"blocker":<n>},"category_breakdown":{"logic":<n>,"security":<n>,"performance":<n>,"style":<n>,"tests":<n>,"docs":<n>}}' \
       --files-touched '<["vault/wiki/development/pr-review/<id>.md", "vault/wiki/<domain>/change/<change_id>.md"] if change_id was set in step 14, else just the pr-review path>' \
       --exit-status 0
     ```
 
     The shared event-attribution helper picks up `change_id` from `args.change` (when set), so OS-tracked reviews land in `events.db` tagged to the owning change. External PR reviews land with `change_id: null`. The `files_touched` list reflects every vault file actually mutated this run — including the change entry when step 14 fired — so the manifest rebuild (auto-triggered by `record-dashboard-action.mjs` on any `vault/wiki/` path) catches both writes.
+
+    **In response mode**: `result` is `null` (the pass carried no verdict — recording one would put a judgment in the timeline that was never made) and `answered_count` is how many comments got a reply. The breakdowns still describe the comments written this pass — all `response` category, all `suggestion` severity — so a response pass reads as answers in the metrics rather than as a fresh crop of findings.
 
     **`severity_breakdown` and `category_breakdown` semantics** — counts of THIS pass's comments grouped by their `severity` and `category` header fields respectively. These are aggregates of the comment headers you just emitted to the entry's body, NOT cross-pass totals. The dashboard's metrics endpoint reads these directly so it never has to body-parse historical reviews. Always emit all standard keys (zeros included) for clean SQL queries — but DO include any custom category labels the model produced (e.g. `"accessibility": 2`) as extra keys; the endpoint sums any non-standard categories into an `other` bucket.
 
@@ -458,16 +560,30 @@ The review is a **single-model, single-call** review: one prompt that asks the m
     - `comment` → review the comments at the entry path; act as appropriate
     - `none` → nothing to do
 
+    Response-mode variant — no result line, because the pass produced no verdict:
+
+    ```
+    ✓ Responses drafted — <id> · pass <pass_n>
+      pr:        <canonical_url>
+      answered:  <a> of <m> unanswered comment(s) (<comma-joined authors>)
+      unanswered: <one line per comment left without a reply, with why>
+      entry:     vault/wiki/development/pr-review/<id>.md
+      change:    <change_id or "(external PR)">
+      next:      accept the replies you want sent, then publish — replies land in
+                 their threads and post no verdict
+    ```
+
 ## Inputs schema notes
 
 - `pr`: required. URL or shorthand — see step 2 for parsing rules.
 - `change`: optional override. When set, the skill skips the auto-link search in step 5 and uses this id verbatim.
 - `pass_kind`: defaults to `auto`. Set explicitly only when you need to force a new entry over an existing one (`new`) or guarantee an append even on a missing file (`continuation` — will reject, since you can't continue what doesn't exist).
+- `mode`: defaults to `review`. Set `response` to answer external comments instead of hunting for findings — the dashboard's Draft-response action dispatches with this. Response mode is always a continuation on an existing entry, ignores `pass_kind`, skips the head_sha debounce, and writes a pass with no verdict.
 
 ## Outputs
 
-- A new or updated `pr-review` entry at `vault/wiki/development/pr-review/<id>.md`
-- When `change_id` is set: the linked change entry's five roll-up fields updated per step 14 (`pr_review_path`, `pr_review_passes`, `pr_review_status`, `pr_reviewed_at`, `updated`)
+- A new or updated `pr-review` entry at `vault/wiki/development/pr-review/<id>.md` — a review pass in review mode, a verdict-free pass of `in_reply_to` replies in response mode
+- When `change_id` is set: the linked change entry's five roll-up fields updated per step 14 (`pr_review_path`, `pr_review_passes`, `pr_review_status`, `pr_reviewed_at`, `updated`) — in response mode, only `pr_review_path`, `pr_review_passes`, and `updated`
 - An `events.db` row with `kind: dashboard`, `action: pr-review`, `skill: dev-pr-review`, `change_id: <change?>`, `files_touched: [<entry-path>, <change-path when step 14 fired>]`
 - GitHub-side comments are NOT posted here — publishing is [[dev-pr-review-publish]]'s job
 
@@ -483,6 +599,8 @@ The review is a **single-model, single-call** review: one prompt that asks the m
 - `context_strategy "<value>" not yet supported in v1` → edit `reference-pr-review-config.md` to set `context_strategy: full-diff`
 - `pr-review config missing` → neither the live nor the `_seed/` copy of `reference-pr-review-config.md` exists; restore from upstream
 - `change <id> has no pr_url — run dev-open-pr first` → the change-only dispatch shape needs an open PR to resolve
+- `No pr-review entry exists for <pr_url> — nothing to answer` → response mode needs an entry with comments in it; run a review pass, then [[dev-pull-pr-comments]]
+- `Nothing to answer — no unanswered external comments` → not an error; idempotent stop in response mode
 
 ## What this skill must NOT do
 
@@ -491,6 +609,9 @@ The review is a **single-model, single-call** review: one prompt that asks the m
 - **Modify the change entry beyond step 14's five roll-up fields** (`pr_review_path`, `pr_review_passes`, `pr_review_status`, `pr_reviewed_at`, `updated`). The change's body, `status`, `review_status`, `branch`, `pr_url`, and everything else are owned by [[dev-write-change]] / [[dev-open-pr]].
 - **Block on CI.** This skill reviews the diff; CI state is the [[runbook-pr-ci-monitor]]'s domain.
 - **Run multiple model calls.** Single call, categorized output. See [[archetype-pr-review]] § Comments for why.
+- **Emit a verdict from a response pass.** No `result`, no `pr_review_status` move, no review event downstream. Answering a question says nothing about whether the PR should merge.
+- **Raise new findings in response mode.** A concern that surfaces while answering belongs in a review pass, where it gets an anchor and a severity — not appended to someone's question.
+- **Answer a comment twice.** A comment with a reply already pointing at it is answered, draft or published. Re-answering makes the thread argue with itself.
 
 ## See also
 
@@ -501,6 +622,8 @@ The review is a **single-model, single-call** review: one prompt that asks the m
 - [[dev-analyze-repo-for-review]] — produces the Stage 2 prose knowledge consumed at step 10b
 - [[archetype-repo-knowledge]] — the prose knowledge archetype loaded into the CODE CONTEXT block
 - [[dev-open-pr]] — the upstream skill that creates the PR being reviewed
+- [[dev-pull-pr-comments]] — ingests the external comments and author replies that response mode answers
+- [[dev-pr-review-publish]] — sends the drafted replies into their GitHub threads; a replies-only publish posts no verdict
 - [[archetype-change]] — the change this review may link to via `change_id`
 - [[archetype-entity]] — repos this review may link to via `repo`
 - [[standard-mcp-usage]] — calling MCP tools from a skill (pre-flight + naming + auth + errors)
