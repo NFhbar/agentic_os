@@ -26,6 +26,10 @@ const mocks = vi.hoisted(() => ({
   artifactFresh: vi.fn(() => false),
   createRun: vi.fn(),
   finishRun: vi.fn(),
+  // Hoisted so the fallback-hook tests can hand finishAndRecord a finalized
+  // row. Default null = "row not found" ⇒ the hook is a no-op, which keeps
+  // every pre-existing pin unchanged.
+  getRun: vi.fn((): Record<string, unknown> | null => null),
   inferTerminalState: vi.fn(),
   markRunning: vi.fn(),
   recordEvent: vi.fn(),
@@ -69,7 +73,7 @@ vi.mock('../../../scripts/runs-db.mjs', () => ({
   evictBeyondCap: vi.fn(() => []),
   finishRun: mocks.finishRun,
   getActiveRunForChange: vi.fn(() => null),
-  getRun: vi.fn(() => null),
+  getRun: mocks.getRun,
   listRuns: vi.fn(() => []),
   listUnhookedTerminalRuns: vi.fn(() => []),
   markCancelRequested: vi.fn(),
@@ -156,6 +160,7 @@ describe('runs.ts wiring — PID-dead settle + spawn-failure early-finalize', ()
     // the override resolvers so a per-test value can't bleed into the next test.
     mocks.resolveModelExecuteForRun.mockResolvedValue(null);
     mocks.resolveEffortExecuteForRun.mockResolvedValue(null);
+    mocks.getRun.mockReturnValue(null);
     vi.useFakeTimers();
   });
 
@@ -423,5 +428,166 @@ describe('runs.ts wiring — PID-dead settle + spawn-failure early-finalize', ()
       'dev-write-change',
       expect.objectContaining({ model: null, effort: null }),
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // Model-availability wiring
+  //
+  // Failure injection at the close handler: a child that dies because it
+  // cannot reach its model must say so on the row instead of landing as a
+  // bare "failed" with an empty error. Everything here lives in the failure
+  // arm — the last test in this block is the happy-path pin that proves it.
+  // -------------------------------------------------------------------------
+
+  // A child's terminal stream-json result frame.
+  function resultFrame(isError: boolean, text: string): string {
+    return `${JSON.stringify({
+      type: 'result',
+      is_error: isError,
+      total_cost_usd: 0.01,
+      duration_ms: 900,
+      usage: { input_tokens: 1, output_tokens: 1 },
+      modelUsage: { 'claude-fable-5': {} },
+      result: text,
+    })}\n`;
+  }
+
+  // Echo the resolved model/effort back the way the real helper does, so the
+  // dispatch-time stamp (and session.dispatchModel) carries a real value.
+  function spawnEchoingResolution() {
+    mocks.spawnClaudeOrphaned.mockImplementation(
+      async (_prompt: string, _skill: string | null, opts: { model?: string; effort?: string }) => ({
+        pid: DEAD_PID,
+        model: opts.model ?? 'claude-fable-5',
+        effort: opts.effort ?? 'max',
+      }),
+    );
+  }
+
+  it('model_override / effort_override beat the phase-aware execute defaults', async () => {
+    // The sanctioned human escape hatch: even a dispatch the gate classifies
+    // EXECUTE-bound (which would otherwise force model_execute/effort_execute)
+    // yields to an explicit override — and the override is what gets recorded.
+    mocks.resolveModelExecuteForRun.mockResolvedValue('claude-opus-4-8');
+    mocks.resolveEffortExecuteForRun.mockResolvedValue('xhigh');
+    writeChangeFixture('override-change', { review_status: 'approved' });
+    spawnEchoingResolution();
+
+    await startRun({
+      prompt: 'Run dev-write-change for change "override-change".',
+      tags: { skill: 'dev-write-change', change_id: 'override-change' },
+      model_override: 'claude-sonnet-4-5',
+      effort_override: 'medium',
+    });
+
+    expect(mocks.spawnClaudeOrphaned).toHaveBeenCalledWith(
+      expect.any(String),
+      'dev-write-change',
+      expect.objectContaining({ model: 'claude-sonnet-4-5', effort: 'medium' }),
+    );
+    expect(mocks.setDispatchConfig).toHaveBeenCalledWith(createdRow().id, {
+      model: 'claude-sonnet-4-5',
+      effort: 'medium',
+    });
+  });
+
+  it('failed run: prepends the structured availability line to the row error', async () => {
+    spawnEchoingResolution();
+    await startRun({ prompt: 'Run dev-pr-review.', tags: { skill: 'dev-pr-review' } });
+    const row = createdRow();
+    writeFileSync(row.output_path, resultFrame(true, 'API Error: Credit balance is too low'));
+
+    await vi.advanceTimersByTimeAsync(300);
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(mocks.finishRun).toHaveBeenCalledWith(
+      row.id,
+      expect.objectContaining({
+        state: 'failed',
+        error:
+          'model-unavailable(credits): claude-fable-5 — policy: required; parked, no side effects; restore credits and re-dispatch',
+      }),
+    );
+  });
+
+  it('instant death: classifies with no result event and no captured stderr', async () => {
+    // The credit shape — exit 1 in ~1 s. No result frame, and the stderr the
+    // follower captured is empty, so before this wiring the row landed with a
+    // null error. The evidence is the stderr SIDECAR next to the journal, and
+    // the model named is the dispatch-time one (nothing was ever observed).
+    spawnEchoingResolution();
+    await startRun({ prompt: 'Run meta-curate.', tags: { skill: 'meta-curate' } });
+    const row = createdRow();
+    writeFileSync(row.output_path, '');
+    writeFileSync(row.output_path.replace(/\.raw\.jsonl$/, '.stderr.log'), 'Please run /login\n');
+
+    await vi.advanceTimersByTimeAsync(300);
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(mocks.finishRun).toHaveBeenCalledWith(
+      row.id,
+      expect.objectContaining({
+        state: 'failed',
+        // meta-curate declares no policy → the bare line.
+        error: 'model-unavailable(auth): claude-fable-5',
+      }),
+    );
+  });
+
+  it('failed fallback-allowed run: re-dispatches once on the declared fallback', async () => {
+    spawnEchoingResolution();
+    await startRun({ prompt: 'Run research-write.', tags: { skill: 'research-write' } });
+    const row = createdRow();
+    writeFileSync(row.output_path, resultFrame(true, 'Credit balance is too low'));
+    // The hook reads the freshly-finalized row back. `Once` so the second
+    // leg's own finalization finds nothing and can never spawn a third.
+    mocks.getRun.mockReturnValueOnce({
+      ...row,
+      state: 'failed',
+      skill: 'research-write',
+      model: 'claude-fable-5',
+      title: null,
+      prompt: 'Run research-write.',
+      change_id: null,
+      project: null,
+      repo: null,
+      domain: 'research',
+    });
+
+    await vi.advanceTimersByTimeAsync(300);
+    await vi.advanceTimersByTimeAsync(150);
+    await vi.advanceTimersByTimeAsync(50); // flush the fire-and-forget hook
+
+    const second = mocks.createRun.mock.calls.at(-1)?.[0];
+    expect(mocks.createRun).toHaveBeenCalledTimes(2);
+    expect(second.title).toBe('fallback(claude-opus-4-8): research-write');
+    expect(second.origin).toBe('automation');
+    expect(second.prompt).toBe('Run research-write.');
+    expect(mocks.spawnClaudeOrphaned).toHaveBeenLastCalledWith(
+      'Run research-write.',
+      'research-write',
+      expect.objectContaining({ model: 'claude-opus-4-8', effort: 'high' }),
+    );
+  });
+
+  it('happy path stays byte-identical — no classification, no second leg', async () => {
+    // The journal text would classify as rate-limit if anything looked at it;
+    // a successful run means nothing does.
+    spawnEchoingResolution();
+    await startRun({ prompt: 'Run research-write.', tags: { skill: 'research-write' } });
+    const row = createdRow();
+    writeFileSync(row.output_path, resultFrame(false, 'hit a rate limit early on, then recovered'));
+
+    await vi.advanceTimersByTimeAsync(300);
+    await vi.advanceTimersByTimeAsync(150);
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(mocks.finishRun).toHaveBeenCalledWith(
+      row.id,
+      expect.objectContaining({ state: 'done', error: null }),
+    );
+    // The fallback hook never even reads the row back on a successful run.
+    expect(mocks.getRun).not.toHaveBeenCalled();
+    expect(mocks.createRun).toHaveBeenCalledTimes(1);
   });
 });

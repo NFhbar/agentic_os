@@ -31,6 +31,8 @@ import { extractFromPrompt } from '../../../../../scripts/extract-event-attribut
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { extractSkill } from '../../../../../scripts/extract-event-attribution.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
+import { enrichModelUnavailability } from '../../../../../scripts/model-error-policy.mjs';
+// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { appendChunk } from '../../../../../scripts/runs-db.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { countRuns } from '../../../../../scripts/runs-db.mjs';
@@ -65,6 +67,8 @@ import { artifactFresh } from '../../../../../scripts/runs-finalize.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { inferTerminalState } from '../../../../../scripts/runs-finalize.mjs';
 // @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
+import { maybeRedispatchModelFallback } from '../../../../../scripts/runs-finalize.mjs';
+// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
 import { recoverUsageFromJournal } from '../../../../../scripts/runs-finalize.mjs';
 import { parseFrontmatter } from '../frontmatter.js';
 import { classifyChangeDispatchPhase } from '../lib/execute-phase.js';
@@ -97,6 +101,10 @@ interface StartBody {
   origin?: string;
   // Bypass the re-review debounce (dashboard force affordance / CLI force).
   force?: boolean;
+  // The sanctioned human escape hatch for a `model_policy: required` skill
+  // whose pinned model is unavailable — explicit, recorded, never automatic.
+  model_override?: string;
+  effort_override?: string;
 }
 
 // In-memory per-run state. Lives only while the child is running.
@@ -119,6 +127,11 @@ interface RunSession {
   report_id: string | null;
   // Captured from the stream-json result event.
   model: string | null;
+  // The model resolved at DISPATCH time (spawn flags). Distinct from `model`
+  // above, which only exists once a result event lands — a run that dies
+  // before its first API call has no observed model, and the failure arm
+  // still has to name what it tried to run on.
+  dispatchModel: string | null;
   tokensIn: number | null;
   tokensOut: number | null;
   tokensCacheRead: number | null;
@@ -390,6 +403,14 @@ export async function startRun(input: StartRunOptions): Promise<StartRunResult> 
     }
   }
 
+  // Explicit overrides win over everything resolved above — the sanctioned
+  // human escape hatch (a `required`-tier skill whose pin is unavailable) and
+  // the carrier for the auto-fallback hook's second leg. Recorded on the row
+  // like any other resolved model (setDispatchConfig below), so an override is
+  // never silent.
+  if (input.model_override) modelOverride = input.model_override;
+  if (input.effort_override) effortOverride = input.effort_override;
+
   mkdirSync(dirname(output_path), { recursive: true });
   const spawned = (await spawnClaudeOrphaned(prompt, skill, {
     outputPath: output_path,
@@ -419,6 +440,7 @@ export async function startRun(input: StartRunOptions): Promise<StartRunResult> 
     domain,
     report_id,
     model: null,
+    dispatchModel: spawned.model ?? null,
     tokensIn: null,
     tokensOut: null,
     tokensCacheRead: null,
@@ -678,6 +700,21 @@ function finishAndRecord(session: RunSession) {
     const recovered = recoverUsageFromJournal(session.outputPath) as typeof usage | null;
     if (recovered) usage = recovered;
   }
+  // Availability honesty — failure arm ONLY, so successful runs stay
+  // byte-identical to the pre-change runtime. Reads the journal + stderr
+  // tails: an instant death (exit 1 in ~1 s on an exhausted credit balance)
+  // has no result event and an empty stderr capture, so the row's own fields
+  // cannot be the source. Sits after the usage block because it names the
+  // RESOLVED model — observed id first, dispatch-time id when the child died
+  // before its first API call.
+  if (state === 'failed') {
+    const note = enrichModelUnavailability({
+      output_path: session.outputPath,
+      skill: session.skill,
+      model: usage.model ?? session.dispatchModel,
+    }) as string | null;
+    if (note) error = error ? `${note}\n${error}` : note;
+  }
   const ok = state === 'done' || state === 'died-after-writeback';
   finishRun(id, {
     state,
@@ -761,6 +798,24 @@ function finishAndRecord(session: RunSession) {
   // Hooks fired in-process — the unhooked-runs poll (processUnhookedRuns)
   // skips this row. Supervisor-finalized rows take the poll path instead.
   setHooksFired(id);
+
+  // Auto-fallback (failure arm only). Reads the freshly-finalized row so the
+  // decision sees the canonical resolved model + title — the loop guard's two
+  // inputs. Fire-and-forget like the automation hooks above: a second leg
+  // must never block the close handler. `required`-tier skills never qualify
+  // (policy gate inside), so a review gate still parks rather than downgrade.
+  if (state === 'failed') {
+    try {
+      const finalized = getRun(id) as RunRow | null;
+      if (finalized) {
+        void maybeRedispatchModelFallback(finalized, {
+          dispatch: (fallbackInput: StartRunInput) => startRun(fallbackInput),
+        });
+      }
+    } catch (e) {
+      console.error(`runs: model-fallback hook failed for ${id}`, e);
+    }
+  }
 }
 
 function superviseSession(session: RunSession) {
@@ -1004,6 +1059,8 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
       tags: body.tags,
       origin: parsedOrigin.origin,
       force: body.force,
+      model_override: body.model_override,
+      effort_override: body.effort_override,
     });
     if (result.ok) return { run_id: result.run_id };
     if ('blocking' in result) {

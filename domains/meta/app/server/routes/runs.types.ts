@@ -100,6 +100,16 @@ export interface StartRunInput {
   // sniffed from the prompt (`/force\s*[:=]\s*true/i`) so CLI-composed prompts
   // that set the skill's own `force: true` input bypass the server gate too.
   force?: boolean;
+  // Explicit model / effort for this dispatch. Beat the skill's `model:` /
+  // `effort:` pins AND the phase-aware `model_execute:` / `effort_execute:`
+  // resolution, and are recorded on the run row like any resolved model.
+  //
+  // Two callers: a human overriding a `model_policy: required` skill whose
+  // pinned model is unavailable (the sanctioned escape hatch — never silent,
+  // never automatic), and the auto-fallback hook's second leg for a
+  // `model_policy: fallback-allowed` skill.
+  model_override?: string;
+  effort_override?: string;
 }
 
 // Result of startRun(). Server uses a discriminated union (ok: boolean +
