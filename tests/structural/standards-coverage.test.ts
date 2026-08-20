@@ -15,6 +15,11 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import {
+  extractH2s,
+  semanticMarkdown,
+  // @ts-expect-error — plain .mjs module without type declarations
+} from '../../scripts/markdown-scan.mjs';
 import { REPO_ROOT } from '../helpers/vault.js';
 
 const AUDIT_PATH = join(REPO_ROOT, 'scripts', 'audit.mjs');
@@ -42,12 +47,35 @@ function readImplementedIds(): Set<string> {
   return out;
 }
 
+// The H2 that owns the registry tables. Rows anywhere else in the document
+// (usage examples, the severity legend, a future appendix) are prose about
+// the audit, not declarations of what it checks.
+const REGISTRY_HEADING = 'Check registry';
+
 // Extract check ids from standard-os-audit.md by finding all `\`<id>\``
 // occurrences that are the leading cell of a markdown table row.
+//
+// Scoped two ways, both via the shared markdown scanner: fenced blocks are
+// blanked (a sample registry row inside a ```markdown example must not count
+// as documentation), and only lines under the registry H2 are considered.
 function readDocumentedIds(): Set<string> {
   const src = readFileSync(STANDARD_PATH, 'utf8');
+  const h2s = extractH2s(src) as Array<{ title: string; line: number }>;
+  const startIdx = h2s.findIndex((h) => h.title === REGISTRY_HEADING);
+  if (startIdx < 0) {
+    throw new Error(
+      `standard-os-audit.md has no "## ${REGISTRY_HEADING}" section — the id scanner has nothing to read. ` +
+        'Restore the heading, or update REGISTRY_HEADING in this test to match the new structure.',
+    );
+  }
+  // Line numbers are 1-based and the scanner is line-preserving, so they index
+  // straight into the scanned text.
+  const lines = (semanticMarkdown(src) as string).split('\n');
+  const from = h2s[startIdx].line;
+  const to = h2s[startIdx + 1]?.line ?? lines.length + 1;
+
   const out = new Set<string>();
-  for (const line of src.split('\n')) {
+  for (const line of lines.slice(from, to - 1)) {
     // Rows shaped like `| \`change-body-template-placeholder\` | warn | ... |`
     // The "contains a hyphen" guard excludes severity-column matches and
     // other short single-word entries — every real audit check id is

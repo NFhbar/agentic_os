@@ -53,7 +53,7 @@ Create a new Claude Code skill at `.claude/skills/<name>/SKILL.md` from `_templa
    - `{{display_name}}` → input.display_name or Title-Cased name
    - `{{description}}` → input.description
    - `{{domain}}` → input.domain
-6. Create the directory `.claude/skills/<name>/` and write the rendered content to `.claude/skills/<name>/SKILL.md`. The frontmatter MUST include `user-invocable: true` so the harness exposes it as a slash command.
+6. Create the directory `.claude/skills/<name>/` and write the rendered content to `.claude/skills/<name>/SKILL.md`. The frontmatter MUST include `user-invocable: true` so the harness exposes it as a slash command. Leave the template's authoring-guidance HTML comment in place — it tells whoever fills in the body what the contract is, and it is meant to be deleted by them, not by the scaffolder.
 7. Edit the domain playbook (`domains/<domain>/playbook.md`) — locate the `## Skills` section and append:
    `- \`<name>\` — <description>`
 
@@ -107,8 +107,10 @@ Create a new Claude Code skill at `.claude/skills/<name>/SKILL.md` from `_templa
       skill:    .claude/skills/<name>/SKILL.md
       playbook: domains/<domain>/playbook.md (Skills section)
       vocab:    OS.md (Intent vocabulary)   ← or "OS.md (TODO placeholder — fill in intent_phrases)" when not provided
-      next:     edit the SKILL.md procedure body — the template ships with a stub
-                Pre-conditions/Procedure/Outputs/Errors/See also structure.
+      next:     write the SKILL.md body — the template ships TODO stubs plus an
+                authoring note. The body must COVER purpose, inputs, procedure,
+                outputs and errors somewhere; the headings are yours to choose
+                (standard-skill-format § "Body: semantic coverage").
     ```
 
 ## Outputs

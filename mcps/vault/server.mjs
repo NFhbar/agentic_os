@@ -4,11 +4,14 @@
 // reads the prebuilt index at vault/.index/manifest.json plus individual
 // wiki entry files on demand. No network, no auth.
 //
-// Repo root is resolved via CLAUDE_PROJECT_DIR (Claude Code sets this when
-// spawning MCP servers) with a fallback to walking up from this file's dir.
+// Repo root comes from the shared fail-closed resolver: the dispatched
+// `AGENTIC_OS_ROOT` first, the harness-provided CLAUDE_PROJECT_DIR as a hint,
+// then a walk up from this file's dir. It refuses rather than guessing — an
+// MCP answering vault queries from the wrong tree is worse than one that
+// won't start.
 
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -19,12 +22,11 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 
 import { parseFrontmatter } from '../../scripts/frontmatter.mjs';
+import { resolveOsRoot } from '../../scripts/os-root.mjs';
 import { searchWiki } from './search.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR
-  ? resolve(process.env.CLAUDE_PROJECT_DIR)
-  : resolve(__dirname, '..', '..');
+const REPO_ROOT = resolveOsRoot({ startDir: __dirname, hintEnvVars: ['CLAUDE_PROJECT_DIR'] });
 
 const INDEX_PATH = join(REPO_ROOT, 'vault', '.index', 'manifest.json');
 

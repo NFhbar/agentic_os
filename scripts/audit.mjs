@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { EXPECTED_COLUMNS as EVENTS_DB_EXPECTED_COLUMNS } from './events-db-init.mjs';
 import { RUNS_EXPECTED_COLUMNS, RUN_ORIGINS } from './runs-db-init.mjs';
 import { ARGS_JSON_TYPE_SQL, tallyUnattributed } from './audit-attribution-scope.mjs';
+import { detectInstalledVersion, evaluateCompat } from './check-cc-compat.mjs';
 import { classifyGitSync } from './audit-git-sync.mjs';
 import { classifyRunsOrigin } from './audit-runs-origin.mjs';
 import { classifySupervisionStaleness } from './audit-supervision.mjs';
@@ -40,6 +41,7 @@ import {
   extractSkillLikeLiterals,
   listSkillIds,
 } from './generate-skill-ids.mjs';
+import { semanticMarkdown } from './markdown-scan.mjs';
 import { missingTargetPaths } from './tuning-targets.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -191,13 +193,14 @@ const PLACEHOLDER_WIKILINK_IDS = new Set([
 ]);
 
 // Scan a markdown body for [[wikilinks]] and report any whose target is not
-// in `knownTargets`. Strips code fences and inline code first so example
-// wikilinks inside ``` blocks don't get flagged.
+// in `knownTargets`. Fence + inline-code stripping comes from the shared
+// scanner so this and the structural wikilink test agree on what counts as a
+// real reference — docs write `[[entry-id]]` in examples to TEACH the syntax,
+// and both scanners must read those the same way. `frontmatter: false`: the
+// caller already handed us the post-frontmatter body.
 function findDanglingWikilinks(body, relPath, knownTargets) {
   const findings = [];
-  const stripped = body
-    .replace(/```[\s\S]*?```/g, '')
-    .replace(/`[^`\n]+`/g, '');
+  const stripped = semanticMarkdown(body, { frontmatter: false, stripInlineCode: true });
   for (const match of stripped.matchAll(/\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]/g)) {
     const target = match[1].trim();
     if (target.includes('<') || target.includes('>')) continue; // placeholder
@@ -1251,6 +1254,35 @@ function checkInstallerCoverage() {
       hint: 'Add the init call near the other state-file initializers so a fresh clone has a ready events.db.',
     });
   }
+  return findings;
+}
+
+// Claude Code version-compatibility contract. The classification is pure
+// (scripts/check-cc-compat.mjs, unit-tested); this half shells out for the
+// installed version and maps each class onto the `cc-version-compat` finding
+// id — the id literal stays here so the audit-check-id scanners see it.
+//
+// Severities: below-minimum is `warn`, not `error` — dispatch still works, it
+// is the gate SEMANTICS that quietly degrade, and failing the audit's exit
+// code on a machine whose CLI is merely behind would block work the install
+// deliberately lets through. Above-tested is `info` (an invitation to move the
+// ceiling). A CLI that isn't installed says nothing at all: the audit runs on
+// machines that never dispatch, and silence beats a finding nobody can act on.
+function checkCcVersionCompat() {
+  const findings = [];
+  const current = detectInstalledVersion();
+  if (current === null) return findings;
+  const result = evaluateCompat(current);
+  if (result.status === 'ok') return findings;
+  findings.push({
+    id: 'cc-version-compat',
+    severity: result.status === 'fail' ? 'warn' : 'info',
+    message: result.message,
+    // `dedupe_key` — the message interpolates the installed version, which
+    // moves with every CLI upgrade; the class is the stable identity.
+    dedupe_key: result.status,
+    hint: result.hint ?? undefined,
+  });
   return findings;
 }
 
@@ -3874,6 +3906,9 @@ function main() {
   findings.push(...checkPrReviewCacheOrphans());
   findings.push(...checkDualWriteParity());
   findings.push(...checkInstallerCoverage());
+  // Environment contract: is the installed CLI inside the range the OS is
+  // built and tested against.
+  findings.push(...checkCcVersionCompat());
   // MCP manifests + .mcp.json freshness — cheap, runs unconditionally.
   findings.push(...checkMcps());
   findings.push(...checkEventsDbFreshness());

@@ -9,7 +9,7 @@ cd mcps/vault
 npm install
 ```
 
-No `.env` needed. The server resolves the repo root via `CLAUDE_PROJECT_DIR` (set automatically by Claude Code), with a fallback to walking up from `mcps/vault/`.
+No `.env` needed. The server resolves the repo root through the shared fail-closed resolver (`scripts/os-root.mjs`): `AGENTIC_OS_ROOT` (exported into every dispatched child) first, `CLAUDE_PROJECT_DIR` as a hint when the harness sets it, then a walk up from `mcps/vault/` for a directory holding both `OS.md` and `.claude/skills`. When none resolve it refuses to start rather than answering from the wrong tree.
 
 After install, restart Claude Code so it picks up the new MCP server. Confirm with `/mcp`.
 
