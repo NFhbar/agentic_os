@@ -2,7 +2,7 @@
 name: dev-pr-review-publish
 description: 'Publish a pr-review entry pass back to GitHub. Sends comments that answer an existing thread as threaded replies and fresh findings as a single GitHub review with verdict derived from the entry, then writes the resulting GitHub ids back to the pr-review entry. A replies-only publish posts no verdict.'
 user-invocable: true
-version: 3
+version: 4
 domain: development
 tags: [pr-review, publish, github]
 inputs:
@@ -72,7 +72,7 @@ For OS-authored PRs, publish is usually skipped — the human merges based on th
    - `pass_count`
    - `status` — must be `completed`; reject otherwise (`Entry status is <status> — wait for the pass to finish.`)
 
-   Parse the body's `## Pass <N>` sections per [[archetype-pr-review]] § Body sections. Capture for each pass: the pass-header timestamp (local-TZ readable form, not ISO) and the comment list with header fields (`file`, `line`, `start_line`, `side`, `start_side`, `status`, `accept_note`, `github_comment_id`, `github_review_id`, `severity`, `category`, `in_reply_to`, `body_source`). The `start_line` / `side` / `start_side` fields are optional (present only on multi-line or old-side comments) — absent means a single-line RIGHT anchor. `in_reply_to` is present only on a comment that answers another comment; `body_source: operator` marks a body a person wrote. Parse **every** pass, not just the target one: step 6b resolves `pass-<N>-comment-<M>` parent refs against comments anywhere in the entry. Note: passes carry NO per-pass summary paragraph — the entry-level `## Summary` (rewritten each pass) is the only summary; step 9 sources from there.
+   Parse the body's `## Pass <N>` sections per [[archetype-pr-review]] § Body sections. Capture for each pass: the pass-header timestamp (local-TZ readable form, not ISO) and the comment list with header fields (`file`, `line`, `start_line`, `side`, `start_side`, `quote`, `status`, `accept_note`, `github_comment_id`, `github_review_id`, `severity`, `category`, `in_reply_to`, `body_source`). The `start_line` / `side` / `start_side` fields are optional (present only on multi-line or old-side comments) — absent means a single-line RIGHT anchor. `quote` is the code the comment is about, recorded at write time; it is what step 7b re-validates the anchor against, and entries written before the quote layer existed simply don't carry it. `in_reply_to` is present only on a comment that answers another comment; `body_source: operator` marks a body a person wrote. Parse **every** pass, not just the target one: step 6b resolves `pass-<N>-comment-<M>` parent refs against comments anywhere in the entry. Note: passes carry NO per-pass summary paragraph — the entry-level `## Summary` (rewritten each pass) is the only summary; step 9 sources from there.
 
 4. **Pick the target pass.**
    - If `inputs.pass` is set: use that. If no `## Pass <inputs.pass>` section exists, reject with `Pass <n> not found in entry — entry has passes 1..<pass_count>.`
@@ -132,7 +132,7 @@ For OS-authored PRs, publish is usually skipped — the human merges based on th
     node scripts/annotate-diff-lines.mjs --validate --anchors '<review-set anchors as JSON>' < "$TMPDIFF"
     ```
 
-    Build the anchors array from the `review_set` (step 6b): one object per comment `{id: "<target_pass>-<n>", file, line, start_line?, side?, start_side?}`. **Parse legacy range strings first** — a `line: "42-58"` header becomes `{start_line: 42, line: 58}` before validation, so legacy multi-line comments publish as real ranges when the range still validates (this supersedes the old collapse-to-end-line rule). Capture the returned verdict per comment (`valid` / `snapped` / `degraded-to-endpoint` / `file-level`) for step 10.
+    Build the anchors array from the `review_set` (step 6b): one object per comment `{id: "<target_pass>-<n>", file, line, start_line?, side?, start_side?, quote?}`. **Pass the comment's `quote` header through whenever it has one** — this is the step where it earns its keep. Between review and publish the head can move under the anchor, and a stored line number that is still commentable in the new diff looks perfectly valid while pointing at unrelated code; the quote is what catches that. With it, the validator confirms the code is still at the stored lines, follows it to wherever the new commits moved it, or refuses the anchor when the code is gone from the diff entirely. A comment with no quote (an entry written before the quote layer) gets position-only re-validation, exactly as before. **Parse legacy range strings first** — a `line: "42-58"` header becomes `{start_line: 42, line: 58}` before validation, so legacy multi-line comments publish as real ranges when the range still validates (this supersedes the old collapse-to-end-line rule). Capture the returned verdict per comment (`valid` / `snapped` / `degraded-to-endpoint` / `file-level`), the returned `line` / `start_line`, and the `quote` block when present, for step 10.
 
     **If the live-diff fetch itself fails** (gh outage, network): warn loudly in the report and fall through to today's unvalidated behavior — step 10 treats every anchor as `valid` as-authored. Publish availability beats validation; do not abort.
 
@@ -168,15 +168,17 @@ For OS-authored PRs, publish is usually skipped — the human merges based on th
       { "path": "<file>", "line": <resolved_line>, "side": "<side>", "body": "<body>" }
       ```
 
-    - **`valid` range** → inline **multi-line** comment; pass `start_line` (+ `start_side` only when it differs from `side`) so GitHub anchors the whole span as one comment:
+    - **`valid` / `snapped` range** → inline **multi-line** comment; pass `start_line` (+ `start_side` only when it differs from `side`) so GitHub anchors the whole span as one comment:
 
       ```json
       { "path": "<file>", "line": <end>, "side": "<side>", "start_line": <start>, "start_side": "<start_side>", "body": "<body>" }
       ```
 
+      A `snapped` verdict returns a range when the comment's quote was found spanning several lines — send the span the validator returned, not the one the entry stored.
+
     - **`degraded-to-endpoint`** → inline single-line at the returned valid endpoint (`line`); do **not** send `start_line`. Prepend the intended range to the body so the author sees the full span (`_(re: lines <N>–<M>)_`, en-dash `–` U+2013).
 
-    - **`file-level`** (file absent from the live diff, or the line is beyond the snap window) → do **not** inline. Append the comment as a quoted block to the review body from step 9 — the `<body_surfaced_set>`, parallel to the inlined part of the `review_set` — naming the intended anchor so nothing is lost:
+    - **`file-level`** (file absent from the live diff, the line is beyond the snap window, or `reason: quote-not-found` — the code the comment quotes is no longer anywhere in the diff) → do **not** inline. Append the comment as a quoted block to the review body from step 9 — the `<body_surfaced_set>`, parallel to the inlined part of the `review_set` — naming the intended anchor so nothing is lost:
 
       ```
       > **<file>:<line-or-range> — <category> · <severity>** (accepted; note: _"<accept_note>"_)
@@ -189,7 +191,7 @@ For OS-authored PRs, publish is usually skipped — the human merges based on th
       **Exception — operator-supplied bodies are never body-surfaced.** Quoting a comment into the review body wraps it in an anchor label and blockquote markers, which is exactly what the verbatim rule forbids for text a person wrote. So when a `- body_source: operator` comment lands on this branch, publish nothing for it: leave its `status: accepted` untouched and report it (`comment <n>: no inline anchor — left unpublished; re-anchor it or send it as a reply`). The operator decides what happens to their own words; re-running publish after a fix picks it up unchanged.
 
     **Body convention (inline comments) — model-generated bodies:**
-    - When the anchor was **snapped** or **degraded**, prepend the one-line drift marker so it's visible on GitHub — `_(snapped from line <N> — the diff moved since review)_` for a snap, or the `_(re: lines <N>–<M>)_` range note for a degrade.
+    - When the anchor was **snapped** or **degraded**, prepend the one-line drift marker so it's visible on GitHub — `_(snapped from line <N> — the diff moved since review)_` for a snap, or the `_(re: lines <N>–<M>)_` range note for a degrade. A snap the quote drove gets the same marker as a positional one: the anchor moved, and the PR author is owed that fact regardless of which layer found the new home for it. `<N>` is the line the entry stored, so the marker always reads as "was N, is here now".
     - Then the comment's markdown body (everything after the header lines), verbatim.
     - If `accept_note` is set, append a horizontal rule + footer:
 
@@ -280,7 +282,7 @@ For OS-authored PRs, publish is usually skipped — the human merges based on th
     - **Insert** (after the `status` line) `- github_comment_id: <reply_comment_id>` — the id GitHub assigned to the REPLY itself, recorded exactly like any other published comment id. This is what closes the loop: when the author answers the reply, the next [[dev-pull-pr-comments]] run finds that id and threads their answer to this comment as `pass-<N>-comment-<M>` instead of a bare GitHub id.
     - Do **not** insert `github_review_id` — a reply is not part of a review event, and inventing one would deep-link to a review that doesn't exist.
 
-    In all three cases, preserve all other header lines (`file`, `line`, `start_line`, `side`, `start_side`, `prior`, `accept_note`, `in_reply_to`, `body_source`) and the comment body verbatim.
+    In all three cases, preserve all other header lines (`file`, `line`, `start_line`, `side`, `start_side`, `quote`, `prior`, `accept_note`, `in_reply_to`, `body_source`) and the comment body verbatim.
 
     Then update frontmatter:
     - `published: true` (set whenever ANY of the three cases fired — the entry has at least one comment that reached GitHub in some form)
@@ -311,8 +313,11 @@ For OS-authored PRs, publish is usually skipped — the human merges based on th
       replied:   <r> threaded reply/replies
       skipped:   <m> already-published + <k> not accepted
       anchors:   <one line per published comment — "<file>:<line>" or "<file>:<start>–<end>";
-                 append " (snapped: was N → M, d=<distance>)", " (range degraded to line M)",
+                 append " (snapped: was N → M, d=<distance>)",
+                 " (re-anchored by quote: was N → M)" when the quote layer moved it,
+                 " (range degraded to line M)",
                  " (range dropped — GitHub refused the span)",
+                 " (body-surfaced — quoted code no longer in the diff)",
                  or " (body-surfaced — file not in live diff)" where applicable>
       replies:   <one line per reply — "<file>:<line> → <html_url>"; omit the block when r = 0>
       review:    https://github.com/<owner>/<repo>/pull/<n>#pullrequestreview-<github_review_id>
@@ -379,6 +384,8 @@ For OS-authored PRs, publish is usually skipped — the human merges based on th
 - `Live diff fetch failed — publishing with unvalidated anchors` — gh outage at publish time (step 7b); the skill fell through to today's behavior. Re-run once gh is authenticated/reachable to get validated anchors.
 - `Comment <n> range degraded to a single line` — the live diff no longer supports the full range (endpoints drifted apart / cross-hunk); published at the valid endpoint with the intended range quoted in the body. Not fatal.
 - `Comment <n> surfaced in body — file/line absent from the live diff` — the anchor couldn't be placed inline against `<commit_id>`; surfaced as a quoted block in the review body (`status: published-as-body`). Not fatal.
+- `Comment <n> surfaced in body — the quoted code is no longer in the diff` — step 7b returned `file-level` with `reason: quote-not-found`: the code the comment is about was changed away or dropped since the review. Publishing it onto whatever line now holds that number would point the author at unrelated code, so it ships in the review body instead. Re-run `dev-pr-review` (continuation) to review the code as it stands now. Not fatal.
+- `Comment <n> re-anchored by its quote` — the stored line drifted but the quoted code was found elsewhere in the live diff; published there with the snap marker in the body. Not fatal.
 - `Comment <n>: parent has no GitHub thread — published as a fresh comment` — the `in_reply_to` ref pointed at a comment that never reached GitHub, so there was nothing to reply into. The text still shipped, through the review path. Not fatal.
 - `Comment <n>: parent thread <id> is gone on GitHub` — the parent comment was deleted or the thread disappeared; the reply was not sent and the comment stays `accepted`. Re-run after re-pulling comments to find the current thread.
 - `Comment <n>: no inline anchor — left unpublished` — an operator-supplied body whose anchor fell out of the live diff. Not body-surfaced by design (that would wrap a person's words in framing). Re-anchor it or send it as a reply, then re-run.
@@ -387,11 +394,11 @@ For OS-authored PRs, publish is usually skipped — the human merges based on th
 
 ## See also
 
-- [[archetype-pr-review]] § Comments — the data contract for `status: published`, `github_review_id`, `github_comment_id`, `in_reply_to`, `body_source`, and the optional `start_line` / `side` / `start_side` range fields
+- [[archetype-pr-review]] § Comments — the data contract for `status: published`, `github_review_id`, `github_comment_id`, `in_reply_to`, `body_source`, the optional `start_line` / `side` / `start_side` range fields, and the `quote` field step 7b re-validates against
 - [[dev-pr-review]] — produces the entry this skill consumes; sets the `result` that maps to the GitHub event, validates anchors at write time (layer 1), and drafts replies in response mode
 - [[dev-pull-pr-comments]] — ingests the external comments and author replies this skill answers, and threads later answers against the reply ids written back in step 12
 - [[decision-github-mcp-custom-not-hosted]] — why the github MCP uses PAT, not OAuth
 - [[standard-mcp-usage]] — calling MCP tools from a skill
 - `scripts/check-mcp.mjs` — pre-flight helper used in step 1
-- `scripts/annotate-diff-lines.mjs` — live-diff anchor validate/snap used in step 7b
+- `scripts/annotate-diff-lines.mjs` — live-diff anchor validate/snap used in step 7b, quote layer included
 - `scripts/record-dashboard-action.mjs` — event-recording wrapper used in step 13
