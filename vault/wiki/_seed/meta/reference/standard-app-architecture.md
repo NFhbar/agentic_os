@@ -232,19 +232,19 @@ For `module` shape (the default):
 For `standalone` shape (rare):
 
 - Current behavior: creates a full Vite+Fastify project at `domains/<domain>/<name>/app/`.
-- The skill MUST require the user to confirm the rationale ("Why isn't this a module?") and embed the answer in the new app's README.
+- The skill MUST require the user to confirm the rationale ("Why isn't this a module?") and write the answer to a `STANDALONE.md` at the new app's root — the file the `standalone-justified` check reads.
 
 ## 9. Audit hooks
 
-| id                          | severity | what it enforces                                                                                                                      |
-| --------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `app-manifest-required`     | error    | Every `apps/<id>/` directory has a `manifest.ts` whose default export validates against `AppManifest`                                 |
-| `app-id-matches-dir`        | error    | `manifest.id` equals the folder name                                                                                                  |
-| `app-domain-exists`         | error    | `manifest.domain` corresponds to a real `domains/<name>/` directory                                                                   |
-| `app-navgroup-enum`         | error    | `manifest.navGroup` is one of `primary`, `utility`                                                                                    |
-| `app-db-schema-present`     | warn     | If `manifest.db` is declared, the schema string is non-empty and contains at least one `CREATE TABLE IF NOT EXISTS`                   |
-| `app-routes-prefix-correct` | warn     | If `routes` is declared and a Fastify plugin is auto-mounted, its first registered route prefix is `/api/apps/<id>/`                  |
-| `standalone-justified`      | info     | Standalone apps (anything not in `apps/`) have a `STANDALONE.md` adjacent to their package.json explaining why module wasn't suitable |
+| id                          | severity | what it enforces                                                                                                                                                                                                                                                                                                                                     |
+| --------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `app-manifest-required`     | error    | Every `apps/<id>/` directory has a `manifest.ts` whose default export validates against `AppManifest`                                                                                                                                                                                                                                                |
+| `app-id-matches-dir`        | error    | `manifest.id` equals the folder name                                                                                                                                                                                                                                                                                                                 |
+| `app-domain-exists`         | error    | `manifest.domain` corresponds to a real `domains/<name>/` directory                                                                                                                                                                                                                                                                                  |
+| `app-navgroup-enum`         | error    | `manifest.navGroup` is one of `primary`, `utility`                                                                                                                                                                                                                                                                                                   |
+| `app-db-schema-present`     | warn     | If `manifest.db` is declared, the schema string is non-empty and contains at least one `CREATE TABLE IF NOT EXISTS`                                                                                                                                                                                                                                  |
+| `app-routes-prefix-correct` | warn     | If `routes` is declared and a Fastify plugin is auto-mounted, its first registered route prefix is `/api/apps/<id>/`                                                                                                                                                                                                                                 |
+| `standalone-justified`      | info     | Standalone apps (anything not in `apps/` — i.e. a directory under `domains/` owning a package.json) have a `STANDALONE.md` adjacent to that package.json explaining why module wasn't suitable. The dashboard shell is exempt; § 1 is its justification. Implemented in `scripts/audit.mjs`; registered in [[standard-os-audit]] § App architecture. |
 
 ## 10. Migration plan (the dashboard refactor that proves this standard)
 

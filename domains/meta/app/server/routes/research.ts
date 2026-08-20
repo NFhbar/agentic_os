@@ -8,6 +8,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { rewriteFrontmatter } from '../frontmatter-rewrite.js';
 import { parseFrontmatter } from '../frontmatter.js';
 import { deriveReportSteps } from '../lib/lifecycle-state.js';
+import { parseTriggerSource } from '../lib/research-trigger-source.js';
 import { parseRunOrigin } from '../lib/run-origin.js';
 import { REPO_ROOT, safePath } from '../repo.js';
 import { type FileRef, loadFileRef } from './changes.js';
@@ -946,12 +947,14 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary of 
     return { ok: true, approved_at: nowIso };
   });
 
-  // POST /api/research/:id/update — dispatch research-update. Body translates
-  // archetype-aligned trigger ids to the skill's enum at the dispatch boundary.
+  // POST /api/research/:id/update — dispatch research-update. `trigger_source`
+  // accepts either spelling of the trigger vocabulary — the skill's category
+  // enum or the archetype trigger id the dashboard banner fired on — and
+  // parseTriggerSource translates the latter into the former before dispatch.
   fastify.post<{
     Params: { id: string };
     Body: {
-      trigger_source?: 'materials' | 'milestone' | 'change-merged' | 'manual';
+      trigger_source?: string;
       notes?: string;
       origin?: string;
     };
@@ -969,14 +972,12 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary of 
       reply.code(400);
       return { ok: false, error: parsedOrigin.error };
     }
-    const triggerSource = typeof body.trigger_source === 'string' ? body.trigger_source : 'manual';
-    if (!['materials', 'milestone', 'change-merged', 'manual'].includes(triggerSource)) {
+    const parsedTrigger = parseTriggerSource(body.trigger_source);
+    if (!parsedTrigger.ok) {
       reply.code(400);
-      return {
-        ok: false,
-        error: `invalid trigger_source '${triggerSource}' — expected one of: materials, milestone, change-merged, manual`,
-      };
+      return { ok: false, error: parsedTrigger.error };
     }
+    const triggerSource = parsedTrigger.triggerSource;
     const notes = typeof body.notes === 'string' ? body.notes : '';
 
     // Auto-dismiss currently-fired triggers — running research-update IS the
