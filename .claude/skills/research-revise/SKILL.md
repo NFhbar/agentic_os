@@ -20,6 +20,8 @@ outputs:
     fields: [report_revision, report_revised_at, report_revised_from_review, report_generated_at, updated]
 spawns: []
 model: claude-fable-5
+model_policy: fallback-allowed
+model_fallbacks: claude-opus-4-8
 effort: max
 ---
 

@@ -17,6 +17,8 @@ outputs:
     path: vault/output/{{input.domain}}/changes/{{input.change}}-plan.md
 spawns: []
 model: claude-fable-5
+model_policy: fallback-allowed
+model_fallbacks: claude-opus-4-8
 effort: max
 ---
 

@@ -23,13 +23,30 @@
 
 // NOTE: no top-level runs-db import — runs-db pulls node:sqlite, which
 // vitest's resolver cannot load, and the pure parts of this module
-// (inferTerminalState et al.) are unit-tested. finishRun is dynamically
-// imported inside finalizeDeadRun, the only impure entry point.
-import { existsSync, readFileSync, openSync, readSync, closeSync, statSync } from 'node:fs';
+// (inferTerminalState et al.) are unit-tested. The two impure entry points
+// (finalizeDeadRun, and maybeRedispatchModelFallback when it launches through
+// the default dispatcher) import it dynamically instead.
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  openSync,
+  readSync,
+  closeSync,
+  statSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 // Pure JS, no node:sqlite — keeps this module vitest-loadable.
 import { computeCost } from './models-registry.mjs';
+// Ditto: pure + sqlite-free by contract (see its header).
+import {
+  classifyRunFailure,
+  decideModelFallback,
+  enrichModelUnavailability,
+  fallbackRunTitle,
+  readSkillModelPolicy,
+} from './model-error-policy.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
@@ -260,10 +277,20 @@ export async function finalizeDeadRun(row, { reason = 'PID not alive' } = {}, re
   const startedMs = row.started_at ? Date.parse(row.started_at) : NaN;
   const wallMs = Number.isFinite(startedMs) ? Date.now() - startedMs : null;
 
+  // The model the dispatch actually ran on: observed id > journal-recovered >
+  // the id stamped on the row at spawn. Only read in the failure arm below.
+  const resolvedModel = result?.model ?? recovered?.model ?? row.model ?? null;
+
   let error = null;
   if (state === 'failed') {
     // Preserve a supervisor kill marker (wall-cap) over the generic reason.
     error = row.error?.startsWith('killed:') ? row.error : reason;
+    // Availability honesty (failure arm only — the happy path is untouched):
+    // when the journal / stderr tails prove the child died because it could
+    // not reach its model, say so instead of "PID not alive". Instant deaths
+    // (exit 1 in ~1 s) are exactly the rows this rescues.
+    const note = enrichModelUnavailability({ ...row, model: resolvedModel });
+    if (note) error = `${note}\n${error}`;
   } else if (state === 'died-after-writeback') {
     error = `${reason} — no result event, but the linked entity was updated after start; work likely landed (verify it)`;
   } else if (state === 'cancelled') {
@@ -282,5 +309,128 @@ export async function finalizeDeadRun(row, { reason = 'PID not alive' } = {}, re
     tokens_cache_write: result?.tokensCacheWrite ?? recovered?.tokensCacheWrite ?? null,
     model: result?.model ?? recovered?.model ?? null,
   });
+
+  // Auto-fallback (failure arm only). Runs AFTER the row is terminal so the
+  // second leg is never blocked by the per-change concurrency gate.
+  if (state === 'failed') {
+    await maybeRedispatchModelFallback({ ...row, state, model: resolvedModel });
+  }
   return state;
+}
+
+// ---------------------------------------------------------------------------
+// Auto-fallback hook
+//
+// A `fallback-allowed` skill whose run died on model availability gets ONE
+// more leg on its declared fallback model. Called from both terminal paths
+// (this file's finalizeDeadRun and the server's in-process close handler), so
+// a credit death is recovered whether or not the dashboard is running.
+//
+// `required` skills never reach here (their policy is not fallback-allowed) —
+// §8.4: required parks, it never auto-downgrades. The only bypass is a human
+// passing model_override to POST /api/runs.
+// ---------------------------------------------------------------------------
+
+// Minimal run launcher for the supervisor context, where the dashboard's
+// startRun (sessions, SSE fan-out, automation hooks) does not exist. The row
+// it creates is an ordinary run: the supervisor reaps it, and the server's
+// unhooked-runs poll fires its post-terminal hooks when it comes back up.
+// The server injects its own dispatcher instead of using this one.
+async function dispatchFallbackRun(input) {
+  const { createRun, finishRun, markRunning, setDispatchConfig, stderrPathFor } = await import(
+    './runs-db.mjs'
+  );
+  const { spawnClaudeOrphaned } = await import('./dispatch-claude.mjs');
+  const id =
+    'r_' +
+    (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const output_path = join(REPO_ROOT, '.claude', 'state', 'runs', `${id}.raw.jsonl`);
+  const created = createRun({
+    id,
+    started_at: new Date().toISOString(),
+    state: 'queued',
+    skill: input.tags?.skill ?? null,
+    change_id: input.tags?.change_id ?? null,
+    project: input.tags?.project ?? null,
+    repo: input.tags?.repo ?? null,
+    domain: input.tags?.domain ?? null,
+    title: input.title ?? null,
+    prompt: input.prompt,
+    output_path,
+    origin: input.origin ?? 'automation',
+  });
+  if (created?.error) return { ok: false, error: created.error };
+  const stderrPath = stderrPathFor(output_path);
+  mkdirSync(dirname(output_path), { recursive: true });
+  const spawned = await spawnClaudeOrphaned(input.prompt, input.tags?.skill ?? null, {
+    outputPath: output_path,
+    stderrPath,
+    logPrefix: 'fallback',
+    model: input.model_override ?? null,
+    effort: input.effort_override ?? null,
+  });
+  setDispatchConfig(id, { model: spawned.model ?? null, effort: spawned.effort ?? null });
+  if (spawned.pid == null) {
+    finishRun(id, {
+      state: 'failed',
+      exit_status: null,
+      duration_ms: null,
+      error: `spawn error: ${spawned.error ?? 'unknown'}`,
+    });
+    return { ok: false, error: spawned.error ?? 'spawn failed', run_id: id };
+  }
+  markRunning(id, spawned.pid);
+  return { ok: true, run_id: id };
+}
+
+// Re-dispatch `row` once on its skill's declared fallback model, when policy
+// and evidence allow it. Returns the decision (with `dispatched` on success)
+// or null when nothing fired. Never throws — a fallback that cannot launch
+// must not corrupt the finalization that called it.
+//
+// `cls` short-circuits the tail read for callers that already classified;
+// `dispatch` injects the launcher (the server passes startRun).
+export async function maybeRedispatchModelFallback(row, { cls, dispatch } = {}) {
+  if (!row || row.state !== 'failed') return null;
+  // Cheap gates before any I/O: a `required` / `inherit` skill never pays for
+  // the journal tail read.
+  const { policy, fallbacks } = readSkillModelPolicy(row.skill ?? null);
+  if (policy !== 'fallback-allowed' || fallbacks.length === 0) return null;
+  const decision = decideModelFallback({
+    state: row.state,
+    resolvedModel: row.model ?? null,
+    cls: cls === undefined ? classifyRunFailure(row) : cls,
+    policy,
+    fallbacks,
+    title: row.title ?? null,
+  });
+  if (!decision.redispatch) return decision;
+  const launch = dispatch ?? dispatchFallbackRun;
+  try {
+    const dispatched = await launch({
+      prompt: row.prompt,
+      title: fallbackRunTitle(decision.model, row.skill),
+      tags: {
+        skill: row.skill ?? null,
+        change_id: row.change_id ?? null,
+        project: row.project ?? null,
+        repo: row.repo ?? null,
+        domain: row.domain ?? null,
+      },
+      // The OS dispatched this leg, not a human — `automation` is the
+      // vocabulary's machine-initiated value.
+      origin: 'automation',
+      model_override: decision.model,
+      // The effort pin travels with the model pin; a fallback model has its
+      // own cost/latency profile, so the leg runs at a plain `high`.
+      effort_override: 'high',
+    });
+    console.error(
+      `fallback: re-dispatched ${row.id} (${row.skill ?? 'unknown skill'}) on ${decision.model}`,
+    );
+    return { ...decision, dispatched };
+  } catch (e) {
+    console.error(`fallback: re-dispatch failed for ${row.id}`, e);
+    return { ...decision, dispatched: null };
+  }
 }

@@ -37,6 +37,7 @@ outputs:
     path: '.claude/state/events.db (kind: dashboard, action: pr-review, change_id: <change?>, files_touched: [vault/wiki/.../pr-review-*.md])'
 spawns: []
 model: claude-fable-5
+model_policy: required
 effort: max
 wall_time_cap_minutes: 60
 ---

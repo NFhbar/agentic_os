@@ -28,6 +28,8 @@ outputs:
     fields: [update_count, last_data_ingest, status, review_status, review_path, reviewed_at, recommended_changes, updated]
 spawns: []
 model: claude-fable-5
+model_policy: fallback-allowed
+model_fallbacks: claude-opus-4-8
 effort: max
 ---
 
