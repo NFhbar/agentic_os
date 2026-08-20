@@ -364,6 +364,75 @@ async function readLatestReviewResultForChange(
   return null;
 }
 
+// Placeholder facts for the gate's no-I/O pre-filter path: the verifier
+// short-circuits on the STEP before it reads any observation, so nothing here
+// is ever consulted. Frozen — returned by reference.
+const UNOBSERVED: ArtifactObservation = Object.freeze({
+  head: null,
+  head_error: null,
+  pr_url: null,
+  pass_count: null,
+  pr_review_path_set: false,
+});
+
+// I/O wrapper for the project-level artifact gate. Gathers exactly the facts
+// the change loop's own classifier consumes (gatherArtifactObservation +
+// lookupLinkedReview) for the project step's change, then defers to the pure
+// verifyProjectStepArtifacts. Any failure — change entry missing, unreadable
+// frontmatter, a throwing git/vault read — resolves to `inert`: the gate never
+// parks on its own error.
+//
+// The run summary (the refusing skill's own report line) is read only on the
+// park path, mirroring the per-change hook's cost posture.
+async function verifyProjectStepArtifactsForChange(
+  step: AutomationStep | null,
+  changeId: string,
+  runId: string | null,
+): Promise<ProjectStepArtifactVerdict> {
+  // Cheap pre-filter BEFORE any wiki walk or git spawn: steps outside the map
+  // (merge, forward-compat kinds) are inert regardless of what the artifacts
+  // say, so the merge watcher's 60s cadence costs nothing extra. Delegated so
+  // the inert wording stays owned by the verifier.
+  if (step === null || !PROJECT_STEP_REQUIRED_COMPLETION[step]) {
+    return verifyProjectStepArtifacts(step, {
+      change_status: null,
+      observed: UNOBSERVED,
+      latest_pass_acted: false,
+      branch: null,
+      run_summary: null,
+    });
+  }
+  try {
+    const found = await findChange(changeId);
+    if (!found) {
+      return { verdict: 'inert', why: `change "${changeId}" not found — artifacts unverifiable` };
+    }
+    const fm = found.fm;
+    const prReviewPath = typeof fm.pr_review_path === 'string' ? fm.pr_review_path : null;
+    const review = prReviewPath ? lookupLinkedReview(prReviewPath) : null;
+    const base: ProjectStepArtifactContext = {
+      change_status: typeof fm.status === 'string' ? fm.status : null,
+      observed: await gatherArtifactObservation(fm),
+      latest_pass_acted: review ? review.actedCount > 0 && review.commentsToAddress === 0 : false,
+      branch: typeof fm.branch === 'string' ? fm.branch : null,
+      run_summary: null,
+    };
+    const verdict = verifyProjectStepArtifacts(step, base);
+    if (verdict.verdict !== 'missing' || !runId) return verdict;
+    // Re-judge with the summary line so the refusing run's own report text
+    // lands verbatim in the park reason. Same facts, so the same verdict.
+    return verifyProjectStepArtifacts(step, {
+      ...base,
+      run_summary: await readRunSummaryLine(runId),
+    });
+  } catch (e) {
+    return {
+      verdict: 'inert',
+      why: `artifact verification threw: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+}
+
 // Core tick state machine — pure-ish (writes frontmatter + records audit
 // internally; returns the new status). Shared between the HTTP /tick handler
 // and the run-completion hook (`onAutomationStepComplete`).
@@ -424,6 +493,44 @@ async function executeTick(
       relative(REPO_ROOT, found.path),
     ]);
     return { ok: true, status: await buildStatusResponse(projectId, next) };
+  }
+  // Gate 3: artifact postcondition. A clean exit only advances the project's
+  // step pointer when the step's artifacts actually exist — otherwise a
+  // refusing skill (draft-gate decline, no-op) "completes" write → open-pr →
+  // review having produced nothing. Judges ONLY the step that just completed;
+  // inert on uncertainty (unknown step / merge / verifier error → advance) so
+  // a healthy project is never falsely parked.
+  if (exit_status === 0) {
+    const gate = await verifyProjectStepArtifactsForChange(
+      config.state.current_step,
+      change_id,
+      body.run_id ?? null,
+    );
+    if (gate.verdict === 'missing') {
+      const reason = `skill-refused: ${config.state.current_step} exited 0 without its ${gate.required} artifacts — ${gate.detail}`;
+      const next: AutomationConfig = {
+        ...config,
+        state: {
+          ...config.state,
+          phase: 'paused',
+          paused_reason: reason,
+          last_transition: new Date().toISOString(),
+        },
+      };
+      await writeAutomationConfig(found.path, next);
+      recordAudit(
+        'automation-pause',
+        {
+          project: projectId,
+          change: change_id,
+          step: config.state.current_step,
+          reason: `skill-refused:${config.state.current_step}`,
+          run_id: body.run_id ?? null,
+        },
+        [relative(REPO_ROOT, found.path)],
+      );
+      return { ok: true, status: await buildStatusResponse(projectId, next) };
+    }
   }
   // Advance: success → next step OR next change.
   const curIdx = config.state.current_step ? STEP_ORDER.indexOf(config.state.current_step) : -1;
@@ -508,6 +615,7 @@ export async function onAutomationStepComplete(
   changeId: string | null | undefined,
   skill: string | null | undefined,
   exitStatus: number | null | undefined,
+  runId?: string | null,
 ): Promise<void> {
   if (!projectId || !changeId || !skill || exitStatus === null || exitStatus === undefined) return;
   // Only relevant skills can advance the orchestrator.
@@ -532,7 +640,7 @@ export async function onAutomationStepComplete(
     const result = await executeTick(
       found,
       config,
-      { skill, change_id: changeId, exit_status: exitStatus, review_result },
+      { skill, change_id: changeId, exit_status: exitStatus, review_result, run_id: runId ?? null },
       projectId,
     );
     if (!result.ok) {
@@ -857,6 +965,9 @@ export { decideNextChangeStep } from './automation-state-machine.js';
 import {
   type ArtifactMovement,
   type ArtifactObservation,
+  PROJECT_STEP_REQUIRED_COMPLETION,
+  type ProjectStepArtifactContext,
+  type ProjectStepArtifactVerdict,
   TREE_WRITING_STEPS,
   checkChangeAutomationEligibility,
   composeArtifactDetail,
@@ -865,6 +976,7 @@ import {
   decideParkReconciliation,
   deriveCompletedStepFromArtifacts,
   evaluateArtifactMovement,
+  verifyProjectStepArtifacts,
 } from './automation-state-machine.js';
 import { lookupLinkedReview } from './pr-review-lookup.js';
 import {
