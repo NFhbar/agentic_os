@@ -6,6 +6,34 @@ The canonical version is recorded at [`vault/wiki/_seed/meta/reference/os-versio
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-08-20 — The project driver + recovery-aware runtime + content-aware anchors
+
+### Upgrading from 0.8.0
+
+Pull-and-go; no migrations. What changes at runtime: automation parks now distinguish `env-failure:` (infrastructure, with reset times when parseable) from `skill-failure:`; queued run rows stranded by a dispatch-window crash are auto-reaped after a 2-minute grace; EXECUTE dispatches pre-flight the checkout branch beside the existing clean-tree gate; the web dev server takes `strictPort` (a taken port fails loudly). Five lifecycle skills carry operator-accepted tuning edits with validation windows armed for the daily audit sweep.
+
+### Added
+
+- **`dev-drive-project` — the project driver, v1 + v2.** An optional outer layer that drives a project's scaffolded changes through their full lifecycle in `parent_change` dependency order: a pure queue resolver, a nine-row sequence table (draft-accept → plan → plan-review → revise → change-automation inner loop → triage/ready/merge → close → overseer audit → next), watch-by-artifact advancement (a terminal run is permission to look; the artifact decides), and clean handbacks at every human gate. Every driver dispatch stamps `origin: driver`. v2 adds the recovery table: stops classify from recorded evidence into environmental (bounded retry, budget 2) / clock-bound environmental (report the reset time, never busy-poll) / auth-wall / skill-refusal / skill-failure / human-gate / unknown — retries never launder the iteration cap, failed skills never re-run without change, and everything unclassifiable still hands back honestly. Full manual operation stays first-class: state is re-derived from artifacts before every gate, so mixed-mode is safe by construction.
+- **Project-screen Drive affordance.** An explicit Drive control (plus Dry run) dispatching the driver — one pure evaluator drives both the button state and the endpoint's 409 body, so the tooltip and the refusal are the same sentence. A hand-pressed drive is honestly `origin: human` (the runs the driver makes stamp `driver`); the dispatch is tagged project-only with no change line, since a change tag would make the concurrency gate refuse every dispatch the driver itself makes.
+- **Quote-content anchor validation.** Review comments may carry a `quote` header — the exact code text the finding is about — and the anchor validator layers content matching over its positional rules: a quote at the claimed lines confirms; a quote found exactly once elsewhere relocates the anchor to the quote (content is the authority, not the nearest line); a quote found nowhere downgrades to file-level so a wrong anchor is never published. No-quote behavior is byte-identical to before.
+- **Environment-failure park classification.** Failed automation steps park as `env-failure: <signature>` (session limit with parsed reset time, API overload) instead of the generic `skill-failure` — wired at all three decision sites including the project gate, with discrete event args so per-skill quality analytics stop absorbing infrastructure noise. Session limits deliberately stay outside the model-fallback table: a different model cures neither a session limit nor an overload.
+- **Queued-row reaper + crash-safe dispatch.** A `queued` run row with no pid and no journal older than a 2-minute grace is finalized honestly, releasing the per-change concurrency gate; the spawn-throw window is finalized in a catch; boot-mode reaping now yields to a journal (a re-parented live orphan's row is never blanket-failed).
+- **EXECUTE branch pre-flight** beside the clean-tree gate: the expected checkout is the change's own branch when its ref exists, else the entity default branch; degraded reads fail open; `wrong-branch:` joins the refusal map.
+- **`standard-tracker-intake`** — the portable frontmatter contract for tracker-linked work items (field set, authority table, user-declared lifecycle mapping, nine MUST-NOTs incl. never passing a human gate), so user-built tracker integrations stay portable while core ships no tracker code.
+
+### Changed
+
+- **Eight decision-gated skill-tuning edits** across five lifecycle skills, each implementing a lifecycle-audit suggestion accepted by the operator (validation windows armed for the daily sweep): dev-open-pr push-credential pre-flight + restore-default-branch-checkout; dev-pr-review annotator resolution ladder; dev-close-change merge-implied Done-when split (externally-verified criteria stay unchecked with an `unverified at close` tag); dev-review-change unconditional completion event + three checklist additions (cited probes answer, contract self-consistency, assertion discrimination); dev-write-change PLAN-phase behavioral verification down to the responder.
+- **Session-usage import deduplicates dispatched runs** — transcript turns matching a recorded dashboard dispatch (run id, else start+duration adjacency) are skipped with the count logged, ending double-counted cost rollups; the bias deliberately leaves a visible duplicate over destroying real interactive cost data.
+
+### Fixed
+
+- **Batch-accept notifications rendered an empty count** — the event now records `accepted_count` matching the template and every other batch action's convention; first template-render test suite added.
+- **`standalone-justified` audit check implemented** — documented for months, never enforced; a `domains/` app owning a `package.json` without `STANDALONE.md` now fires (dashboard shell exempt, rationale written down).
+- **Research update-trigger mapping made real** — dashboard banner trigger ids now fold into the skill's `trigger_source` vocabulary through one pure mapper, and the update modal dispatches the trigger it displays instead of a hardcoded value.
+- **`extractStats` truncation** — the multiline-flag anchor cut the section to its first line; same repair as the earlier pass-config fix, now pinned by tests.
+
 ## [0.8.0] — 2026-08-20 — Threaded review conversations + ops domain + environment contracts
 
 ### Upgrading from 0.7.0
