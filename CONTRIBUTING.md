@@ -32,7 +32,7 @@ Skills, domains, and archetypes can be edited directly — they're markdown file
 - **Single source of truth for verdict, comment, or status enums.** If you change a documented enum value, also update `tests/structural/archetype-enums.test.ts` and any deriver that branches on it. The tests fail fast when a value is missing.
 - **Update `vault/wiki/_seed/meta/decision/`** when the change reflects a deliberate architectural decision. Records why we chose what we chose — future contributors don't have to re-derive.
 
-For changes against external repos (your team's product code), use the canonical lifecycle: `dev-add-change` → `dev-write-change` (PLAN → REVIEW → EXECUTE) → `dev-open-pr` → `dev-pr-review` → `dev-pr-review-publish` → `dev-close-change`. The dashboard's Changes app drives this end-to-end.
+For changes against external repos (your team's product code), use the canonical lifecycle: `dev-add-change` → `dev-write-change` (PLAN → REVIEW → EXECUTE) → `dev-open-pr` → `dev-pr-review` → `dev-pr-review-publish` → `dev-close-change`. The dashboard's Changes app drives this end-to-end. For multi-change projects, `dev-drive-project` (the project screen's Drive button) walks the project's scaffolded changes through this same lifecycle in `parent_change` dependency order, handing back at every human gate — manual per-change operation stays first-class.
 
 ## Review conventions
 
@@ -46,7 +46,7 @@ For changes against external repos (your team's product code), use the canonical
 Run before opening a PR:
 
 ```bash
-npm test                                       # 840+ structural + unit tests
+npm test                                       # 1,400+ structural + unit tests
 cd domains/meta/app && npx tsc --noEmit       # typecheck the dashboard app
 node .claude/hooks/rebuild-vault-index.mjs    # rebuild manifest (idempotent)
 ```
@@ -81,7 +81,7 @@ The `_seed/` boundary is load-bearing: anything under `vault/wiki/_seed/` ships 
 - **Node** — version pinned in `.nvmrc` (currently v26); the dashboard app + scripts require it
 - **GitHub PAT** — for the github MCP (PR review, open-PR, etc.). Set `GITHUB_TOKEN` in `mcps/github/.env` (copy from `.env.example`)
 - **Optional Slack** — for notification delivery. See `domains/meta/app/.env.example` for the env shape (the vault MCP is read-only and needs no secrets)
-- **Claude Code** — the harness that runs skills. Install separately; `scripts/check-cc-contract.mjs` verifies your CLI version exposes the dispatch contract (`--effort`/`--model`, stream-json result fields)
+- **Claude Code** — the harness that runs skills. Install separately; `scripts/check-cc-contract.mjs` verifies your CLI exposes the dispatch contract (`--effort`/`--model`, stream-json result fields), and `scripts/check-cc-compat.mjs` pins the supported version range (currently 2.1.196–2.1.220; run by `install.sh` and by the `cc-version-compat` audit check — below the minimum, headless gate policies degrade quietly)
 
 `./install.sh` handles `npm install` + manifest rebuild + initial vault scaffolding + per-surface `.env` scaffolds, applies any pending data migrations, and offers two opt-in steps: headless commit signing (`dev-setup-repo-identity` across your ingested repos) and the launchd scheduler. Run it after cloning; it's idempotent.
 

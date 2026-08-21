@@ -164,8 +164,8 @@ echo "→ Scaffolding app env files..."
 # Per standard-env-config: each app server has its own .env, loaded by
 # server/load-env.ts at boot. Mirror the MCP pattern — copy .env.example to
 # .env if missing. The dashboard reads SLACK_BOT_TOKEN / SLACK_WEBHOOK_URL
-# from this file for notification delivery; GITHUB_TOKEN for server-side
-# GitHub calls.
+# from this file for notification delivery; server-side GitHub calls read
+# GITHUB_TOKEN from mcps/github/.env (one token source for MCP and dashboard).
 for app_env_example in domains/*/app/.env.example; do
   [ -f "$app_env_example" ] || continue
   app_env="${app_env_example%.example}"
@@ -228,8 +228,9 @@ echo ""
 echo "→ Scheduler (optional)..."
 if [[ "$(uname -s)" == "Darwin" ]]; then
   echo "  Install the launchd agent that ticks scheduler-tick.mjs every 60s?"
-  echo "  This enables seeded schedules (morning brief, weekly curation check)"
-  echo "  and any future schedules to fire automatically."
+  echo "  This enables the 7 seeded schedules (morning brief, daily audit"
+  echo "  follow-ups, PR-CI monitor, weekly curation / triage / health-check /"
+  echo "  session-mining) and any future schedules to fire automatically."
   # `|| ans=""` keeps a non-interactive stdin (EOF → read exits non-zero) from
   # failing the whole install — same guard as the signing prompt above.
   read -r -p "  Install scheduler now? [y/N] " ans || ans=""

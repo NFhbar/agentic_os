@@ -294,7 +294,7 @@ Detail: `vault/wiki/_seed/meta/reference/standard-dashboard-patterns.md`
 
 ## 14. Scheduled jobs (heartbeat)
 
-A `runbook` entry with optional `schedule:` (5-field cron, machine local time) + `prompt:` (intent fired via `claude -p`) becomes a scheduled job. The runner is `scripts/scheduler-tick.mjs`, invoked every 60s by the `com.agentic-os.scheduler` LaunchAgent. Runs append to `vault/raw/scheduled-runs.jsonl`. Install with `./scripts/install-scheduler.sh`. Dashboard surface: **Schedules** view (list, run-now, recent output). Two seed schedules ship: `runbook-morning-brief` (`/os brief` at 9am daily) and `runbook-weekly-curation-check` (Sunday 8am).
+A `runbook` entry with optional `schedule:` (5-field cron, machine local time) + `prompt:` (intent fired via `claude -p`) becomes a scheduled job. The runner is `scripts/scheduler-tick.mjs`, invoked every 60s by the `com.agentic-os.scheduler` LaunchAgent. Runs append to `vault/raw/scheduled-runs.jsonl`. Install with `./scripts/install-scheduler.sh`. Dashboard surface: **Schedules** view (list, run-now, recent output). Seven seed schedules ship: `runbook-morning-brief` (`/os brief`, 9:00 daily), `runbook-daily-audit-followups` (`/os audit followups`, 7:00 daily), `runbook-pr-ci-monitor` (open-PR CI poll, every 15 min), `runbook-weekly-change-triage` (Mon 9:00), `runbook-weekly-curation-check` (Sun 8:00), `runbook-weekly-health-check` (audit + dated report, Sun 8:30), and `runbook-weekly-session-mining` (`/os mine sessions`, Mon 8:30).
 
 Detail: `vault/wiki/_seed/meta/reference/standard-scheduled-jobs.md`
 
