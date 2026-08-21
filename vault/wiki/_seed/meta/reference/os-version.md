@@ -18,7 +18,7 @@ version: 0.9.0
 
 This entry is the **single source of truth for what version of the Agentic OS is shipping**. The `version:` field in the frontmatter is the canonical value; everything else in the file describes how versioning works.
 
-Current version: **0.6.0** (Decision-gated tuning + artifact-aware boundaries + project closure).
+Current version: **0.9.0** (the project driver + recovery-aware runtime + content-aware anchors).
 
 ## Versioning policy
 

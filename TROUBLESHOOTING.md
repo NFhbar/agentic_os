@@ -24,6 +24,14 @@ If you don't use nvm, download Node from <https://nodejs.org> matching the `.nvm
 
 **Fix:** Install from <https://claude.com/claude-code>. After install, verify with `claude --version`. If installed but not found, your shell's `PATH` may need a refresh (`exec $SHELL` or restart the terminal).
 
+### `✗ Claude Code <version> is below the minimum supported 2.1.196`
+
+**Cause:** `install.sh` runs `scripts/check-cc-compat.mjs`, which pins the Claude Code version range the OS is tested against. The check is warn-only — the install completes — but dispatched runs on an older CLI can stall at an interactive gate until their wall-time cap instead of taking the headless policy the skill declares.
+
+**Fix:** Upgrade the CLI to 2.1.196 or newer, then re-run `node scripts/check-cc-compat.mjs` to confirm. The same check runs as the `cc-version-compat` audit finding, so it keeps surfacing until it's clear.
+
+The `ℹ Claude Code <version> is newer than the highest tested …` variant is informational, not a problem: run `npm test` + `node scripts/check-cc-contract.mjs`, and if they're green, raise `HIGHEST_TESTED` in `scripts/check-cc-compat.mjs`.
+
 ### `✗ git not found`
 
 **Cause:** `git` isn't installed. Required for `/os ingest repo` and the `dev-*` skill family.
@@ -77,16 +85,18 @@ Verify `CLAUDE.md` is in the working directory: `ls CLAUDE.md`.
 
 **Symptom:** Dashboard tries to launch but errors out, OR launches but the browser shows a connection-refused.
 
-**Cause:** Port 5173 (Vite default) is already in use, or the Fastify backend port is bound.
+**Cause:** A _non-dashboard_ process holds 5173 (the Vite web port) or 5174 (the Fastify API port). An already-running dashboard isn't an error — `meta-dashboard` probes both ports first and reuses a live instance; it only refuses with `⊘ Port conflict` when something else is squatting. The web port is strict (`strictPort` in `vite.config.ts`), so a taken port fails the spawn loudly with `EADDRINUSE` rather than drifting to a free port and invalidating the URL the launcher printed.
 
 **Fix:**
 
 ```bash
-# Find what's using the port
-lsof -i :5173
-# Kill it, OR launch dashboard on a different port:
-cd domains/meta/app && PORT=5174 npm run dev
+# Find the squatter on either hop
+lsof -i :5173 -i :5174
+# Kill it, OR run the dashboard on a disjoint port pair:
+cd domains/meta/app && PORT=5184 OS_API_PORT=5184 OS_WEB_PORT=5183 npm run dev
 ```
+
+`PORT` and `OS_API_PORT` name the same server from opposite ends and must be set to the same value — setting only one leaves every `/api` call 502-ing through the Vite proxy. Persist a per-install pair in `domains/meta/app/.env` (see the ports section of `.env.example`); dispatching `/os dashboard` with `port_web` / `port_api` inputs does the same thing for one launch.
 
 ### Dashboard opens but is blank / shows error
 
@@ -201,13 +211,57 @@ Then re-run `/os close-change <change-id>`.
 
 **Fix:** None needed — the skill auto-downgrades and surfaces the intended verdict in a banner at the top of the review body. The OS-side entry still records `result: approved`. For true APPROVE events, you'd need bot-account separation (see Task #430 / `decision-distribution-v1-architecture.md` § "Explicitly deferred to v2+").
 
+### Editing a review comment returns 409 "published text is immutable"
+
+**Symptom:** Editing a comment in the dashboard's PR-review view saves fine for some comments and returns `409 comment is published — published text is immutable; post a reply instead` for others.
+
+**Cause:** Expected. Once a comment has been published to GitHub, its recorded text is frozen so the vault record and the GitHub thread can't disagree about what was said. Draft (unpublished) comments stay editable; an empty body is rejected with a 400 either way.
+
+**Fix:** Correct or extend the finding with a threaded reply instead — the reply affordance on the thread, or `dev-pr-review` in `mode: response`. Replies publish as real GitHub threaded replies, and a replies-only publish posts no verdict, so answering doesn't re-request changes.
+
 ### Skill seems hung
 
 **Symptom:** A skill dispatch shows in the runs drawer as "running" for many minutes.
 
 **Cause:** Claude is taking time on a complex task (EXECUTE phase on a big change can run 10-20 minutes). Skills don't stream progress to the dashboard until they emit named tool outputs.
 
-**Fix:** Wait. Click the run row in the drawer to see streaming stdout — that's the live signal. If genuinely stuck (no output for 5+ minutes on a small task), the wall-time cap (default 30 min) will eventually SIGTERM it; see the orphan-recognizer UX for diagnosis.
+**Fix:** Wait. Click the run row in the drawer to see streaming stdout — that's the live signal. If genuinely stuck (no output for 5+ minutes on a small task), the wall-time cap will eventually SIGTERM it; see the orphan-recognizer UX for diagnosis. The cap resolves per skill: `wall_time_cap_minutes:` frontmatter when the skill sets one, else 2×p95 of that skill's own successful-run history, with a 25-minute floor — the deep skills ship explicit 60–90 minute caps.
+
+### Change automation shows a parked block
+
+**Symptom:** The Changes view's automation panel shows the change parked with a one-line reason instead of advancing.
+
+**Cause:** Parking is the designed stop — the orchestrator never ghost-advances past a step that didn't land. Read the reason prefix:
+
+- **`env-failure: <signature>`** — infrastructure, not your change (session limit with the reset time parsed out when it's available, API overload). Nothing to fix in the skill; wait for the named reset and resume.
+- **`skill-failure: <step> exited <code>`** / **`skill-refused: …`** — the run itself needs attention. `skill-failure` means a non-zero exit; `skill-refused` means the step exited 0 without producing its postcondition artifacts (the gate names the missing artifact). Read the run journal before resuming.
+- **A model-availability park** — the step's skill declares `model_policy: required`, so an unavailable pinned model parks the run rather than quietly completing a review gate on a weaker model. Wait for availability, or re-dispatch with a `model_override` / `effort_override`.
+- **`dirty-tree:` / `wrong-branch:` / `⊘ Re-review debounced`** — dispatch guards, refused with a 409 before anything spawned. Clean or re-checkout the clone, or force the re-review from the dashboard.
+- **`needs-triage` / `user-paused` / `iteration-cap-reached` / `review-not-approved`** — human gates. They're waiting on you by design.
+
+**Fix:** Clear the named cause, then **Resume** from the automation panel. Steps you complete by hand are reconciled on the next read — the orchestrator notices the artifact landed and unparks instead of re-running the step.
+
+### Run stuck in `queued`
+
+**Symptom:** A run row sits in `queued` and never starts; the per-change concurrency gate refuses new dispatches for that change.
+
+**Cause:** A crash inside the dispatch window (after the row was written, before the child was spawned) can strand a queued row with no pid and no journal.
+
+**Fix:** Nothing, usually — the run supervisor reaps such rows after a 2-minute grace, finalizing them as failed and releasing the gate. If it persists well past that, the supervisor isn't running: check `.claude/state/supervision-heartbeat.json` for a recent stamp and look for a `supervision-stale` finding in `/os audit`.
+
+### Dispatch fails with an `AGENTIC_OS_ROOT` error
+
+**Symptom:** Every dispatched run dies immediately with an OS-root resolution error.
+
+**Cause:** Root resolution is fail-closed: an exported `AGENTIC_OS_ROOT` that doesn't point at a real OS clone (a moved or deleted checkout, a stale value in your shell profile) throws instead of being guessed around — the alternative is telemetry and vault writes landing in the wrong tree.
+
+**Fix:**
+
+```bash
+unset AGENTIC_OS_ROOT       # the sentinel walk-up finds the root on its own
+# or point it at the actual clone:
+export AGENTIC_OS_ROOT=/path/to/agentic_os
+```
 
 ## Vault state
 
@@ -297,13 +351,13 @@ Repeat for `domains/meta/app/` if the dashboard's lockfile is the one out of syn
 
 **Cause:** 1Password signs every commit via SSH key + Touch ID, including the ones the OS makes on your behalf.
 
-**Fix (v1):** No clean fix in the OS yet — this is tracked as Task #402. Workaround: temporarily disable Touch ID on the 1Password SSH agent for the duration of a long-running automation, OR use a non-signing identity for OS-driven commits.
+**Fix:** Run `/os setup repo identity <repo>` (or `node scripts/setup-repo-identity.mjs --repo-path <path>`; `install.sh` offers to do it across every ingested repo at install time). It configures a dedicated passphrase-less signing-only key plus repo-local git config, so OS-driven commits sign headlessly while 1Password keeps signing your human commits everywhere else — global git config is never touched. See `standard-git-hygiene` § 4a for the security trade.
 
 ### SSH push fails when key is locked
 
-**Symptom:** `dev-open-pr` or auto-push fails silently when the SSH key isn't loaded into `ssh-agent`.
+**Symptom:** `dev-open-pr` refuses with `Push credentials not usable for <local_path>` before pushing anything.
 
-**Cause:** The OS doesn't currently check key availability before push (Task #404).
+**Cause:** The SSH key the remote needs isn't loaded (or is locked) in `ssh-agent`. `dev-open-pr` probes the credential path — a push dry-run plus an `ssh-add -l` fingerprint check — before any mutating step, so the refusal lands with nothing pushed and no PR opened instead of failing mid-flow.
 
 **Fix:**
 
@@ -311,14 +365,14 @@ Repeat for `domains/meta/app/` if the dashboard's lockfile is the one out of syn
 ssh-add ~/.ssh/id_<your-key>   # unlock the key
 ```
 
-Then re-dispatch the failing skill.
+Then re-dispatch the failing skill. The refusal names the remote's host alias and the identities currently loaded, so it usually tells you which key is missing.
 
 ## Where to get help
 
 - **Inside Claude:** Most skills surface diagnostic hints in their error output. Read the full skill output before debugging — it usually names the file or command to run.
 - **Audit panel:** Open the dashboard's Overview, scroll to **Action Items**. Many runtime issues surface here with one-click resolutions.
 - **CLI audit:** `node scripts/audit.mjs --json` dumps the full finding set machine-readably.
-- **Run logs:** `.claude/state/runs/r_<id>.jsonl` — every skill dispatch's stdout/stderr. Useful for post-mortems.
+- **Run logs:** `.claude/state/runs/r_<id>.raw.jsonl` — every dispatch's stream-json stdout, with stderr in the `r_<id>.stderr.log` sidecar next to it (older runs may carry the legacy `r_<id>.jsonl` name). Useful for post-mortems.
 - **Events.db:** `sqlite3 .claude/state/events.db` — query the structured event log. See `vault/wiki/_seed/meta/reference/standard-event-store.md` for schema.
 
 If you're truly stuck and the OS itself seems broken, the conservative recovery is:

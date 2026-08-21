@@ -8,7 +8,7 @@ You clone this repo, run `./install.sh`, then `claude`. You now have:
 
 - A **router** (`/os <intent>`) that dispatches every action — `/os write change`, `/os pr review`, `/os status report`, etc.
 - A **lifecycle for engineering work**: scaffold a change → plan it → peer-review the plan → execute it → open a PR → review the PR → publish the review → close on merge. Each step is a skill; the orchestrator can drive them automatically.
-- A **dashboard** (`/os dashboard`) with live views over changes, projects, PR reviews, runs, costs, notifications, and audit findings.
+- A **dashboard** (`/os dashboard`) with live views over changes, projects, PR reviews, ops health reviews, runs, costs, notifications, and audit findings.
 - A **vault** (`vault/wiki/`) that accumulates structured knowledge as you work — every change, decision, review, and research report is a markdown file with frontmatter the OS understands.
 - **GitHub integration** via a shipped MCP (2-minute PAT setup) and **Slack delivery** via the notification engine (bot token or webhook).
 - **Cost telemetry + event tracking** for every skill run, queryable + visible per-project.
@@ -19,7 +19,7 @@ Teams of 2-10 engineers fork this repo, customize for their stack, and each engi
 
 A workspace where Claude acts as the kernel for end-to-end workflow automation:
 
-- **Domains** organize knowledge and skills by area (development, research, meta)
+- **Domains** organize knowledge and skills by area (development, research, ops, meta)
 - **Skills** are invokable actions; `/os <intent>` dispatches to the right one
 - **Apps** are optional visual UIs over domain state (the dashboard is the first)
 - **MCPs** are structured tool surfaces — bridges to external services (GitHub, Slack…) or internal subsystems, exposed via the Model Context Protocol
@@ -32,12 +32,12 @@ A workspace where Claude acts as the kernel for end-to-end workflow automation:
 ./install.sh
 ```
 
-Verifies prerequisites (node version pinned in `.nvmrc` — currently `v26.1.0`, claude CLI), installs root tooling + dashboard deps, stamps the install marker, **scaffolds `.env` files** for each MCP (`mcps/<id>/.env`) and each app server (`domains/<domain>/app/.env`) from their committed `.env.example` siblings. The scaffolds ship with empty secrets — fill them in before the corresponding feature is exercised:
+Verifies prerequisites (node version pinned in `.nvmrc` — currently `v26.1.0`, claude CLI) and warns when the Claude Code CLI falls outside the supported version range (`scripts/check-cc-compat.mjs`, warn-only here and also a standing audit check — below the minimum, headless gate policies degrade quietly). Then it installs root tooling + dashboard deps, stamps the install marker, **scaffolds `.env` files** for each MCP (`mcps/<id>/.env`) and each app server (`domains/<domain>/app/.env`) from their committed `.env.example` siblings. The scaffolds ship with empty secrets — fill them in before the corresponding feature is exercised:
 
-- `mcps/github/.env` — `GITHUB_TOKEN` for PR open/read/list (used by `dev-open-pr`, `dev-pr-review`)
-- `domains/meta/app/.env` — `SLACK_BOT_TOKEN` or `SLACK_WEBHOOK_URL` for notification delivery (see **Notifications**); optional `GITHUB_TOKEN` for server-side GitHub calls separate from the MCP
+- `mcps/github/.env` — `GITHUB_TOKEN` for PR open/read/list (used by `dev-open-pr`, `dev-pr-review`, and by the dashboard server's own GitHub calls: one token source for both)
+- `domains/meta/app/.env` — `SLACK_BOT_TOKEN` or `SLACK_WEBHOOK_URL` for notification delivery (see **Notifications**), plus the optional port triple when you run two installs side by side
 
-The `.env` files are gitignored per `standard-env-config`; the loader (`server/load-env.ts` for apps, the MCP's own `loadEnv()` for MCPs) populates `process.env` at process start with shell-exported values winning.
+The `.env` files are gitignored per `standard-env-config`; the loader (`server/load-env.ts` for apps, the MCP's own `loadEnv()` for MCPs) populates `process.env` at process start with shell-exported values winning. Dispatched children additionally receive `AGENTIC_OS_ROOT` — root resolution is fail-closed (a validated explicit value, else a sentinel walk-up, never cwd), so a stale export throws instead of quietly writing telemetry into the wrong tree.
 
 The installer also offers two opt-in steps (both default to no; both re-runnable later):
 
@@ -127,7 +127,7 @@ These ten cover ~80% of week-one usage. The full vocabulary is below.
 
 ### Full vocabulary
 
-The canonical, always-current intent → skill mapping lives in [**OS.md**](OS.md) (the `### Intent vocabulary` table — ~50 rows covering scaffolding, lifecycle, research, PR review, notifications, automation, and meta-evolution).
+The canonical, always-current intent → skill mapping lives in [**OS.md**](OS.md) (the `### Intent vocabulary` table — ~55 rows covering scaffolding, lifecycle, research, PR review, ops health reviews, notifications, automation, and meta-evolution).
 
 For live discovery, open the dashboard's **Skills** view — every skill is listed with its frontmatter, inputs, and current invocation rate. Add new ones via **+ New Skill** (calls `meta-add-skill`).
 
@@ -185,7 +185,7 @@ Two kinds, with different homes:
 
 The OS ships with two OS-built MCPs wired up:
 
-- **`github`** (`mcps/github/`) — PR open/read/list + check status. PAT-based auth via `mcps/github/.env`. Used by `dev-open-pr` and the planned PR-review backend.
+- **`github`** (`mcps/github/`) — PR open/read/list, check status, batched review submission (with multi-line ranges), and threaded comment replies. PAT-based auth via `mcps/github/.env`. Used by `dev-open-pr`, `dev-pr-review-publish`, and `dev-pull-pr-comments`.
 - **`vault`** (`mcps/vault/`) — wiki search + entry read + archetype listing. No auth required (local filesystem read).
 
 After cloning and running `./install.sh`, drop a GitHub PAT into the github MCP's env:
@@ -310,6 +310,44 @@ Three layers enforce that the change body is human-reviewed before the writer pl
 
 Full standard: [`vault/wiki/_seed/meta/reference/standard-change-workflow.md`](vault/wiki/_seed/meta/reference/standard-change-workflow.md).
 
+## PR reviews
+
+A **pr-review** entry is the OS's record of reviewing one pull request: every pass, every comment's text and anchor and disposition, and the GitHub ids of whatever got published. Re-running the review appends a pass rather than replacing one — the entry is the review's history, not just its latest state.
+
+```bash
+/os cache repo         # read-only clone the review reads from
+/os review pr          # compose a pass — categorized comments + verdict
+/os publish pr review  # send the pass to GitHub
+/os pull pr comments   # ingest external comments + replies as a new pass
+/os draft response     # answer the comments nobody has answered yet
+/os mark pr ready      # hand the PR to a human
+```
+
+### Threaded conversations
+
+External reviewers' comments, author replies, and the OS's own published comments all live in one thread structure. `dev-pull-pr-comments` ingests external comments and replies into the entry, resolving parent refs against the GitHub ids the OS recorded when it published; `dev-pr-review` in `mode: response` answers what was asked; `dev-pr-review-publish` sends those answers back as real GitHub threaded replies rather than new top-level comments. External comments then flow through the same accept/dismiss/re-implement triage as the OS's own.
+
+Two properties keep the loop from misfiring:
+
+- **A replies-only publish posts no verdict.** Publishing partitions the reply set from the review set, so answering an author's question never re-requests changes on their PR.
+- **Operator-authored bodies publish byte-for-byte.** A reply you wrote yourself goes out exactly as written — no headers, footers, or framing wrapped around it.
+
+Once a comment is published its recorded text is frozen (the dashboard's edit API returns 409), so the vault record and the GitHub thread can't drift apart. Corrections go out as replies; unpublished drafts stay editable.
+
+### Anchor fidelity
+
+A comment pointing at the wrong line costs the reader more than it gives, so anchors are treated as a correctness property with checks at every seam:
+
+- Reviews read code at the **PR head** — `dev-cache-pr-review-repo` materializes the head as a detached sibling worktree while the cache checkout stays on `origin/HEAD`, which the repo-knowledge entry and the import-graph walk depend on.
+- Anchors are **read off a line-numbered diff** (`scripts/annotate-diff-lines.mjs` prints every row with explicit `L<old>` / `R<new>` numbers) instead of being computed from `@@` hunk arithmetic.
+- Every anchor is validated **twice** — at write time against the diff the review read, and again at publish time against the live head — snapping small drifts and degrading a half-valid range to its valid endpoint instead of 422-ing the batch. Each snap is annotated on the GitHub comment and named in the publish report.
+- A comment may carry the exact code it's about as a `quote`, and content then outranks position: a quote found once elsewhere relocates the anchor to it, and a quote found nowhere downgrades the comment to file-level rather than pointing at innocent code.
+- Multi-line findings publish as real ranges; if GitHub rejects a range payload the review retries once with ranges stripped, degrading to single-line rather than losing the pass.
+
+The dashboard's **PR review** app renders passes as threads (author chips, answered checkmarks, reply affordance) and is where triage happens.
+
+Full archetype: [`vault/wiki/_seed/meta/reference/archetype-pr-review.md`](vault/wiki/_seed/meta/reference/archetype-pr-review.md).
+
 ## Research reports
 
 A **research-report** is the formal spec output of a structured investigation against a project's open questions. Lifecycle mirrors the change workflow's review gate: draft → review → revise → approve → scaffold recommendations into changes.
@@ -336,6 +374,23 @@ Three input channels feed the research skills:
 When a project has `research_paths` populated (via `/os research write`), the project's Plan tab renders the report inline — the legacy `/plan/research` flow stays as the fallback for projects authored before the research-report lifecycle existed. Both paths produce the same downstream artifact (`recommended_changes[]` → `dev-add-change` fan-out).
 
 Full archetype: [`vault/wiki/_seed/meta/reference/archetype-research-report.md`](vault/wiki/_seed/meta/reference/archetype-research-report.md). Decision behind the inline rendering: [`vault/wiki/meta/decision/decision-research-report-vs-project-plan.md`](vault/wiki/meta/decision/decision-research-report-vs-project-plan.md).
+
+## Ops health reviews
+
+The `ops` domain covers the recurring "is this system still healthy?" pass — the review someone runs weekly and otherwise re-derives from scratch, differently, every time.
+
+A **review-protocol** entry is that review's contract, written once per system: which sources are authoritative and how they're read, the single KPI (formula, baseline, target, window, guardrail) that defines health, the failure taxonomy reviews classify against, the shipped fixes still under verification and what evidence would prove each one worked, and the monitors that are candidates for publication plus what must be true before a human is asked to publish one. Unmeasured baselines stay `null` with a measure-first note — the scaffolder won't invent a number to look complete.
+
+```bash
+/os add protocol    # ops-add-protocol — scaffold the contract for one system
+/os health review   # ops-health-review — run it, write a dated verdict report
+```
+
+A review walks preflight → deployed-code check → snapshot → KPI vs contract → log classification → fix verification → monitor readiness → forecast, then writes a dated report carrying a `healthy` / `watch` / `action-needed` verdict and stamps `last_reviewed` + `last_verdict` back onto the protocol. The protocol is the stable object; the reports are the time series it produces. That split is what keeps history readable — a contract change is one visible edit, and every earlier report stays interpretable against the contract that produced it.
+
+**Read-only by contract.** Ops skills GET / SELECT / inspect: they never mutate a monitor, never write to the system under review, and recommend rather than publish. The `/api/ops` routes are GET-only and parse verdict + KPI out of report frontmatter rather than prose, so a report and the stamp on its protocol can't disagree. The dashboard's **Ops** app groups protocols attention-first — action-needed above watch above healthy — with deep-linkable routes into any report.
+
+Full archetype: [`vault/wiki/_seed/meta/reference/archetype-review-protocol.md`](vault/wiki/_seed/meta/reference/archetype-review-protocol.md).
 
 ## Notifications
 
@@ -394,7 +449,7 @@ Templates use Mustache-style `{{var}}` substitution with one important conventio
 
 ### The event catalog
 
-[`vault/wiki/_seed/meta/reference/event-catalog.md`](vault/wiki/_seed/meta/reference/event-catalog.md) is the curated registry of every user-facing lifecycle event worth subscribing to. ~35 events organized by entity (project / change / research-report). Both the rule editor's event-type picker and the bell affordances read from it. To add a new subscribable event: add a row to the catalog + (optionally) ship a `notification-<event-type>.md` template for richer message rendering.
+[`vault/wiki/_seed/meta/reference/event-catalog.md`](vault/wiki/_seed/meta/reference/event-catalog.md) is the curated registry of every user-facing lifecycle event worth subscribing to. ~50 events organized by entity (project / change / change-automation / research-report / cross-cutting). Both the rule editor's event-type picker and the bell affordances read from it. To add a new subscribable event: add a row to the catalog + (optionally) ship a `notification-<event-type>.md` template for richer message rendering.
 
 ### Audit hooks
 
@@ -413,11 +468,11 @@ Full standards:
 
 ## Process automation
 
-Automation runs at two tiers, both guarded and both optional — manual dashboard operation stays first-class at every step.
+Automation runs at three tiers, all guarded and all optional — manual dashboard operation stays first-class at every step.
 
 **Change-level automation** (the workhorse): any single change with an approved plan can be handed to the orchestrator — enable + Start on the change's Automation panel. It drives execute → open-pr → pr-review → address-comments autonomously with the safety properties earned through live use:
 
-- **Eligibility gate at start** — refuses unless the plan exists and `review_status` is approved/overridden/not-required, the clone's working tree is clean for EXECUTE-bound starts, and re-derives the correct entry step from _artifacts_ (branch commits, `pr_url`, review passes), not just status — so resuming mid-lifecycle never re-runs completed work.
+- **Eligibility gate at start** — refuses unless the plan exists and `review_status` is approved/overridden/not-required, the clone's working tree is clean _and_ checked out on the expected branch (the change's own branch when its ref exists, else the repo default) for EXECUTE-bound starts, and re-derives the correct entry step from _artifacts_ (branch commits, `pr_url`, review passes), not just status — so resuming mid-lifecycle never re-runs completed work.
 - **Artifact-verified advance** — a step only advances when its postcondition moved (commits landed, PR exists, review pass recorded). Exit-0-without-movement parks as `skill-refused` with the run's own summary; failures park with reason instead of ghost-advancing.
 - **Park reconciliation** — if you complete a parked step by hand (mixed-mode is expected), the orchestrator notices the artifact landed and advances instead of staying stuck.
 - **Human gates preserved** — completion sets `pr_review_status: approved`; comment triage (accept/dismiss with rationale) and Mark-ready remain yours, and merging is always yours.
@@ -441,12 +496,14 @@ state machine ──▶  WRITE         ← dev-write-change      (PLAN → REVIE
                    on failure / review-not-approved: PAUSE with reason
 ```
 
-**Pause gates.** The orchestrator pauses (rather than aborting) on two conditions, listed in the project's `pause_on:` array:
+**Pause gates.** The orchestrator pauses (rather than aborting) on these conditions, the configurable ones listed in the project's `pause_on:` array:
 
 - **`skill-failure`** — any orchestrated skill exits non-zero. The failure is captured in the events log; the user resumes after addressing.
+- **`env-failure:<signature>`** — an infrastructure death (session limit, with the reset time parsed out when it's available; API overload) parks distinctly from a skill failure, so infrastructure noise never lands in per-skill quality analytics. A different model cures neither, so these deliberately sit outside the fallback table.
+- **`skill-refused`** — a step exits 0 without its postcondition artifacts. The project parks with the run's own one-line reason instead of advancing on nothing.
 - **`review-not-approved`** — `dev-pr-review` records a pass with `result: request-changes`. The orchestrator stops and waits for the user to revise the change (re-running `dev-write-change` in REVISE mode) before resuming.
 
-**Merge watcher.** Once a PR is opened, the orchestrator's WRITE → OPEN_PR → REVIEW steps are complete but the change isn't merged yet. A server-side poller (60s interval) calls `gh pr view` against any open PR for changes currently in MERGE state; when GitHub reports it merged, the watcher updates the change's frontmatter (`status: merged`, `merged_at: <ts>`) and ticks the orchestrator forward to the next change.
+**Merge watcher.** Once a PR is opened, the orchestrator's WRITE → OPEN_PR → REVIEW steps are complete but the change isn't merged yet. A server-side sweep (60s interval) walks the vault for changes sitting in MERGE state whose entry has reached `status: merged` — stamped by the pr-ci-monitor runbook's GitHub poll, the dashboard's Mark Merged, or `dev-close-change` — and ticks the orchestrator forward to the next change. The merge itself always happens outside this surface. The same sweep reconciles parked steps you completed out-of-band.
 
 **Auto-tick on step completion.** When a skill subprocess wrapped by `record-dashboard-action.mjs` exits with `exit: 0`, an `onAutomationStepComplete()` hook runs inside the dashboard server (called from `routes/runs.ts`). It re-evaluates the project's automation state and dispatches the next step immediately — no polling delay for in-process advancement, only the merge watcher polls externally.
 
@@ -456,6 +513,8 @@ state machine ──▶  WRITE         ← dev-write-change      (PLAN → REVIE
 - **Project page → Overview tab** — the `ChangesLifecycleStepper` shows distribution across `planning / in-progress / in-review / merged / abandoned`, updating live as the orchestrator advances.
 - **Audit hooks** — `automation-paused` (info), `automation-skill-failure` (warn), `automation-stalled` (warn, when in MERGE state for >24h without GitHub reporting merged).
 
+**Project driving** (`dev-drive-project`) is the outermost tier: it drives a project's scaffolded changes through the _entire_ lifecycle — including the plan and plan-review gates the orchestrator doesn't touch — in `parent_change` dependency order, from draft-accept through plan, review, the change-automation inner loop, triage, merge, project close, and the Overseer audit. Advancement is by artifact, not by exit code: a terminal run is permission to look, and the artifact decides whether the step landed. Every stop is classified from the run's own recorded evidence — infrastructure gets a bounded retry (clock-bound failures report their reset time instead of busy-polling), while refusals, failures, and human gates hand back with the remedy quoted rather than being retried into the ground. Each dispatch the driver makes is stamped `origin: driver`, so the Processes view can tell driven work from hand-pressed buttons. The project screen's **Drive** button (with **Dry run** beside it) shares one evaluator with the endpoint, so the tooltip and the 409 refusal are the same sentence. Mixed mode stays safe by construction: state is re-derived from artifacts before every gate, so whatever you finish by hand is simply where the driver picks up.
+
 **Why no global automation.** Automation is project-scoped on purpose: different projects have different review tolerances, different cost budgets, different stakeholder expectations. A single "auto-merge everything" toggle would lose that nuance. The per-project block makes the consent explicit and the scope obvious.
 
 ## Models & effort (cost posture)
@@ -464,11 +523,13 @@ Every headless dispatch resolves its model and effort per skill: SKILL.md frontm
 
 The OS ships an opinionated default posture: the deep planning/review/self-improvement skills pin the strongest model at `effort: max`, execution-bound dispatches drop to a cheaper model via `model_execute:` / `effort_execute:` (plans get the judgment, executes get the typing), the team baseline is `xhigh`, and per-skill wall-time caps bound runaway runs. **Every piece is per-install overridable** — strip any pin from Settings → Model/Effort, lower the baseline in `settings.local.json`. If you run on an Anthropic API key rather than a subscription, read the cost-posture note in the CHANGELOG's 0.5.0 upgrade section before your first dispatched run.
 
+**Availability policy.** A run that dies because its model wasn't available says so: the failure is classified (credits / auth / model-not-found / rate-limit) at both terminal paths, and the skill's declared policy decides what happens next. `model_policy: required` parks the run rather than quietly re-running a review gate on a weaker model — a silently weakened gate _passes_ things — and the 8 review/plan gates ship that way. `model_policy: fallback-allowed` plus a `model_fallbacks:` list re-dispatches once onto the first fallback; the 5 drafters ship that way. `POST /api/runs` takes `model_override` / `effort_override` as the recorded human escape hatch when one run needs to go differently.
+
 Dispatch-time model + effort are stamped on every run row, so the Insights view and the runs drawer always show what actually ran.
 
 ## Observability (event store)
 
-Every action the OS executes — router dispatches, dashboard AI bridge calls, vault edits, scheduler fires — writes a structured row to a pure-Node SQLite database at `.claude/state/events.db`. Captured per row: timestamp, kind, action, skill, project, model, tokens (in/out/cache), cost, duration, exit status, files touched.
+Every action the OS executes — router dispatches, dashboard AI bridge calls, vault edits, scheduler fires — writes a structured row to a pure-Node SQLite database at `.claude/state/events.db`. Captured per row: timestamp, kind, action, skill, project, model, tokens (in/out/cache), cost, duration, exit status, files touched, origin. Every dispatch is attributed with a validated `origin` — `human` / `automation` / `scheduler` / `driver`, rejected at the API boundary if it's anything else — so the Processes view can answer who launched what.
 
 This is **telemetry, not knowledge**. The vault holds what you _know_; events.db holds what _happened_. The two layers stay separate:
 
@@ -512,6 +573,10 @@ sqlite3 .claude/state/events.db "SELECT skill, count(*) AS n, printf('%.4f', sum
 
 Or from the dashboard's **Insights** view — counts by kind/skill/model, total cost, slowest events, recent events table with click-to-expand + column resize. JSONL audit files in `vault/raw/` continue to be appended for backward compatibility; future cleanup may retire them once events.db proves itself.
 
+### Run supervision
+
+Dispatched runs are watched by a supervisor, and the supervisor is watched in turn. Every supervision host — the out-of-band `scripts/runs-supervisor.mjs` and the dashboard's in-process close handler — stamps `.claude/state/supervision-heartbeat.json`, and a `supervision-stale` audit check escalates when that stamp goes cold while runs are in flight. Before signaling anything, the supervisor compares a live PID's process start time against the run's own start, so a recycled PID is finalized as dead rather than SIGTERM'd by mistake. Dispatch is crash-safe at the other end too: a `queued` row left with no pid and no journal is reaped after a 2-minute grace and finalized honestly, so a crash in the dispatch window never wedges the per-change concurrency gate.
+
 Full standard: [`vault/wiki/_seed/meta/reference/standard-event-store.md`](vault/wiki/_seed/meta/reference/standard-event-store.md).
 
 ## Structure
@@ -519,7 +584,8 @@ Full standard: [`vault/wiki/_seed/meta/reference/standard-event-store.md`](vault
 ```
 .claude/skills/      Invokable actions (one directory per skill: <name>/SKILL.md)
 .claude/hooks/       Lifecycle hooks (curation, index rebuild, session brief)
-.claude/state/       Internal state (install marker, schedule dedupe, launchd logs, events.db)
+.claude/state/       Internal state (install marker, schedule dedupe, launchd logs, events.db,
+                     run ledger + journals, supervision heartbeat)
 _templates/          Scaffolder templates for new domains/skills/apps/archetypes
 scripts/             Out-of-band runners (scheduler tick + audit + macOS installer)
 repos/               Ingested external repositories (gitignored; one clone per slug)
@@ -527,6 +593,7 @@ domains/             Domain playbooks + optional apps + sub-domains
   meta/              The OS itself as a domain (includes the dashboard app)
   development/
   research/
+  ops/
 vault/               3-stage memory lifecycle
   raw/               Unstructured ingest + JSONL audit logs (gitignored)
   wiki/              Structured memory: <domain>/<archetype>/<slug>.md (only _seed/ committed)
@@ -544,6 +611,8 @@ vault/               3-stage memory lifecycle
 - `domains/meta/playbook.md` — full OS standards and evolution protocol
 - `vault/wiki/_seed/meta/decision/decision-distribution-v1-architecture.md` — why the OS is shaped this way
 - `vault/wiki/_seed/meta/reference/standard-team-customization.md` — extension model for team forks
+- `vault/wiki/_seed/meta/reference/standard-skill-format.md` — skill authoring: the frontmatter namespaces, the headless-behavior policy every interactive gate on a dispatched path must declare, and the compact-skill pattern (bulk material in `references/` the procedure reads on demand)
+- `vault/wiki/_seed/meta/reference/standard-tracker-intake.md` — the portable frontmatter contract for linking changes to an external tracker. Core ships no tracker code; the contract is what keeps a team-built integration fork-portable and stops it passing a human gate on your behalf
 - `vault/wiki/_seed/meta/reference/` — detailed reference entries for each standard
 
 ## Design principles
@@ -558,6 +627,6 @@ vault/               3-stage memory lifecycle
 
 ## Status
 
-**v0.5.0** (tagged; canonical version at [`vault/wiki/_seed/meta/reference/os-version.md`](vault/wiki/_seed/meta/reference/os-version.md), history in [`CHANGELOG.md`](CHANGELOG.md)) — distribution-ready for small-team installs. The architecture is locked (see [`vault/wiki/_seed/meta/decision/decision-distribution-v1-architecture.md`](vault/wiki/_seed/meta/decision/decision-distribution-v1-architecture.md)), the standards are documented in [`vault/wiki/_seed/meta/reference/`](vault/wiki/_seed/meta/reference/), and the OS scaffolds itself for everything beyond the initial bootstrap. End-to-end automation has been validated on real changes through the full lifecycle (research → plan → review → execute → PR → review → publish → close).
+**v0.9.0** (tagged; canonical version at [`vault/wiki/_seed/meta/reference/os-version.md`](vault/wiki/_seed/meta/reference/os-version.md), history in [`CHANGELOG.md`](CHANGELOG.md)) — distribution-ready for small-team installs. The architecture is locked (see [`vault/wiki/_seed/meta/decision/decision-distribution-v1-architecture.md`](vault/wiki/_seed/meta/decision/decision-distribution-v1-architecture.md)), the standards are documented in [`vault/wiki/_seed/meta/reference/`](vault/wiki/_seed/meta/reference/), and the OS scaffolds itself for everything beyond the initial bootstrap. End-to-end automation has been validated on real changes through the full lifecycle (research → plan → review → execute → PR → review → publish → close), and the project driver now runs whole projects through that lifecycle in dependency order, handing back at every human gate.
 
 Deferred to v2+: bot-account separation for true PR APPROVE events (currently auto-downgrades to COMMENT when the PAT-holder is also the PR author), team-shared metrics aggregation across engineers, skill marketplace / upstream-tracking model.
