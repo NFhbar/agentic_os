@@ -5,8 +5,17 @@ import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { FastifyPluginAsync } from 'fastify';
+// @ts-expect-error — pure-ESM .mjs helper with no .d.ts; node resolves fine
+import { listRuns } from '../../../../../scripts/runs-db.mjs';
 import { removeFrontmatterFields, rewriteFrontmatter } from '../frontmatter-rewrite.js';
 import { parseFrontmatter } from '../frontmatter.js';
+import {
+  DRIVER_SKILL,
+  type DriveRunLike,
+  buildDriveProjectPrompt,
+  evaluateDriveAffordance,
+  findActiveDriverRun,
+} from '../lib/drive-affordance.js';
 import { parseRunOrigin } from '../lib/run-origin.js';
 import { SKILL } from '../lib/skill-ids.js';
 import { REPO_ROOT, safePath } from '../repo.js';
@@ -1309,6 +1318,159 @@ Do NOT use AskUserQuestion or any interactive prompt. Report a tight summary of 
       [],
     );
     return { ok: true, run_id: result.run_id, current_cost_usd: rollup.cost_usd };
+  });
+
+  // POST /api/projects/:id/drive — dispatch `dev-drive-project` for the
+  // project. The explicit, operator-pressed entry point to the driver: there
+  // is no schedule, no daemon, and no auto-adoption behind it, by design.
+  //
+  // Refuses (409) whenever `evaluateDriveAffordance` says the control is not
+  // `ready` — the same evaluator the button uses, so its disabled tooltip and
+  // this refusal are the same sentence. Optional body inputs (`max_changes`,
+  // `spend_cap_usd`, `dry_run`) are the skill's own optional controls, threaded
+  // into the prompt when supplied.
+  fastify.post<{
+    Params: { id: string };
+    Body: {
+      max_changes?: number;
+      spend_cap_usd?: number;
+      dry_run?: boolean;
+      origin?: string;
+    };
+  }>('/:id/drive', async (req, reply) => {
+    const projectId = req.params.id;
+    const parsedOrigin = parseRunOrigin(req.body?.origin);
+    if (!parsedOrigin.ok) {
+      reply.code(400);
+      return { ok: false, error: parsedOrigin.error };
+    }
+    const found = await findProjectFrontmatter(projectId);
+    if (!found) {
+      reply.code(404);
+      return { ok: false, error: `project "${projectId}" not found` };
+    }
+    const project = toSummary(found.fm, found.path);
+
+    // Validate the optional driver inputs before anything is dispatched — a
+    // bad cap is a caller bug, and finding out after the run started costs the
+    // run. `dry_run` accepts only a real boolean (a truthy string would mean a
+    // caller thinks it asked for a plan and instead paid for a drive).
+    const rawMaxChanges = req.body?.max_changes;
+    if (rawMaxChanges !== undefined) {
+      if (
+        typeof rawMaxChanges !== 'number' ||
+        !Number.isInteger(rawMaxChanges) ||
+        rawMaxChanges < 1
+      ) {
+        reply.code(400);
+        return { ok: false, error: 'max_changes must be a positive integer' };
+      }
+    }
+    const rawSpendCap = req.body?.spend_cap_usd;
+    if (rawSpendCap !== undefined) {
+      if (typeof rawSpendCap !== 'number' || !Number.isFinite(rawSpendCap) || rawSpendCap <= 0) {
+        reply.code(400);
+        return { ok: false, error: 'spend_cap_usd must be a positive number' };
+      }
+    }
+    const rawDryRun = req.body?.dry_run;
+    if (rawDryRun !== undefined && typeof rawDryRun !== 'boolean') {
+      reply.code(400);
+      return { ok: false, error: 'dry_run must be a boolean' };
+    }
+
+    const ownedChanges = await findOwnedChanges(projectId);
+    // Driver runs for this project, live or not. Matched on skill + project:
+    // the driver's OWN run is not origin-marked `driver` (see the dispatch
+    // comment below), so an origin filter would miss exactly the run this gate
+    // is looking for.
+    const driverRuns = listRuns({
+      project: projectId,
+      skill: DRIVER_SKILL,
+      limit: 50,
+    }) as DriveRunLike[];
+    const activeRun = findActiveDriverRun(driverRuns, projectId);
+    const decision = evaluateDriveAffordance({
+      project_status: project.status,
+      changes: ownedChanges,
+      active_run_id: activeRun?.id ?? null,
+    });
+    if (!decision.enabled) {
+      reply.code(409);
+      return {
+        ok: false,
+        error: decision.reason,
+        state: decision.state,
+        active_run_id: decision.active_run_id,
+      };
+    }
+
+    const dispatcherPrompt = buildDriveProjectPrompt({
+      project: projectId,
+      max_changes: rawMaxChanges ?? null,
+      spend_cap_usd: rawSpendCap ?? null,
+      dry_run: rawDryRun === true,
+      // The driver dispatches over HTTP and its default (5174) is only right
+      // when the dashboard runs on the default port. Hand it the port this
+      // server actually answers on — same resolution as server/index.ts.
+      api_port: Number(process.env.PORT) || 5174,
+    });
+    const result = await startRun({
+      prompt: dispatcherPrompt,
+      title: `/os drive project ${projectId}${rawDryRun === true ? ' (dry run)' : ''}`,
+      // Project only. NO `change_id`: `startRun` blocks a dispatch for a change
+      // that already has a live run, so a driver run attributed to a change
+      // would be refused on every dispatch it then made for that change — the
+      // driver's documented silent-failure mode (dev-drive-project § Step 4).
+      // The prompt is change-free for the same reason (attribution is also
+      // lifted from prompt text).
+      tags: {
+        project: projectId,
+        domain: project.domain ?? 'meta',
+        skill: DRIVER_SKILL,
+      },
+      // Origin identifies WHO dispatched this run, and a person pressing Drive
+      // is a human dispatch — `origin` here resolves to `human` (startRun's
+      // default) for the dashboard button. `driver` belongs to the runs the
+      // driver itself then creates: it stamps that on every node it dispatches
+      // (SKILL.md § Step 4), which is what lets the Processes list separate the
+      // drive's work from hand-work on the same project. Stamping `driver`
+      // here would claim the driver dispatched itself. A non-human caller
+      // (another driver, a future orchestrator) may still declare its own
+      // validated origin in the body.
+      origin: parsedOrigin.origin,
+    });
+    if (!result.ok) {
+      if ('blocking' in result) {
+        reply.code(409);
+        return { ok: false, error: 'blocked', blocking: result.blocking };
+      }
+      reply.code(500);
+      return { ok: false, error: result.error };
+    }
+    const rollup = buildProjectRollup(
+      projectId,
+      ownedChanges.map((c) => c.id),
+    );
+    recordAudit(
+      'project-drive-dispatch',
+      {
+        project: projectId,
+        run_id: result.run_id,
+        skill: DRIVER_SKILL,
+        drivable_changes: decision.drivable_count,
+        max_changes: rawMaxChanges ?? null,
+        spend_cap_usd: rawSpendCap ?? null,
+        dry_run: rawDryRun === true,
+      },
+      [],
+    );
+    return {
+      ok: true,
+      run_id: result.run_id,
+      drivable_changes: decision.drivable_count,
+      current_cost_usd: rollup.cost_usd,
+    };
   });
 
   // GET /api/projects/:id/plan — read-only. Returns the project's plan +

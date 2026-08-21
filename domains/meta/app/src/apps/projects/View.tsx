@@ -4,6 +4,12 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import {
+  DRIVER_SKILL,
+  evaluateDriveAffordance,
+  findActiveDriverRun,
+  findLatestDriverRun,
+} from '../../../server/lib/drive-affordance';
 import { EditableMarkdown, Rendered } from '../../components/EditableMarkdown';
 import { ScaffoldForm } from '../../components/ScaffoldForm';
 import { getJson } from '../../lib/api';
@@ -847,6 +853,133 @@ function defaultTabFor(planStatus: string | null): ProjectTabId {
   return 'changes';
 }
 
+// Drive control — the project screen's explicit entry point to the project
+// driver (`dev-drive-project`), and the window onto a drive that is running.
+//
+// Explicit is the whole design: the driver never self-engages, so this is a
+// button an operator presses, never a poll, a schedule, or an auto-adoption.
+// It writes no state of its own either — visibility comes from the project
+// status and the owned changes the screen already loaded, plus the runs list
+// the dispatch provider already polls, so the control is a pure read.
+//
+// While a drive is in flight the control stops offering a dispatch and becomes
+// the link to that run: a second driver on the same project would race the
+// first one's gates. The refusal is enforced server-side too — this is the
+// affordance, not the guard.
+//
+// The runs it reads are the provider's recent window (the newest 200 across
+// the OS), which always contains a live run and usually the last finished one.
+// A drive old enough to have aged out simply stops being summarized here; the
+// Processes view still has it.
+function ProjectDriveControl({
+  project,
+  ownedChanges,
+  onDispatched,
+}: {
+  project: ProjectSummary;
+  ownedChanges: OwnedChangeRef[];
+  // Called after a successful dispatch so the caller can re-pull the detail.
+  onDispatched: () => void;
+}) {
+  const navigate = useNavigate();
+  const { runs, setDrawerFilter, setDrawerOpen } = useDispatch();
+  const [busy, setBusy] = useState(false);
+  const projectId = project.id ?? '';
+
+  const activeRun = useMemo(() => findActiveDriverRun(runs, projectId), [runs, projectId]);
+  const lastRun = useMemo(() => findLatestDriverRun(runs, projectId), [runs, projectId]);
+  const decision = useMemo(
+    () =>
+      evaluateDriveAffordance({
+        project_status: project.status,
+        changes: ownedChanges,
+        active_run_id: activeRun?.id ?? null,
+      }),
+    [project.status, ownedChanges, activeRun],
+  );
+
+  async function drive(dryRun: boolean) {
+    if (!projectId || busy) return;
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/projects/${encodeURIComponent(projectId)}/drive`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(dryRun ? { dry_run: true } : {}),
+      });
+      const j = (await r.json()) as { ok: boolean; error?: string; run_id?: string };
+      if (!j.ok) {
+        alert(`Drive failed: ${j.error ?? `request failed (${r.status})`}`);
+        return;
+      }
+      // Open the drawer on this project's driver runs — the drive reports its
+      // queue and its stop reason in the run output, so that is where the
+      // operator watches it from.
+      setDrawerFilter({ project: projectId, skill: DRIVER_SKILL });
+      setDrawerOpen(true);
+      onDispatched();
+    } catch (e) {
+      alert(`Drive failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!decision.visible) return null;
+
+  const driveTitle =
+    decision.reason ??
+    `Dispatch ${DRIVER_SKILL} for this project. It derives each change's state from the vault, dispatches the next lifecycle node in parent_change order through the same endpoints these buttons call, and hands back at every human gate. ${decision.drivable_count} change(s) still live.`;
+
+  return (
+    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      {decision.state === 'driving' && activeRun ? (
+        <button
+          type="button"
+          className="btn btn-sm"
+          onClick={() => navigate(`/processes#${activeRun.id}`)}
+          title={decision.reason ?? undefined}
+        >
+          ▶ Driving — view run
+        </button>
+      ) : (
+        <>
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={!decision.enabled || busy}
+            onClick={() => drive(false)}
+            title={driveTitle}
+          >
+            {busy ? 'Dispatching…' : 'Drive'}
+          </button>
+          {decision.enabled && (
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost"
+              disabled={busy}
+              onClick={() => drive(true)}
+              title="Dry run — derive the queue and print the plan, dispatching nothing. One cheap read pass; the right first call on a project you haven't driven."
+            >
+              Dry run
+            </button>
+          )}
+        </>
+      )}
+      {!activeRun && lastRun && (
+        <button
+          type="button"
+          className="btn btn-sm btn-ghost tiny"
+          onClick={() => navigate(`/processes#${lastRun.id}`)}
+          title={`Open the last drive's output — the drive report names where it stopped and what the next gesture is. Started ${formatLocal(lastRun.started_at)}.`}
+        >
+          last drive: {lastRun.state} · {formatRelative(lastRun.started_at)}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function ProjectDetailPane({
   detail,
   explicitTab,
@@ -1093,6 +1226,14 @@ function ProjectDetailPane({
         >
           <Icons.Plus size={11} /> Add change
         </button>
+        {/* Project-tier driver. Sits next to Add change because both are
+            project-level gestures, and stays in the header so a drive in
+            flight is visible from every tab. */}
+        <ProjectDriveControl
+          project={p}
+          ownedChanges={detail.owned_changes}
+          onDispatched={onRefetchDetail}
+        />
       </header>
 
       <ProjectStateBanner
